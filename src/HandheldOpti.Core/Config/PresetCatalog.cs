@@ -81,7 +81,8 @@ public static class PresetCatalog
                 StreamlineSpoofing = true,
                 ShortcutKeyHex = "0x2D",
                 EnableFsr4Int8Hint = true,
-                Fsr4Watermark = false
+                Fsr4Watermark = false,
+                VsyncMode = "auto"
             }
         },
         new()
@@ -276,13 +277,13 @@ public static class PresetCatalog
                 ini.Set("FrameGen", "FGOutput", "nukems");
                 break;
             case "xefg":
-                ini.Set("FrameGen", "Enabled", "true");
+                ini.Set("FrameGen", "Enabled", effectiveFgInput == "dlssg" ? "auto" : "true");
                 ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "xefg");
                 break;
             case "optifg":
             case "fsrfg":
-                ini.Set("FrameGen", "Enabled", "true");
+                ini.Set("FrameGen", "Enabled", effectiveFgInput == "dlssg" ? "auto" : "true");
                 ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "fsrfg");
                 break;
@@ -298,9 +299,25 @@ public static class PresetCatalog
 
         if (isV10)
         {
-            bool needVsyncOverride = fg is "xefg" or "optifg" or "fsrfg";
-            ini.Set("V-Sync", "OverrideVsync", needVsyncOverride ? "true" : "auto");
-            ini.Set("V-Sync", "ForceVsync", needVsyncOverride ? "false" : "auto");
+            var vsync = (config.VsyncMode ?? "on").Trim().ToLowerInvariant();
+            switch (vsync)
+            {
+                case "on":
+                    ini.Set("V-Sync", "OverrideVsync", "true");
+                    ini.Set("V-Sync", "ForceVsync", "true");
+                    ini.Set("V-Sync", "SyncInterval", "1");
+                    break;
+                case "off":
+                    ini.Set("V-Sync", "OverrideVsync", "true");
+                    ini.Set("V-Sync", "ForceVsync", "false");
+                    ini.Set("V-Sync", "SyncInterval", "0");
+                    break;
+                default:
+                    ini.Set("V-Sync", "OverrideVsync", "auto");
+                    ini.Set("V-Sync", "ForceVsync", "auto");
+                    ini.Set("V-Sync", "SyncInterval", "auto");
+                    break;
+            }
         }
 
         ini.Set("Framerate", "FramerateLimit",

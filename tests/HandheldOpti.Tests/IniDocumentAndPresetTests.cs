@@ -116,14 +116,15 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("1", doc.Get("FSR", "Fsr4Model"));
         Assert.Equal("true", doc.Get("FSR", "FsrAgilitySDKUpgrade"));
         Assert.Equal("true", doc.Get("FSR", "Fsr4EnableWatermark"));
-        Assert.Equal("true", doc.Get("FrameGen", "Enabled"));
+        Assert.Equal("auto", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("dlssg", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
         Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
         Assert.Equal("true", doc.Get("Log", "LogToFile"));
         Assert.Equal("2", doc.Get("Log", "LogLevel"));
         Assert.Equal("true", doc.Get("V-Sync", "OverrideVsync"));
-        Assert.Equal("false", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("true", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("1", doc.Get("V-Sync", "SyncInterval"));
 
         var lite = PresetCatalog.GetById("handheld-lite-xefg");
         lite.Config.FramerateLimit = 84;
@@ -131,32 +132,51 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("4", doc.Get("FSR", "Fsr4GpuSupport"));
         Assert.Equal("3", doc.Get("FSR", "Fsr4Model"));
         Assert.Equal("false", doc.Get("FSR", "Fsr4EnableWatermark"));
+        Assert.Equal("true", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("upscaler", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
         Assert.Equal("true", doc.Get("OptiFG", "HUDFix"));
         Assert.Equal("84", doc.Get("Framerate", "FramerateLimit"));
         Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
 
-        // Switching to OptiFG on a game with native DLSS-G must NOT force HUDFix=true (prevents DX12 hook crashes e.g. Nioh 3)
+        // Switching to OptiFG on a game with native DLSS-G must follow live toggle (Enabled=auto) and NOT force HUDFix=true (prevents DX12 hook crashes e.g. Nioh 3)
         var optiDlssg = lite.Config.Clone();
         optiDlssg.FgType = "optifg";
         optiDlssg.FramerateLimit = 0;
         PresetCatalog.ApplyToIni(doc, optiDlssg, gameHasNativeDlssG: true);
+        Assert.Equal("auto", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("dlssg", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("fsrfg", doc.Get("FrameGen", "FGOutput"));
         Assert.Equal("auto", doc.Get("OptiFG", "HUDFix"));
         Assert.Equal("true", doc.Get("V-Sync", "OverrideVsync"));
-        Assert.Equal("false", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("true", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("1", doc.Get("V-Sync", "SyncInterval"));
         Assert.Equal("auto", doc.Get("Framerate", "FramerateLimit"));
 
-        // OptiFG without native DLSS-G still enables HUDFix, and switching back to XeFG (DLSS-G) clears HUDFix cleanly
+        // OptiFG without native DLSS-G still enables FG + HUDFix, and switching back to XeFG (DLSS-G) clears HUDFix cleanly
         PresetCatalog.ApplyToIni(doc, optiDlssg, gameHasNativeDlssG: false);
+        Assert.Equal("true", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("upscaler", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("true", doc.Get("OptiFG", "HUDFix"));
 
         PresetCatalog.ApplyToIni(doc, lite.Config, gameHasNativeDlssG: true);
+        Assert.Equal("auto", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
         Assert.Equal("auto", doc.Get("OptiFG", "HUDFix"));
+
+        // VsyncMode = "auto" (and nofg preset) resets V-Sync keys to auto; "off" writes tearing SyncInterval=0
+        var lowLat = PresetCatalog.GetById("low-latency-upscale");
+        PresetCatalog.ApplyToIni(doc, lowLat.Config, gameHasNativeDlssG: true);
+        Assert.Equal("auto", doc.Get("V-Sync", "OverrideVsync"));
+        Assert.Equal("auto", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("auto", doc.Get("V-Sync", "SyncInterval"));
+
+        var vsyncOff = lite.Config.Clone();
+        vsyncOff.VsyncMode = "off";
+        PresetCatalog.ApplyToIni(doc, vsyncOff, gameHasNativeDlssG: true);
+        Assert.Equal("true", doc.Get("V-Sync", "OverrideVsync"));
+        Assert.Equal("false", doc.Get("V-Sync", "ForceVsync"));
+        Assert.Equal("0", doc.Get("V-Sync", "SyncInterval"));
 
         // Switching SR to XeSS clears Fsr4Model instead of leaving Lite/INT8 behind
         var xessCfg = PresetCatalog.GetById("xess-antishimmer").Config;

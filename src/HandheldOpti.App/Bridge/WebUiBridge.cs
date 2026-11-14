@@ -233,6 +233,7 @@ public sealed class WebUiBridge
                 "minimizeToTray" => InvokeUiAction(() => RequestMinimizeToTray?.Invoke()),
                 "runAutoInjectNow" => await RunBackgroundAutoInjectAsync(),
                 "expandPagefile" => await ExpandPagefileAsync(),
+                "enableWindowedVrr" => EnableWindowedVrr(),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -265,12 +266,66 @@ public sealed class WebUiBridge
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             memoryHealth = HandheldOpti.App.Native.Win32Interop.GetSystemMemoryHealth(),
+            vrrWindowedEnabled = IsWindowedVrrEnabled(),
             hardwareProfile = new
             {
                 deviceName = "GPD Win 5 / Windows 掌机",
                 recommendedArch = "AMD Strix Halo · RDNA 3.5",
                 menuKeyHint = "L4/R4 推荐绑定 Ctrl+Alt+O / Ctrl+Alt+I"
             }
+        };
+    }
+
+    private static bool IsWindowedVrrEnabled()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\DirectX\UserGpuPreferences", writable: false);
+            var raw = key?.GetValue("DirectXUserGlobalSettings") as string;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            return raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(token => string.Equals(token, "VRROptimizeEnable=1", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private object EnableWindowedVrr()
+    {
+        const string subKey = @"Software\Microsoft\DirectX\UserGpuPreferences";
+        using var key = Registry.CurrentUser.CreateSubKey(subKey, writable: true)
+            ?? throw new InvalidOperationException("无法打开 DirectX 图形首选项注册表项。");
+
+        var existingRaw = key.GetValue("DirectXUserGlobalSettings") as string ?? string.Empty;
+        var preserved = existingRaw
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(t =>
+                !t.StartsWith("VRROptimizeEnable=", StringComparison.OrdinalIgnoreCase) &&
+                !t.StartsWith("SwapEffectUpgradeEnable=", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var tokens = new List<string>
+        {
+            "VRROptimizeEnable=1",
+            "SwapEffectUpgradeEnable=1"
+        };
+        tokens.AddRange(preserved);
+
+        var updatedValue = string.Join(";", tokens) + ";";
+        key.SetValue("DirectXUserGlobalSettings", updatedValue, RegistryValueKind.String);
+        BroadcastStateSnapshot();
+
+        return new
+        {
+            ok = true,
+            vrrWindowedEnabled = true,
+            message = "已开启 Win11 窗口化可变刷新率 (VRR) 与翻转模型优化，重开游戏生效。"
         };
     }
 

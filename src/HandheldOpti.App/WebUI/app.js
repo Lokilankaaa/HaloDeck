@@ -38,7 +38,8 @@
       shortcutKeyHex: "0x2D",
       enableFsr4Int8Hint: true,
       fsr4Watermark: false,
-      framerateLimit: 0
+      framerateLimit: 0,
+      vsyncMode: "on"
     },
     advancedOpen: false,
     searchQuery: "",
@@ -294,7 +295,7 @@
       : `<span class="pill-badge">原生状态</span>`;
 
     const quickTargets = games.slice(0, 4);
-    const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto";
+    const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
     const kernelShort = kernel.slot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4";
 
     return `
@@ -422,7 +423,7 @@
               <div class="cw-row">
                 <div class="cw-row-copy">
                   <span class="cw-row-title">帧生成技术 (Frame Gen)</span>
-                  <span class="cw-row-sub">原生带 DLSS-G 游戏（如仁王3）请用 XeFG（最稳防崩溃）；无 DLSS-G 游戏可选 OptiFG</span>
+                  <span class="cw-row-sub">仁王3 等原生 DLSS-G 游戏请选 XeFG（随游戏内帧生成开关热启停）；无 DLSS-G 游戏可选 OptiFG；配合小黄鸭请选关闭插帧</span>
                 </div>
                 ${renderSegmented("data-fg-type", [
                   { value: "xefg", label: "XeFG 帧生成" },
@@ -434,13 +435,13 @@
               <div class="cw-row">
                 <div class="cw-row-copy">
                   <span class="cw-row-title">平滑锁帧省电 (Reflex / XeLL)</span>
-                  <span class="cw-row-sub">锁帧留出 GPU 余量可消除插帧顿挫并显著降功耗（120Hz 屏推荐 84 或 90）</span>
+                  <span class="cw-row-sub">120Hz 屏开窗口化 VRR 推荐 90/116；未开 VRR 建议不限帧或 60 整除防抖动</span>
                 </div>
                 ${renderSegmented("data-fps-limit", [
                   { value: "0", label: "不限帧" },
-                  { value: "72", label: "72 帧" },
-                  { value: "84", label: "84 帧" },
-                  { value: "90", label: "90 帧" }
+                  { value: "60", label: "60 帧" },
+                  { value: "90", label: "90 帧" },
+                  { value: "116", label: "116 (VRR)" }
                 ], String(cfg.framerateLimit || 0))}
               </div>
 
@@ -454,10 +455,17 @@
 
               <div class="cw-row">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">FSR 4.1.2 左上角验证水印</span>
-                  <span class="cw-row-sub">调试开关：开启后可在游戏画面直观确认 FSR 4 模型版本</span>
+                  <span class="cw-row-title">画面防撕裂同步 (V-Sync / VRR)</span>
+                  <span class="cw-row-sub">${snap?.vrrWindowedEnabled ? "已启用翻转防撕裂（同小黄鸭无撕裂）· Win11 窗口化 VRR 已开启" : "消除插帧撕裂（同小黄鸭）；检测到 Win11 窗口化 VRR 未开启，无边框易卡顿"}</span>
                 </div>
-                ${renderSwitch("swWatermark", !!cfg.fsr4Watermark)}
+                <div class="comp-actions">
+                  ${!snap?.vrrWindowedEnabled ? `<button id="btnEnableVrr" class="btn btn-sm" data-focusable="true">开启 VRR</button>` : ""}
+                  ${renderSegmented("data-vsync-mode", [
+                    { value: "on", label: "防撕裂" },
+                    { value: "auto", label: "跟随游戏" },
+                    { value: "off", label: "强制关" }
+                  ], cfg.vsyncMode || "on", "compact")}
+                </div>
               </div>
             </div>
           </div>
@@ -498,6 +506,14 @@
                     { value: "version.dll", label: "version.dll" },
                     { value: "winmm.dll", label: "winmm.dll" }
                   ], cfg.proxyDllName, "compact")}
+                </div>
+
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">FSR 4.1.2 左上角验证水印</span>
+                    <span class="cw-row-sub">调试开关：开启后可在游戏画面直观确认 FSR 4 模型版本</span>
+                  </div>
+                  ${renderSwitch("swWatermark", !!cfg.fsr4Watermark)}
                 </div>
 
                 <div class="cw-row">
@@ -848,13 +864,13 @@
           <div class="qam-field">
             <div class="qam-field-head">
               <span>平滑锁帧省电</span>
-              <span class="qam-field-hint">防满载顿挫</span>
+              <span class="qam-field-hint">开VRR选90/116 · 关VRR选60</span>
             </div>
             ${renderSegmented("data-fps-limit", [
               { value: "0", label: "不限" },
-              { value: "72", label: "72" },
-              { value: "84", label: "84" },
-              { value: "90", label: "90" }
+              { value: "60", label: "60" },
+              { value: "90", label: "90" },
+              { value: "116", label: "116" }
             ], String(cfg.framerateLimit || 0), "compact")}
           </div>
 
@@ -882,6 +898,18 @@
       bodyHtml = `
         ${headerPill}
         <div class="cw-group">
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>画面防撕裂 (V-Sync)</span>
+              <span class="qam-field-hint">防撕裂 = SyncInterval 1</span>
+            </div>
+            ${renderSegmented("data-vsync-mode", [
+              { value: "on", label: "防撕裂" },
+              { value: "auto", label: "跟随" },
+              { value: "off", label: "强制关" }
+            ], cfg.vsyncMode || "on", "compact")}
+          </div>
+
           <div class="qam-field">
             <div class="qam-field-head">
               <span>插帧运动源 (FGInput)</span>
@@ -1047,6 +1075,28 @@
         state.config.framerateLimit = parseInt(el.dataset.fpsLimit, 10) || 0;
         render();
       });
+    });
+
+    document.querySelectorAll("[data-vsync-mode]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        state.config.vsyncMode = el.dataset.vsyncMode;
+        render();
+      });
+    });
+
+    document.getElementById("btnEnableVrr")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("enableWindowedVrr", {});
+        if (state.snapshot) {
+          state.snapshot.vrrWindowedEnabled = true;
+        }
+        showToast(res?.message || "已开启窗口化 VRR", "success");
+        render();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
     });
 
     document.querySelectorAll("[data-fg-input]").forEach((el) => {
