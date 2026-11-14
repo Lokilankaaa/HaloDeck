@@ -369,4 +369,230 @@ public static class PresetCatalog
             }
         }
     }
+
+    public static OptiScalerConfig ReadConfigFromIni(IniDocument ini, OptiScalerConfig? seed = null)
+    {
+        var cfg = seed?.Clone() ?? new OptiScalerConfig();
+
+        var dx12 = ini.Get("Upscalers", "Dx12Upscaler")?.Trim();
+        var dx11 = ini.Get("Upscalers", "Dx11Upscaler")?.Trim();
+        var vk = ini.Get("Upscalers", "VulkanUpscaler")?.Trim();
+        if (!string.IsNullOrWhiteSpace(dx12)) cfg.Dx12Upscaler = dx12;
+        if (!string.IsNullOrWhiteSpace(dx11)) cfg.Dx11Upscaler = dx11;
+        if (!string.IsNullOrWhiteSpace(vk)) cfg.VulkanUpscaler = vk;
+
+        var dx12Lower = (dx12 ?? cfg.Dx12Upscaler).Trim().ToLowerInvariant();
+        var fsr4Support = ini.Get("FSR", "Fsr4GpuSupport")?.Trim().ToLowerInvariant();
+        var fsr4Model = ini.Get("FSR", "Fsr4Model")?.Trim().ToLowerInvariant();
+        var fsr4ForceInt8 = ini.Get("FSR", "Fsr4ForceEnableInt8")?.Trim().ToLowerInvariant();
+
+        if (dx12Lower is "xess" or "xess_12")
+        {
+            cfg.SrMode = "xess";
+            cfg.EnableFsr4Int8Hint = false;
+        }
+        else if (dx12Lower is "ffx" or "ffx_12" or "fsr31" or "fsr31_12" or "auto" or "")
+        {
+            if (fsr4Support is not null)
+            {
+                if (fsr4Support is "0" or "false")
+                {
+                    cfg.SrMode = "fsr31";
+                    cfg.EnableFsr4Int8Hint = false;
+                }
+                else if (fsr4Model == "3" || fsr4Support == "4")
+                {
+                    cfg.SrMode = "fsr4_int8_lite";
+                    cfg.EnableFsr4Int8Hint = true;
+                }
+                else if (fsr4Support is "1" or "2" or "3" or "true" ||
+                         fsr4Model is "0" or "1" or "2" or "4" or "5")
+                {
+                    cfg.SrMode = "fsr4_int8";
+                    cfg.EnableFsr4Int8Hint = true;
+                }
+            }
+            else if (fsr4ForceInt8 is not null)
+            {
+                if (fsr4ForceInt8 == "true")
+                {
+                    cfg.SrMode = string.Equals(cfg.SrMode, "fsr4_int8_lite", StringComparison.OrdinalIgnoreCase)
+                        ? "fsr4_int8_lite"
+                        : "fsr4_int8";
+                    cfg.EnableFsr4Int8Hint = true;
+                }
+                else if (fsr4ForceInt8 == "false")
+                {
+                    cfg.SrMode = "fsr31";
+                    cfg.EnableFsr4Int8Hint = false;
+                }
+            }
+        }
+        else
+        {
+            cfg.SrMode = dx12Lower;
+        }
+
+        if (TryParseIniBool(ini.Get("FSR", "Fsr4EnableWatermark"), out var watermark))
+        {
+            cfg.Fsr4Watermark = watermark;
+        }
+
+        var fgEnabled = ini.Get("FrameGen", "Enabled")?.Trim().ToLowerInvariant();
+        var fgInput = ini.Get("FrameGen", "FGInput")?.Trim().ToLowerInvariant();
+        var fgOutput = ini.Get("FrameGen", "FGOutput")?.Trim().ToLowerInvariant();
+
+        if (fgEnabled == "false" || fgOutput == "nofg" || fgInput == "nofg")
+        {
+            cfg.FgType = "nofg";
+        }
+        else if (fgOutput == "nukems" || fgInput == "nukems")
+        {
+            cfg.FgType = "nukems";
+        }
+        else if (fgOutput == "xefg")
+        {
+            cfg.FgType = "xefg";
+        }
+        else if (fgOutput is "fsrfg" or "optifg")
+        {
+            cfg.FgType = "optifg";
+        }
+
+        if (fgInput is "dlssg" or "upscaler" &&
+            (seed is null || !string.Equals(seed.FgInputMode, "auto", StringComparison.OrdinalIgnoreCase)))
+        {
+            cfg.FgInputMode = fgInput;
+        }
+
+        var overrideVsync = ini.Get("V-Sync", "OverrideVsync")?.Trim().ToLowerInvariant();
+        var forceVsync = ini.Get("V-Sync", "ForceVsync")?.Trim().ToLowerInvariant();
+        if (overrideVsync == "true" && forceVsync == "true")
+        {
+            cfg.VsyncMode = "on";
+        }
+        else if (overrideVsync == "true" && forceVsync == "false")
+        {
+            cfg.VsyncMode = "off";
+        }
+        else if (overrideVsync is not null)
+        {
+            cfg.VsyncMode = "auto";
+        }
+
+        var fpsStr = ini.Get("Framerate", "FramerateLimit")?.Trim();
+        if (int.TryParse(fpsStr, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var fps) && fps >= 0)
+        {
+            cfg.FramerateLimit = fps;
+        }
+        else if (string.Equals(fpsStr, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.FramerateLimit = 0;
+        }
+
+        var shortcutKey = ini.Get("Menu", "ShortcutKey")?.Trim();
+        if (!string.IsNullOrWhiteSpace(shortcutKey) && !string.Equals(shortcutKey, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.ShortcutKeyHex = shortcutKey;
+        }
+
+        if (TryParseIniBool(ini.Get("Plugins", "LoadAsiPlugins"), out var asiPlugins))
+        {
+            cfg.EnableOptiPatcher = asiPlugins;
+        }
+
+        if (TryParseIniBool(ini.Get("NvApi", "OverrideNvapiDll"), out var nvapi))
+        {
+            cfg.EnableFakenvapi = nvapi;
+        }
+
+        if (TryParseIniBool(ini.Get("Spoofing", "StreamlineSpoofing"), out var streamline))
+        {
+            cfg.StreamlineSpoofing = streamline;
+        }
+
+        var dxgi = ini.Get("Spoofing", "Dxgi")?.Trim().ToLowerInvariant();
+        if (dxgi == "false")
+        {
+            cfg.SpoofDxgi = false;
+        }
+        else if (dxgi is "true" or "auto")
+        {
+            cfg.SpoofDxgi = true;
+        }
+
+        var vramStr = ini.Get("Spoofing", "DxgiVRAM")?.Trim();
+        if (int.TryParse(vramStr, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var vram) && vram > 0)
+        {
+            cfg.DxgiVramGb = vram;
+        }
+
+        var vendor = ini.Get("Spoofing", "SpoofedVendorId")?.Trim();
+        if (!string.IsNullOrWhiteSpace(vendor) && !string.Equals(vendor, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.SpoofedVendorId = vendor;
+        }
+
+        var device = ini.Get("Spoofing", "SpoofedDeviceId")?.Trim();
+        if (!string.IsNullOrWhiteSpace(device) && !string.Equals(device, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.SpoofedDeviceId = device;
+        }
+
+        var gpuName = ini.Get("Spoofing", "SpoofedGPUName")?.Trim();
+        if (!string.IsNullOrWhiteSpace(gpuName) && !string.Equals(gpuName, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.SpoofedGpuName = gpuName;
+        }
+
+        return cfg;
+    }
+
+    public static string MatchPresetId(OptiScalerConfig config)
+    {
+        var effectiveSr = ResolveEffectiveSrMode(config);
+        var fg = (config.FgType ?? "xefg").Trim().ToLowerInvariant();
+        if (fg == "fsrfg") fg = "optifg";
+        var vsync = (config.VsyncMode ?? "on").Trim().ToLowerInvariant();
+        var vendor = (config.SpoofedVendorId ?? "auto").Trim().ToLowerInvariant();
+
+        foreach (var preset in GetPresets())
+        {
+            var pc = preset.Config;
+            if (effectiveSr == ResolveEffectiveSrMode(pc) &&
+                fg == pc.FgType.Trim().ToLowerInvariant() &&
+                vsync == pc.VsyncMode.Trim().ToLowerInvariant() &&
+                config.FramerateLimit == pc.FramerateLimit &&
+                config.EnableOptiPatcher == pc.EnableOptiPatcher &&
+                config.EnableFakenvapi == pc.EnableFakenvapi &&
+                config.SpoofDxgi == pc.SpoofDxgi &&
+                config.DxgiVramGb == pc.DxgiVramGb &&
+                vendor == pc.SpoofedVendorId.Trim().ToLowerInvariant() &&
+                string.IsNullOrWhiteSpace(config.SpoofedGpuName) &&
+                config.StreamlineSpoofing == pc.StreamlineSpoofing &&
+                config.Fsr4Watermark == pc.Fsr4Watermark)
+            {
+                return preset.Id;
+            }
+        }
+
+        return "custom";
+    }
+
+    private static bool TryParseIniBool(string? raw, out bool value)
+    {
+        var normalized = raw?.Trim().ToLowerInvariant();
+        if (normalized is "true" or "1")
+        {
+            value = true;
+            return true;
+        }
+        if (normalized is "false" or "0")
+        {
+            value = false;
+            return true;
+        }
+        value = false;
+        return false;
+    }
 }

@@ -65,6 +65,7 @@ public sealed class InjectionStatus
     public bool HasFakenvapi { get; set; }
     public DateTimeOffset? InjectedAtUtc { get; set; }
     public string? LastLogSnippet { get; set; }
+    public OptiScalerConfig? AppliedConfig { get; set; }
 }
 
 public sealed class GameEntry

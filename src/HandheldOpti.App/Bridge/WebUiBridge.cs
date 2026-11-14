@@ -70,7 +70,7 @@ public sealed class WebUiBridge
             BroadcastEvent("gamepadStatus", new { connectedCount = count });
 
         _inputHub.UiGamepadAction += action =>
-            BroadcastEvent("gamepadAction", new { action });
+            BroadcastEvent("gamepadAction", new { action, target = _inputHub.ActiveUiTarget });
 
         _inputHub.GamepadComboRecorded += buttons =>
             BroadcastEvent("gamepadComboRecorded", new { buttons });
@@ -136,6 +136,20 @@ public sealed class WebUiBridge
         };
 
         core.Navigate($"https://app.handheldopti.local/index.html?mode={mode}");
+    }
+
+    public GameEntry? ActiveGameSnapshot => _runningGame ?? _cachedGames.FirstOrDefault();
+
+    public void RefreshActiveGameForOverlay()
+    {
+        var current = _runningTracker.Poll(_cachedGames);
+        var target = current ?? _cachedGames.FirstOrDefault();
+        if (target is not null)
+        {
+            _libraryService.RefreshInjectionStatus(target);
+        }
+        _runningGame = current;
+        BroadcastStateSnapshot();
     }
 
     public void PollRunningAndAutoInjectTick(bool runAutoInjectPass)
@@ -384,6 +398,7 @@ public sealed class WebUiBridge
         var game = _cachedGames.FirstOrDefault(g => string.Equals(g.Id, gameId, StringComparison.OrdinalIgnoreCase));
         if (game is not null)
         {
+            _libraryService.RefreshInjectionStatus(game);
             _runningTracker.SelectManualFallbackGame(game);
             _runningGame = _runningTracker.LastActiveGame;
             BroadcastStateSnapshot();

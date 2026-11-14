@@ -184,4 +184,81 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("0", doc.Get("FSR", "Fsr4GpuSupport"));
         Assert.Equal("auto", doc.Get("FSR", "Fsr4Model"));
     }
+
+    [Fact]
+    public void ReadConfigFromIni_And_MatchPresetId_RoundTripsLiveIniState()
+    {
+        var iniTemplate = """
+            [Upscalers]
+            Dx12Upscaler=auto
+            Dx11Upscaler=auto
+            VulkanUpscaler=auto
+
+            [FSR]
+            UpscalerIndex=0
+            Fsr4GpuSupport=auto
+            Fsr4Model=auto
+            Fsr4EnableWatermark=false
+
+            [FrameGen]
+            Enabled=auto
+            FGInput=auto
+            FGOutput=auto
+
+            [V-Sync]
+            OverrideVsync=auto
+            ForceVsync=auto
+            SyncInterval=auto
+
+            [Framerate]
+            FramerateLimit=auto
+
+            [Menu]
+            ShortcutKey=0x2D
+
+            [Plugins]
+            LoadAsiPlugins=true
+
+            [NvApi]
+            OverrideNvapiDll=true
+
+            [Spoofing]
+            StreamlineSpoofing=true
+            Dxgi=auto
+            DxgiVRAM=auto
+            """;
+
+        // 1. handheld-lite-xefg round-trip
+        var docLite = IniDocument.Parse(iniTemplate);
+        var litePreset = PresetCatalog.GetById("handheld-lite-xefg").Config;
+        PresetCatalog.ApplyToIni(docLite, litePreset, gameHasNativeDlssG: true);
+
+        var parsedLite = PresetCatalog.ReadConfigFromIni(docLite, litePreset);
+        Assert.Equal("fsr4_int8_lite", parsedLite.SrMode);
+        Assert.Equal("xefg", parsedLite.FgType);
+        Assert.Equal("on", parsedLite.VsyncMode);
+        Assert.Equal("handheld-lite-xefg", PresetCatalog.MatchPresetId(parsedLite));
+
+        // 2. Custom override in INI (FPS limit 90 + ForceVsync=false -> custom)
+        docLite.Set("Framerate", "FramerateLimit", "90");
+        docLite.Set("V-Sync", "OverrideVsync", "true");
+        docLite.Set("V-Sync", "ForceVsync", "false");
+        docLite.Set("V-Sync", "SyncInterval", "0");
+
+        var parsedCustom = PresetCatalog.ReadConfigFromIni(docLite, litePreset);
+        Assert.Equal(90, parsedCustom.FramerateLimit);
+        Assert.Equal("off", parsedCustom.VsyncMode);
+        Assert.Equal("custom", PresetCatalog.MatchPresetId(parsedCustom));
+
+        // 3. low-latency-upscale round-trip (NoFG + VsyncMode=auto)
+        var docNoFg = IniDocument.Parse(iniTemplate);
+        var lowLatPreset = PresetCatalog.GetById("low-latency-upscale").Config;
+        PresetCatalog.ApplyToIni(docNoFg, lowLatPreset, gameHasNativeDlssG: false);
+
+        var parsedLowLat = PresetCatalog.ReadConfigFromIni(docNoFg, lowLatPreset);
+        Assert.Equal("fsr4_int8", parsedLowLat.SrMode);
+        Assert.Equal("nofg", parsedLowLat.FgType);
+        Assert.Equal("auto", parsedLowLat.VsyncMode);
+        Assert.Equal("low-latency-upscale", PresetCatalog.MatchPresetId(parsedLowLat));
+    }
 }

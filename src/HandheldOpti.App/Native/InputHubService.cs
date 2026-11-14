@@ -22,8 +22,10 @@ public sealed class InputHubService : IDisposable
     private XInputButtons _prevButtons;
     private bool _qamComboArmed = true;
     private bool _insertComboArmed = true;
+    private volatile bool _suppressNavigationUntilRelease;
     private bool _recordingGamepadCombo;
     private XInputButtons _recordedMask;
+    private volatile string? _activeUiTarget;
 
     public event Action? ToggleQamRequested;
     public event Action? ToggleConsoleRequested;
@@ -33,7 +35,12 @@ public sealed class InputHubService : IDisposable
     public event Action<List<string>>? GamepadComboRecorded;
 
     public int ConnectedControllerCount { get; private set; }
-    public bool IsUiActive { get; set; }
+    public string? ActiveUiTarget
+    {
+        get => _activeUiTarget;
+        set => _activeUiTarget = value;
+    }
+    public bool IsUiActive => !string.IsNullOrEmpty(_activeUiTarget);
 
     public InputHubService(AppSettings settings)
     {
@@ -164,6 +171,8 @@ public sealed class InputHubService : IDisposable
                             if (_qamComboArmed)
                             {
                                 _qamComboArmed = false;
+                                _suppressNavigationUntilRelease = true;
+                                _directionRepeatAt.Clear();
                                 ToggleQamRequested?.Invoke();
                             }
                         }
@@ -182,6 +191,8 @@ public sealed class InputHubService : IDisposable
                             if (_insertComboArmed)
                             {
                                 _insertComboArmed = false;
+                                _suppressNavigationUntilRelease = true;
+                                _directionRepeatAt.Clear();
                                 SendInsertToGameRequested?.Invoke();
                             }
                         }
@@ -191,8 +202,13 @@ public sealed class InputHubService : IDisposable
                         }
                     }
 
+                    if (buttons == XInputButtons.None)
+                    {
+                        _suppressNavigationUntilRelease = false;
+                    }
+
                     // 3. When HandheldOpti UI (MainWindow or QAM) is active, translate buttons + sticks to UI navigation
-                    if (IsUiActive)
+                    if (IsUiActive && !_suppressNavigationUntilRelease)
                     {
                         var pressed = buttons & ~_prevButtons;
                         DispatchButtonAction(pressed, XInputButtons.A, "A");
@@ -228,6 +244,8 @@ public sealed class InputHubService : IDisposable
                 {
                     ConnectedControllerCount = 0;
                     _prevButtons = XInputButtons.None;
+                    _suppressNavigationUntilRelease = false;
+                    _directionRepeatAt.Clear();
                     GamepadCountChanged?.Invoke(0);
                 }
 

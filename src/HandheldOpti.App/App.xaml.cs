@@ -278,9 +278,23 @@ public partial class App : System.Windows.Application
     private void UpdateUiActiveFlag()
     {
         if (_inputHub is null) return;
-        bool mainActive = _mainWindow is not null && _mainWindow.IsVisible && _mainWindow.IsActive;
-        bool qamActive = _qamWindow is not null && _qamWindow.IsVisible && _qamWindow.IsActive;
-        _inputHub.IsUiActive = mainActive || qamActive;
+        if (_qamWindow is not null && _qamWindow.IsVisible)
+        {
+            _inputHub.ActiveUiTarget = "qam";
+            return;
+        }
+
+        if (_mainWindow is not null && _mainWindow.IsVisible)
+        {
+            var mainHwnd = new WindowInteropHelper(_mainWindow).Handle;
+            if (_mainWindow.IsActive || Win32Interop.IsWindowOrChildForeground(mainHwnd))
+            {
+                _inputHub.ActiveUiTarget = "console";
+                return;
+            }
+        }
+
+        _inputHub.ActiveUiTarget = null;
     }
 
     private void SetupTrayIcon()
@@ -418,13 +432,18 @@ public partial class App : System.Windows.Application
                 """);
             using var tuneDoc = JsonDocument.Parse(tuneInfoJson);
             var tuneRoot = tuneDoc.RootElement;
+            var activeSnap = bridge.ActiveGameSnapshot;
+            var expectedCfg = (activeSnap?.Injection.IsInjected == true && activeSnap.Injection.AppliedConfig is not null)
+                ? activeSnap.Injection.AppliedConfig
+                : PresetCatalog.GetById("strix-halo-quality").Config;
+
             bool tuneOk = runningReady &&
                           tuneRoot.GetProperty("presetCount").GetInt32() == 4 &&
                           tuneRoot.GetProperty("srPills").GetInt32() == 4 &&
                           tuneRoot.GetProperty("fgPills").GetInt32() == 3 &&
                           tuneRoot.GetProperty("selectCount").GetInt32() == 0 &&
-                          tuneRoot.GetProperty("srActive").GetString() == "fsr4_int8" &&
-                          tuneRoot.GetProperty("fgActive").GetString() == "xefg" &&
+                          tuneRoot.GetProperty("srActive").GetString() == expectedCfg.SrMode &&
+                          tuneRoot.GetProperty("fgActive").GetString() == expectedCfg.FgType &&
                           tuneRoot.GetProperty("legendFits").GetBoolean();
             bool hasInspectBtn = tuneRoot.GetProperty("hasInspectBtn").GetBoolean();
             Record("tuneTabAndControlsFit", tuneOk, new
@@ -435,6 +454,8 @@ public partial class App : System.Windows.Application
                 selectCount = tuneRoot.GetProperty("selectCount").GetInt32(),
                 srActive = tuneRoot.GetProperty("srActive").GetString(),
                 fgActive = tuneRoot.GetProperty("fgActive").GetString(),
+                expectedSr = expectedCfg.SrMode,
+                expectedFg = expectedCfg.FgType,
                 legendFits = tuneRoot.GetProperty("legendFits").GetBoolean(),
                 hasInspectBtn
             });
@@ -542,7 +563,7 @@ public partial class App : System.Windows.Application
             {
                 qamDomReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelectorAll('.qam-rail-btn').length === 3 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('.qam-rail-btn').length === 3 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
                 await Task.Delay(250);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
                 await CapturePngAsync(qamCore, outputDir, "v2_05_qam_tune.png");

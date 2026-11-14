@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HandheldOpti.Core.Analysis;
+using HandheldOpti.Core.Config;
 using HandheldOpti.Core.Injection;
 using HandheldOpti.Core.Models;
 
@@ -96,16 +97,35 @@ public sealed class GameLibraryService
         var manifest = _injectionEngine.ReadManifest(game.TargetRenderDirectory);
         if (manifest is not null)
         {
+            OptiScalerConfig? liveConfig = manifest.AppliedConfig?.Clone();
+            var iniPath = Path.Combine(game.TargetRenderDirectory, "OptiScaler.ini");
+            if (File.Exists(iniPath))
+            {
+                try
+                {
+                    liveConfig = PresetCatalog.ReadConfigFromIni(IniDocument.Load(iniPath), manifest.AppliedConfig);
+                }
+                catch
+                {
+                    // Fall back to manifest.AppliedConfig if OptiScaler.ini cannot be read
+                }
+            }
+
+            var effectivePresetId = liveConfig is not null
+                ? PresetCatalog.MatchPresetId(liveConfig)
+                : manifest.PresetId;
+
             game.Injection = new InjectionStatus
             {
                 IsInjected = true,
                 ProxyDllName = manifest.ProxyDllName,
-                PresetId = manifest.PresetId,
+                PresetId = string.IsNullOrWhiteSpace(effectivePresetId) ? manifest.PresetId : effectivePresetId,
                 OptiScalerVersion = manifest.OptiScalerVersion,
                 HasOptiPatcher = manifest.HasOptiPatcher,
                 HasFakenvapi = manifest.HasFakenvapi,
                 InjectedAtUtc = manifest.InjectedAtUtc,
-                LastLogSnippet = InjectionEngine.ReadOptiScalerLogSnippet(game.TargetRenderDirectory)
+                LastLogSnippet = InjectionEngine.ReadOptiScalerLogSnippet(game.TargetRenderDirectory),
+                AppliedConfig = liveConfig
             };
         }
         else

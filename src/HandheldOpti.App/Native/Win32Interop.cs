@@ -36,10 +36,26 @@ internal static class Win32Interop
     public static extern bool SetForegroundWindow(nint hWnd);
 
     [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsChild(nint hWndParent, nint hWnd);
+
+    [DllImport("user32.dll")]
     public static extern bool IsWindow(nint hWnd);
 
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -117,6 +133,52 @@ internal static class Win32Interop
         {
             // Ignore on older Windows builds
         }
+    }
+
+    public static bool ForceForegroundOverlay(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return false;
+
+        const uint SWP_NOMOVE = 0x0002;
+        const uint SWP_NOSIZE = 0x0001;
+        const uint SWP_SHOWWINDOW = 0x0040;
+        nint hwndTopMost = new(-1);
+
+        SetWindowPos(hwnd, hwndTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+        var fg = GetForegroundWindow();
+        uint currentTid = GetCurrentThreadId();
+        uint fgTid = fg != 0 ? GetWindowThreadProcessId(fg, out _) : 0;
+        bool attached = false;
+
+        try
+        {
+            if (fgTid != 0 && fgTid != currentTid)
+            {
+                attached = AttachThreadInput(currentTid, fgTid, true);
+            }
+
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentTid, fgTid, false);
+            }
+        }
+
+        SetWindowPos(hwnd, hwndTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        return IsWindowOrChildForeground(hwnd);
+    }
+
+    public static bool IsWindowOrChildForeground(nint hwnd)
+    {
+        if (hwnd == 0) return false;
+        var fg = GetForegroundWindow();
+        if (fg == 0) return false;
+        return fg == hwnd || IsChild(hwnd, fg);
     }
 
     public static ForegroundProcessSnapshot? GetForegroundProcessSnapshot()

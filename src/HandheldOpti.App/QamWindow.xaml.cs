@@ -44,11 +44,19 @@ public partial class QamWindow : Window
             _previousForegroundHwnd = fg;
         }
 
+        _bridge.RefreshActiveGameForOverlay();
+
         PositionOnRightEdge();
+        Topmost = true;
         Show();
         Activate();
+        Win32Interop.ForceForegroundOverlay(new WindowInteropHelper(this).Handle);
 
         await (_webViewInitTask ??= InitializeWebViewCoreAsync());
+        if (!IsVisible) return;
+
+        Win32Interop.ForceForegroundOverlay(new WindowInteropHelper(this).Handle);
+        QamWebView.Focus();
     }
 
     private async Task InitializeWebViewCoreAsync()

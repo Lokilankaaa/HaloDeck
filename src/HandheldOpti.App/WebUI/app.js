@@ -13,34 +13,38 @@
   const CONSOLE_TABS = ["tune", "library", "components", "shortcuts"];
   const QAM_TABS = ["tune", "compat", "games"];
 
+  const DEFAULT_CONFIG = {
+    proxyDllName: "auto",
+    srMode: "fsr4_int8",
+    dx12Upscaler: "ffx",
+    dx11Upscaler: "ffx_12",
+    vulkanUpscaler: "ffx_12",
+    fgType: "xefg",
+    fgInputMode: "auto",
+    enableOptiPatcher: true,
+    enableFakenvapi: true,
+    enableCustomDlls: true,
+    spoofDxgi: true,
+    dxgiVramGb: 10,
+    spoofedVendorId: "auto",
+    spoofedDeviceId: "auto",
+    spoofedGpuName: "",
+    streamlineSpoofing: true,
+    shortcutKeyHex: "0x2D",
+    enableFsr4Int8Hint: true,
+    fsr4Watermark: false,
+    framerateLimit: 0,
+    vsyncMode: "on"
+  };
+
   const state = {
     tab: "tune",
     qamTab: "tune",
     snapshot: null,
+    activeGameId: null,
     selectedPresetId: "strix-halo-quality",
-    config: {
-      proxyDllName: "auto",
-      srMode: "fsr4_int8",
-      dx12Upscaler: "ffx",
-      dx11Upscaler: "ffx_12",
-      vulkanUpscaler: "ffx_12",
-      fgType: "xefg",
-      fgInputMode: "auto",
-      enableOptiPatcher: true,
-      enableFakenvapi: true,
-      enableCustomDlls: true,
-      spoofDxgi: true,
-      dxgiVramGb: 10,
-      spoofedVendorId: "auto",
-      spoofedDeviceId: "auto",
-      spoofedGpuName: "",
-      streamlineSpoofing: true,
-      shortcutKeyHex: "0x2D",
-      enableFsr4Int8Hint: true,
-      fsr4Watermark: false,
-      framerateLimit: 0,
-      vsyncMode: "on"
-    },
+    _userModifiedConfig: false,
+    config: { ...DEFAULT_CONFIG },
     advancedOpen: false,
     searchQuery: "",
     libraryFilter: "all",
@@ -87,26 +91,74 @@
     } else if (name === "componentProgress" && data?.slot) {
       state.progressBySlot[data.slot] = data.percent;
       if (state.tab === "components") render();
-    } else if (name === "gamepadStatus" && typeof data?.connected === "number") {
-      updateControllerChip(data.connected);
+    } else if (name === "gamepadStatus") {
+      const count = typeof data?.connectedCount === "number" ? data.connectedCount : data?.connected;
+      if (typeof count === "number") updateControllerChip(count);
     } else if (name === "gamepadComboRecorded" && Array.isArray(data?.buttons)) {
       finishGamepadComboRecord(data.buttons);
     } else if (name === "gamepadAction" && data?.action) {
-      handleGamepadAction(data.action);
+      const expectedTarget = IS_QAM ? "qam" : "console";
+      if (!data.target || data.target === expectedTarget) {
+        handleGamepadAction(data.action);
+      }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
     }
   }
 
-  function applySnapshot(snap) {
-    state.snapshot = snap;
-    if (snap?.settings?.defaultPresetId && !state._userModifiedConfig) {
-      const p = (snap.presets || []).find((x) => x.id === snap.settings.defaultPresetId);
-      if (p) {
-        state.selectedPresetId = p.id;
-        state.config = { ...state.config, ...p.config };
+  function formatConfigSummary(cfg, compact = false) {
+    if (!cfg) return compact ? "已注入" : "OptiScaler 已生效";
+    const srLabels = compact
+      ? { fsr4_int8: "FSR4", fsr4_int8_lite: "4 Lite", xess: "XeSS", fsr31: "FSR3.1" }
+      : { fsr4_int8: "FSR 4.1.2", fsr4_int8_lite: "FSR 4.1.2 Lite", xess: "XeSS 2.0", fsr31: "FSR 3.1" };
+    const fgLabels = { xefg: "XeFG", optifg: "OptiFG", nukems: "Nukem", nofg: "无插帧" };
+    const sr = srLabels[cfg.srMode] || cfg.srMode || "FSR";
+    const fg = fgLabels[cfg.fgType] || cfg.fgType || "XeFG";
+    if (compact) {
+      const cap = cfg.framerateLimit > 0 ? `·${cfg.framerateLimit}` : "";
+      return `${sr}+${fg}${cap}`;
+    }
+    const parts = [sr, fg];
+    if (cfg.framerateLimit > 0) parts.push(`${cfg.framerateLimit}帧`);
+    if (cfg.vsyncMode === "on") parts.push("防撕裂");
+    else if (cfg.vsyncMode === "off") parts.push("关垂直同步");
+    return parts.join(" · ");
+  }
+
+  function syncConfigFromActiveGame(snap) {
+    const active = snap?.runningGame || snap?.activeInspectGame || (snap?.games || [])[0] || null;
+    const nextGameId = active?.id || null;
+    const gameChanged = nextGameId !== state.activeGameId;
+
+    if (gameChanged) {
+      state.activeGameId = nextGameId;
+      state._userModifiedConfig = false;
+    }
+
+    if (!gameChanged && state._userModifiedConfig) {
+      return;
+    }
+
+    if (active?.injection?.isInjected && active.injection.appliedConfig) {
+      state.config = { ...DEFAULT_CONFIG, ...active.injection.appliedConfig };
+      state.selectedPresetId = active.injection.presetId || "custom";
+    } else {
+      const presets = snap?.presets || [];
+      const defaultId = snap?.settings?.defaultPresetId;
+      const preset = presets.find((x) => x.id === defaultId) || presets[0];
+      if (preset) {
+        state.selectedPresetId = preset.id;
+        state.config = { ...DEFAULT_CONFIG, ...preset.config };
+      } else {
+        state.selectedPresetId = "strix-halo-quality";
+        state.config = { ...DEFAULT_CONFIG };
       }
     }
+  }
+
+  function applySnapshot(snap) {
+    state.snapshot = snap;
+    syncConfigFromActiveGame(snap);
     updateControllerChip(snap?.connectedControllers || 0);
     if (snap?.hardwareProfile?.deviceName) {
       const el = document.getElementById("deviceTag");
@@ -290,9 +342,10 @@
     const cfg = state.config;
 
     const inj = active?.injection;
+    const isUninjectedPreview = !inj?.isInjected && !state._userModifiedConfig;
     const injBadge = inj?.isInjected
-      ? `<span class="pill-badge blue">已注入 · ${esc(inj.presetId || "OptiScaler")}</span>`
-      : `<span class="pill-badge">原生状态</span>`;
+      ? `<span class="pill-badge blue">已注入 · ${esc(formatConfigSummary(inj.appliedConfig || cfg, true))}</span>`
+      : `<span class="pill-badge">原生未注入</span>`;
 
     const quickTargets = games.slice(0, 4);
     const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
@@ -386,7 +439,7 @@
               <span>主流预设方案 (${esc(kernelShort)})</span>
               <span>点击自动填入下方参数</span>
             </div>
-            <div class="preset-grid">
+            <div class="preset-grid ${isUninjectedPreview ? "uninjected-preview" : ""}">
               ${presets.map((p) => `
                 <button class="preset-card ${state.selectedPresetId === p.id ? "active" : ""}"
                         data-preset="${esc(p.id)}"
@@ -404,9 +457,9 @@
           <div>
             <div class="section-label">
               <span>超分辨率与帧生成设置</span>
-              <span>RDNA 3.5 主流组合：FSR 4.1.2 + XeFG</span>
+              <span>${isUninjectedPreview ? "当前原生未注入 · 虚线框为待注入默认预览" : `当前生效：${esc(formatConfigSummary(inj?.appliedConfig || cfg))}`}</span>
             </div>
-            <div class="cw-group">
+            <div class="cw-group ${isUninjectedPreview ? "uninjected-preview" : ""}">
               <div class="cw-row">
                 <div class="cw-row-copy">
                   <span class="cw-row-title">超分辨率模型 (SR)</span>
@@ -804,6 +857,8 @@
     const cfg = state.config;
     const inj = active?.injection;
 
+    const isUninjectedPreview = !inj?.isInjected && !state._userModifiedConfig;
+
     const headerPill = `
       <div class="qam-game-pill">
         ${active?.coverImageUrl
@@ -812,18 +867,23 @@
         <div class="qam-game-meta">
           <div class="qam-game-title">${esc(active?.title || "未选定目标游戏")}</div>
           <div class="qam-game-sub">
-            ${active?.isCurrentlyRunning ? "运行中" : "已就绪"} · ${inj?.isInjected ? "已注入 OptiScaler" : "原生状态"}
+            ${active?.isCurrentlyRunning ? "运行中" : "已就绪"} · ${inj?.isInjected ? `已注入 (${esc(formatConfigSummary(inj.appliedConfig || cfg, true))})` : "原生未注入"}
           </div>
         </div>
         <button id="btnQamOpenGames" class="btn btn-sm" data-focusable="true">切换</button>
       </div>
     `;
 
+    const statusBanner = inj?.isInjected
+      ? `<div id="qamStatusBanner" class="qam-status-banner injected"><span class="qam-status-dot"></span><span>当前已注入生效：${esc(formatConfigSummary(inj.appliedConfig || cfg))}${state._userModifiedConfig ? "（已改待应用）" : ""}</span></div>`
+      : `<div id="qamStatusBanner" class="qam-status-banner native"><span class="qam-status-dot"></span><span>${state._userModifiedConfig ? "已选参数（待点击注入生效）" : "当前原生未注入 · 下方虚线为默认待注入方案"}</span></div>`;
+
     let bodyHtml = "";
     if (state.qamTab === "tune") {
       bodyHtml = `
         ${headerPill}
-        <div class="preset-grid" style="grid-template-columns:1fr 1fr;gap:6px;">
+        ${statusBanner}
+        <div class="preset-grid ${isUninjectedPreview ? "uninjected-preview" : ""}" style="grid-template-columns:1fr 1fr;gap:6px;">
           ${presets.map((p) => `
             <button class="preset-card ${state.selectedPresetId === p.id ? "active" : ""}"
                     style="padding:7px 9px;"
@@ -835,7 +895,7 @@
           `).join("")}
         </div>
 
-        <div class="cw-group">
+        <div class="cw-group ${isUninjectedPreview ? "uninjected-preview" : ""}">
           <div class="qam-field">
             <div class="qam-field-head">
               <span>超分辨率 (SR)</span>
@@ -897,7 +957,8 @@
     } else if (state.qamTab === "compat") {
       bodyHtml = `
         ${headerPill}
-        <div class="cw-group">
+        ${statusBanner}
+        <div class="cw-group ${isUninjectedPreview ? "uninjected-preview" : ""}">
           <div class="qam-field">
             <div class="qam-field-head">
               <span>画面防撕裂 (V-Sync)</span>
@@ -956,9 +1017,9 @@
                     data-focusable="true">
               <div style="min-width:0;flex:1;">
                 <div class="qam-game-title">${esc(g.title)}</div>
-                <div class="qam-game-sub">${g.isCurrentlyRunning ? "正在运行" : g.engine} · ${g.injection?.isInjected ? "已注入" : "原生"}</div>
+                <div class="qam-game-sub">${g.isCurrentlyRunning ? "正在运行" : esc(g.engine)} · ${g.injection?.isInjected ? esc(formatConfigSummary(g.injection.appliedConfig || DEFAULT_CONFIG, true)) : "原生未注入"}</div>
               </div>
-              ${g.injection?.isInjected ? `<span class="pill-badge blue">已注入</span>` : ""}
+              ${g.injection?.isInjected ? `<span class="pill-badge blue">${esc(formatConfigSummary(g.injection.appliedConfig || DEFAULT_CONFIG, true))}</span>` : `<span class="pill-badge">原生</span>`}
             </button>
           `).join("")}
         </div>
@@ -1166,11 +1227,14 @@
     // Quick target switching
     document.querySelectorAll("[data-select-game]").forEach((el) => {
       el.addEventListener("click", async () => {
+        state._userModifiedConfig = false;
         await rpc("selectRunningFallback", { gameId: el.dataset.selectGame });
         if (IS_QAM) {
           state.qamTab = "tune";
-          render();
+          state.focusIndex = 0;
         }
+        syncConfigFromActiveGame(state.snapshot);
+        render();
       });
     });
 
@@ -1233,9 +1297,11 @@
 
     document.querySelectorAll("[data-open-game]").forEach((el) => {
       el.addEventListener("click", async () => {
+        state._userModifiedConfig = false;
         await rpc("selectRunningFallback", { gameId: el.dataset.openGame });
         state.tab = "tune";
         state.focusIndex = 0;
+        syncConfigFromActiveGame(state.snapshot);
         render();
       });
     });
@@ -1386,6 +1452,10 @@
         presetId: state.selectedPresetId,
         config: state.config
       });
+      if (res?.success) {
+        state._userModifiedConfig = false;
+        syncConfigFromActiveGame(state.snapshot);
+      }
       showToast(res?.message || "注入完成", res?.success ? "success" : "error");
     } catch (err) {
       showToast(err.message, "error");
@@ -1402,6 +1472,10 @@
     render();
     try {
       const res = await rpc("restoreGame", { gameId: active.id });
+      if (res?.success) {
+        state._userModifiedConfig = false;
+        syncConfigFromActiveGame(state.snapshot);
+      }
       showToast(res?.message || "已还原至纯净原版", res?.success ? "success" : "info");
     } catch (err) {
       showToast(err.message, "error");
@@ -1419,8 +1493,9 @@
       document.getElementById("modalTitle").textContent = `${active.title} · 注入配置与运行日志`;
       document.getElementById("modalSubtitle").textContent = `渲染目录：${active.targetRenderDirectory}`;
       const body = document.getElementById("modalBody");
-      const filesLine = data?.manifest?.deployedFiles?.length
-        ? `已部署文件 (${data.manifest.deployedFiles.length})：${data.manifest.deployedFiles.join(", ")}`
+      const deployed = data?.manifest?.createdFiles || data?.manifest?.deployedFiles || [];
+      const filesLine = deployed.length
+        ? `已部署文件 (${deployed.length})：${deployed.join(", ")}`
         : "当前尚未通过 HandheldOpti 写入注入清单。";
       body.innerHTML = `
         <div class="pill-badge ${data?.iniExists ? "blue" : ""}" style="align-self:flex-start">${esc(filesLine)}</div>
@@ -1482,35 +1557,70 @@
   function moveSpatial(dir) {
     const items = getFocusableItems();
     if (!items.length) return;
-    if (dir === "UP" || dir === "DOWN") {
-      state.focusIndex = (state.focusIndex + (dir === "DOWN" ? 1 : -1) + items.length) % items.length;
-      applySpatialFocus();
-      return;
-    }
 
     const curr = items[state.focusIndex] || items[0];
     const cr = curr.getBoundingClientRect();
     const cx = cr.left + cr.width / 2;
     const cy = cr.top + cr.height / 2;
 
-    let bestIdx = -1;
-    let bestScore = Infinity;
+    if (dir === "UP" || dir === "DOWN") {
+      const inQamBody = IS_QAM && cx > 52;
+      const candidates = [];
+      items.forEach((cand, idx) => {
+        if (idx === state.focusIndex) return;
+        const r = cand.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const dy = y - cy;
+        if (dir === "DOWN" && dy <= 8) return;
+        if (dir === "UP" && dy >= -8) return;
+        const dx = Math.abs(x - cx);
+        candidates.push({
+          idx,
+          samePane: !inQamBody || x > 52,
+          score: Math.abs(dy) * 2.2 + dx * 0.75
+        });
+      });
+
+      const paneCandidates = candidates.filter((c) => c.samePane);
+      const pool = paneCandidates.length ? paneCandidates : candidates;
+      if (pool.length) {
+        pool.sort((a, b) => a.score - b.score);
+        state.focusIndex = pool[0].idx;
+      } else {
+        state.focusIndex = dir === "DOWN" ? 0 : items.length - 1;
+      }
+      applySpatialFocus();
+      return;
+    }
+
+    const rowTolerance = Math.max(cr.height, 28) * 0.9;
+    let sameRowBest = -1;
+    let sameRowScore = Infinity;
+    let anyBest = -1;
+    let anyScore = Infinity;
+
     items.forEach((cand, idx) => {
       if (idx === state.focusIndex) return;
       const r = cand.getBoundingClientRect();
       const x = r.left + r.width / 2;
       const y = r.top + r.height / 2;
       const dx = x - cx;
-      const dy = y - cy;
-      if (dir === "RIGHT" && dx <= 6) return;
-      if (dir === "LEFT" && dx >= -6) return;
-      const score = Math.abs(dx) + Math.abs(dy) * 2.4;
-      if (score < bestScore) {
-        bestScore = score;
-        bestIdx = idx;
+      const dy = Math.abs(y - cy);
+      if (dir === "RIGHT" && dx <= 4) return;
+      if (dir === "LEFT" && dx >= -4) return;
+      const score = Math.abs(dx) + dy * 2.4;
+      if (dy <= rowTolerance && score < sameRowScore) {
+        sameRowScore = score;
+        sameRowBest = idx;
+      }
+      if (score < anyScore) {
+        anyScore = score;
+        anyBest = idx;
       }
     });
 
+    const bestIdx = sameRowBest !== -1 ? sameRowBest : anyBest;
     if (bestIdx !== -1) state.focusIndex = bestIdx;
     else state.focusIndex = (state.focusIndex + (dir === "RIGHT" ? 1 : -1) + items.length) % items.length;
     applySpatialFocus();
