@@ -216,6 +216,7 @@ public static class PresetCatalog
                 if (isV10)
                 {
                     ini.Set("FSR", "Fsr4GpuSupport", "0");
+                    ini.Set("FSR", "Fsr4Model", "auto");
                 }
                 else
                 {
@@ -231,6 +232,7 @@ public static class PresetCatalog
                 {
                     ini.Set("FSR", "UpscalerIndex", "0");
                     ini.Set("FSR", "Fsr4GpuSupport", "0");
+                    ini.Set("FSR", "Fsr4Model", "auto");
                 }
                 else
                 {
@@ -277,22 +279,12 @@ public static class PresetCatalog
                 ini.Set("FrameGen", "Enabled", "true");
                 ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "xefg");
-                if (effectiveFgInput == "upscaler")
-                {
-                    ini.Set("OptiFG", "HUDFix", "true");
-                }
-                if (isV10)
-                {
-                    ini.Set("V-Sync", "OverrideVsync", "true");
-                    ini.Set("V-Sync", "ForceVsync", "false");
-                }
                 break;
             case "optifg":
             case "fsrfg":
                 ini.Set("FrameGen", "Enabled", "true");
                 ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "fsrfg");
-                ini.Set("OptiFG", "HUDFix", "true");
                 break;
             default:
                 ini.Set("FrameGen", "Enabled", "true");
@@ -300,6 +292,21 @@ public static class PresetCatalog
                 ini.Set("FrameGen", "FGOutput", "auto");
                 break;
         }
+
+        bool needHudFix = (fg is "xefg" or "optifg" or "fsrfg") && effectiveFgInput == "upscaler";
+        ini.Set("OptiFG", "HUDFix", needHudFix ? "true" : "auto");
+
+        if (isV10)
+        {
+            bool needVsyncOverride = fg is "xefg" or "optifg" or "fsrfg";
+            ini.Set("V-Sync", "OverrideVsync", needVsyncOverride ? "true" : "auto");
+            ini.Set("V-Sync", "ForceVsync", needVsyncOverride ? "false" : "auto");
+        }
+
+        ini.Set("Framerate", "FramerateLimit",
+            config.FramerateLimit > 0
+                ? config.FramerateLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "auto");
 
         ini.Set("Menu", "ShortcutKey", string.IsNullOrWhiteSpace(config.ShortcutKeyHex) ? "0x2D" : config.ShortcutKeyHex);
 

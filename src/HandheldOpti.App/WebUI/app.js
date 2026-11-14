@@ -30,13 +30,15 @@
       enableFakenvapi: true,
       enableCustomDlls: true,
       spoofDxgi: true,
+      dxgiVramGb: 10,
       spoofedVendorId: "auto",
       spoofedDeviceId: "auto",
       spoofedGpuName: "",
       streamlineSpoofing: true,
       shortcutKeyHex: "0x2D",
       enableFsr4Int8Hint: true,
-      fsr4Watermark: false
+      fsr4Watermark: false,
+      framerateLimit: 0
     },
     advancedOpen: false,
     searchQuery: "",
@@ -420,13 +422,26 @@
               <div class="cw-row">
                 <div class="cw-row-copy">
                   <span class="cw-row-title">帧生成技术 (Frame Gen)</span>
-                  <span class="cw-row-sub">XeSS 帧生成 (XeFG) 画面更稳；动作竞技可关闭插帧</span>
+                  <span class="cw-row-sub">原生带 DLSS-G 游戏（如仁王3）请用 XeFG（最稳防崩溃）；无 DLSS-G 游戏可选 OptiFG</span>
                 </div>
                 ${renderSegmented("data-fg-type", [
                   { value: "xefg", label: "XeFG 帧生成" },
                   { value: "optifg", label: "OptiFG" },
                   { value: "nofg", label: "关闭插帧" }
                 ], cfg.fgType)}
+              </div>
+
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">平滑锁帧省电 (Reflex / XeLL)</span>
+                  <span class="cw-row-sub">锁帧留出 GPU 余量可消除插帧顿挫并显著降功耗（120Hz 屏推荐 84 或 90）</span>
+                </div>
+                ${renderSegmented("data-fps-limit", [
+                  { value: "0", label: "不限帧" },
+                  { value: "72", label: "72 帧" },
+                  { value: "84", label: "84 帧" },
+                  { value: "90", label: "90 帧" }
+                ], String(cfg.framerateLimit || 0))}
               </div>
 
               <div class="cw-row">
@@ -830,6 +845,19 @@
             ], cfg.fgType, "compact")}
           </div>
 
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>平滑锁帧省电</span>
+              <span class="qam-field-hint">防满载顿挫</span>
+            </div>
+            ${renderSegmented("data-fps-limit", [
+              { value: "0", label: "不限" },
+              { value: "72", label: "72" },
+              { value: "84", label: "84" },
+              { value: "90", label: "90" }
+            ], String(cfg.framerateLimit || 0), "compact")}
+          </div>
+
           <div class="cw-row" style="padding:8px 11px;min-height:40px;">
             <span class="cw-row-title" style="font-size:12px;">Anti-Lag 2 低延迟</span>
             ${renderSwitch("swFakenvapi", !!cfg.enableFakenvapi)}
@@ -1012,6 +1040,15 @@
       });
     });
 
+    document.querySelectorAll("[data-fps-limit]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        state.config.framerateLimit = parseInt(el.dataset.fpsLimit, 10) || 0;
+        render();
+      });
+    });
+
     document.querySelectorAll("[data-fg-input]").forEach((el) => {
       el.addEventListener("click", () => {
         state.selectedPresetId = "custom";
@@ -1069,10 +1106,10 @@
         if (res?.memoryHealth && state.snapshot) {
           state.snapshot.memoryHealth = res.memoryHealth;
         }
-        toast(res?.message || "已扩容虚拟内存分页文件，请重启后生效", "success");
+        showToast(res?.message || "已扩容虚拟内存分页文件，请重启后生效", "success");
         render();
       } catch (err) {
-        toast(err.message, "error");
+        showToast(err.message, "error");
       }
     });
 

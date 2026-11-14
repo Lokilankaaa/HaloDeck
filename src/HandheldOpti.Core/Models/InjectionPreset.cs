@@ -21,6 +21,7 @@ public sealed class OptiScalerConfig
     public string ShortcutKeyHex { get; set; } = "0x2D";
     public bool EnableFsr4Int8Hint { get; set; } = true;
     public bool Fsr4Watermark { get; set; } = false;
+    public int FramerateLimit { get; set; } = 0;
 
     public OptiScalerConfig Clone() => new()
     {
@@ -42,7 +43,8 @@ public sealed class OptiScalerConfig
         StreamlineSpoofing = StreamlineSpoofing,
         ShortcutKeyHex = ShortcutKeyHex,
         EnableFsr4Int8Hint = EnableFsr4Int8Hint,
-        Fsr4Watermark = Fsr4Watermark
+        Fsr4Watermark = Fsr4Watermark,
+        FramerateLimit = FramerateLimit
     };
 }
 
