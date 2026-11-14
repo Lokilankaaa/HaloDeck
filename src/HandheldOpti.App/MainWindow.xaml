@@ -1,0 +1,16 @@
+<Window x:Class="HandheldOpti.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="HandheldOpti · GPD Win 5 自动 OptiScaler 控制台"
+        Width="1280"
+        Height="760"
+        MinWidth="960"
+        MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        AllowsTransparency="False"
+        Background="#090D16">
+    <Grid Background="#090D16">
+        <wv2:WebView2 x:Name="ConsoleWebView" DefaultBackgroundColor="#090D16" />
+    </Grid>
+</Window>

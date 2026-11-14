@@ -1,0 +1,218 @@
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using HandheldOpti.Core.Process;
+
+namespace HandheldOpti.App.Native;
+
+internal static class Win32Interop
+{
+    public const int WM_HOTKEY = 0x0312;
+    public const uint MOD_ALT = 0x0001;
+    public const uint MOD_CONTROL = 0x0002;
+    public const uint MOD_SHIFT = 0x0004;
+    public const uint MOD_WIN = 0x0008;
+    public const uint MOD_NOREPEAT = 0x4000;
+
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_SCANCODE = 0x0008;
+
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWCP_ROUND = 2;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnregisterHotKey(nint hWnd, int id);
+
+    [DllImport("user32.dll")]
+    public static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(nint hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageNameW(nint hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
+
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
+    }
+
+    public static void EnableRoundedCorners(nint hwnd)
+    {
+        if (hwnd == 0) return;
+        try
+        {
+            int pref = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
+        }
+        catch
+        {
+            // Ignore on older Windows builds
+        }
+    }
+
+    public static ForegroundProcessSnapshot? GetForegroundProcessSnapshot()
+    {
+        try
+        {
+            var hwnd = GetForegroundWindow();
+            if (hwnd == 0) return null;
+
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == 0) return null;
+
+            var exePath = QueryProcessPath(pid);
+            if (string.IsNullOrWhiteSpace(exePath))
+            {
+                using var p = Process.GetProcessById((int)pid);
+                exePath = p.MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(exePath))
+                {
+                    return null;
+                }
+            }
+
+            var procName = Path.GetFileNameWithoutExtension(exePath);
+            return new ForegroundProcessSnapshot((int)pid, hwnd, procName, exePath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? QueryProcessPath(uint pid)
+    {
+        nint hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProc == 0) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint size = (uint)sb.Capacity;
+            return QueryFullProcessImageNameW(hProc, 0, sb, ref size) ? sb.ToString() : null;
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+    }
+
+    /// <summary>
+    /// Synthesizes a key press with hardware scan code + extended key flag and holds it
+    /// for <paramref name="holdDurationMs"/> ms so DirectX/ImGui games reliably catch it on poll.
+    /// </summary>
+    public static async Task SendKeyHoldAsync(ushort virtualKey, int holdDurationMs = 65)
+    {
+        uint scanCode = MapVirtualKeyW(virtualKey, 0);
+        uint flags = IsExtendedKey(virtualKey) ? KEYEVENTF_EXTENDEDKEY : 0;
+
+        var down = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = virtualKey,
+                    wScan = (ushort)scanCode,
+                    dwFlags = flags
+                }
+            }
+        };
+
+        var up = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = virtualKey,
+                    wScan = (ushort)scanCode,
+                    dwFlags = flags | KEYEVENTF_KEYUP
+                }
+            }
+        };
+
+        SendInput(1, new[] { down }, Marshal.SizeOf<INPUT>());
+        await Task.Delay(Math.Clamp(holdDurationMs, 30, 200)).ConfigureAwait(false);
+        SendInput(1, new[] { up }, Marshal.SizeOf<INPUT>());
+    }
+
+    private static bool IsExtendedKey(ushort vk) => vk is
+        0x2D or // VK_INSERT
+        0x2E or // VK_DELETE
+        0x24 or // VK_HOME
+        0x23 or // VK_END
+        0x21 or // VK_PRIOR (PageUp)
+        0x22 or // VK_NEXT (PageDown)
+        0x25 or 0x26 or 0x27 or 0x28; // Arrow keys
+}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HandheldOpti · GPD Win 5 自动 OptiScaler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- Top Header (Hidden in compact QAM mode or streamlined) -->
+    <header id="consoleHeader" class="top-bar">
+      <div class="brand-cluster">
+        <div class="brand-logo">HO</div>
+        <div>
+          <div class="brand-title">HandheldOpti <span class="badge-hw">GPD Win 5 · RDNA 3.5</span></div>
+          <div class="brand-sub">现代化掌机自动 OptiScaler 注入控制台</div>
+        </div>
+      </div>
+
+      <nav class="tab-strip" role="tablist">
+        <button class="tab-btn active" data-nav data-tab="running"><span class="tab-icon">⚡</span> 正在运行</button>
+        <button class="tab-btn" data-nav data-tab="library"><span class="tab-icon">🎮</span> 游戏库 <span id="libCountPill" class="pill-count">0</span></button>
+        <button class="tab-btn" data-nav data-tab="components"><span class="tab-icon">📦</span> 组件中心</button>
+        <button class="tab-btn" data-nav data-tab="settings"><span class="tab-icon">⚙️</span> 掌机设置</button>
+      </nav>
+
+      <div class="header-actions">
+        <span id="controllerPill" class="status-pill muted">🎮 检测手柄中</span>
+        <button id="btnToggleFullscreen" class="icon-btn" data-nav title="切换全屏">⛶</button>
+        <button id="btnMinimizeTray" class="icon-btn" data-nav title="最小化到托盘">⎯</button>
+      </div>
+    </header>
+
+    <!-- QAM Compact Header -->
+    <header id="qamHeader" class="qam-bar hidden">
+      <div class="qam-title-row">
+        <div class="brand-logo sm">HO</div>
+        <div>
+          <div class="qam-title">HandheldOpti 快捷菜单</div>
+          <div id="qamControllerSub" class="qam-sub">GPD Win 5 · XInput 就绪</div>
+        </div>
+      </div>
+      <div class="qam-top-actions">
+        <button id="btnQamOpenConsole" class="chip-btn" data-nav>控制台</button>
+        <button id="btnQamClose" class="chip-btn danger" data-nav>✕</button>
+      </div>
+    </header>
+
+    <!-- Main Scrollable Viewport -->
+    <main id="viewport" class="viewport">
+      <!-- Views rendered dynamically by app.js -->
+    </main>
+
+    <!-- Persistent Handheld Key Legend Footer -->
+    <footer id="gamepadLegend" class="legend-bar">
+      <div class="legend-items" id="legendItems"></div>
+      <div id="globalNotice" class="global-notice"></div>
+    </footer>
+  </div>
+
+  <!-- Modal / Drawer Layer -->
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <div id="modalCard" class="modal-card"></div>
+  </div>
+
+  <!-- Toast Stack -->
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

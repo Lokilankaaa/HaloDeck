@@ -1,0 +1,56 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore HandheldOpti.sln
+
+      - name: Build Release
+        run: dotnet build HandheldOpti.sln -c Release --no-restore
+
+      - name: Run Unit & Integration Tests
+        run: dotnet test HandheldOpti.sln -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish Portable Win-x64 Package
+        run: dotnet publish src/HandheldOpti.App/HandheldOpti.App.csproj -c Release -r win-x64 --self-contained false -o ./publish/HandheldOpti-win-x64
+
+      - name: Archive Portable Release Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ./artifacts | Out-Null
+          Compress-Archive -Path ./publish/HandheldOpti-win-x64/* -DestinationPath ./artifacts/HandheldOpti-win-x64-portable.zip -Force
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HandheldOpti-win-x64-portable
+          path: ./artifacts/HandheldOpti-win-x64-portable.zip
+
+      - name: Create GitHub Release on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./artifacts/HandheldOpti-win-x64-portable.zip
+          generate_release_notes: true

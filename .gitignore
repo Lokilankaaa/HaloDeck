@@ -1,0 +1,27 @@
+# Build outputs
+bin/
+obj/
+out/
+publish/
+artifacts/
+TestResults/
+
+# User-specific and IDE files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vscode/
+.idea/
+
+# Logs and local caches
+*.log
+*.tmp
+.handheldopti_backup/
+components_cache/
+
+# OS generated
+Thumbs.db
+Desktop.ini
+.DS_Store
