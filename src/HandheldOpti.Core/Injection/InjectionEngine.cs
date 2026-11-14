@@ -197,7 +197,7 @@ public sealed class InjectionEngine
             // 1. Deploy main proxy DLL
             DeployFile(coreDllPath, selectedProxy);
 
-            // 2. Deploy companion files/subdirectories from OptiScaler archive (skip batch/shell/docs/main dll/ini)
+            // 2. Deploy companion files/subdirectories from OptiScaler archive (skip batch/shell/docs/Licenses/README/main dll/ini)
             foreach (var file in Directory.EnumerateFiles(optiRoot, "*", SearchOption.AllDirectories))
             {
                 ct.ThrowIfCancellationRequested();
@@ -206,6 +206,12 @@ public sealed class InjectionEngine
                 var ext = Path.GetExtension(fileName).ToLowerInvariant();
 
                 if (ext is ".bat" or ".sh" or ".md" or ".txt" or ".ps1")
+                {
+                    continue;
+                }
+                if (rel.StartsWith("Licenses" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith("Licenses/", StringComparison.OrdinalIgnoreCase) ||
+                    fileName.StartsWith("!! README", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -222,10 +228,10 @@ public sealed class InjectionEngine
                     continue;
                 }
 
-                DeployFile(file, rel, allowOverwriteBackup: false);
+                DeployFile(file, rel, allowOverwriteBackup: true);
             }
 
-            // 3. Deploy OptiPatcher if enabled
+            // 3. Deploy OptiPatcher if enabled (or remove managed copy if disabled on re-inject)
             var effectiveConfig = config.Clone();
             if (effectiveConfig.EnableOptiPatcher)
             {
@@ -238,6 +244,14 @@ public sealed class InjectionEngine
                 else
                 {
                     warnings.Add("未安装 OptiPatcher 组件，已跳过部署 OptiPatcher.asi。");
+                }
+            }
+            else
+            {
+                var staleAsiRel = Path.Combine("plugins", "OptiPatcher.asi");
+                if (createdSet.Remove(staleAsiRel))
+                {
+                    TryDeleteManagedFile(Path.Combine(targetDir, staleAsiRel));
                 }
             }
 
@@ -273,6 +287,16 @@ public sealed class InjectionEngine
                     else
                     {
                         warnings.Add("未安装 Fakenvapi 组件，已跳过部署 nvapi 转换层。");
+                    }
+                }
+            }
+            else
+            {
+                foreach (var staleFakeRel in new[] { "fakenvapi.dll", "fakenvapi.ini" })
+                {
+                    if (createdSet.Remove(staleFakeRel))
+                    {
+                        TryDeleteManagedFile(Path.Combine(targetDir, staleFakeRel));
                     }
                 }
             }
@@ -434,11 +458,14 @@ public sealed class InjectionEngine
                 try { File.Delete(optiLog); } catch { }
             }
 
-            // 4. Clean empty plugins dir & backup dir
-            var pluginsDir = Path.Combine(targetDir, "plugins");
-            if (Directory.Exists(pluginsDir) && !Directory.EnumerateFileSystemEntries(pluginsDir).Any())
+            // 4. Clean empty plugins dir, D3D12_Optiscaler dir & backup dir
+            foreach (var subName in new[] { "plugins", "D3D12_Optiscaler" })
             {
-                try { Directory.Delete(pluginsDir, false); } catch { }
+                var subDir = Path.Combine(targetDir, subName);
+                if (Directory.Exists(subDir) && !Directory.EnumerateFileSystemEntries(subDir).Any())
+                {
+                    try { Directory.Delete(subDir, false); } catch { }
+                }
             }
 
             if (Directory.Exists(backupDir))

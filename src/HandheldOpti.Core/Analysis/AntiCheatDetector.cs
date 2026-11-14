@@ -7,7 +7,7 @@ public static class AntiCheatDetector
     private static readonly (string Pattern, string DisplayName, AntiCheatRiskLevel Risk)[] Rules =
     {
         ("EasyAntiCheat", "Easy Anti-Cheat (EAC)", AntiCheatRiskLevel.HighRisk),
-        ("EAC", "Easy Anti-Cheat (EAC)", AntiCheatRiskLevel.HighRisk),
+        ("start_protected_game.exe", "Easy Anti-Cheat (EAC)", AntiCheatRiskLevel.HighRisk),
         ("BattlEye", "BattlEye", AntiCheatRiskLevel.HighRisk),
         ("BEService", "BattlEye Service", AntiCheatRiskLevel.HighRisk),
         ("vgk.sys", "Riot Vanguard", AntiCheatRiskLevel.HighRisk),
@@ -21,6 +21,35 @@ public static class AntiCheatDetector
         ("Wellbia", "XIGNCODE3", AntiCheatRiskLevel.Warning),
         ("xigncode", "XIGNCODE3", AntiCheatRiskLevel.Warning),
         ("DenuvoAntiCheat", "Denuvo Anti-Cheat", AntiCheatRiskLevel.HighRisk)
+    };
+
+    private static readonly HashSet<string> SkippedAssetDirectories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "archive",
+        "archives",
+        "paks",
+        "pak",
+        "shader",
+        "shaders",
+        "shader_dx12",
+        "shadercache",
+        "movies",
+        "video",
+        "sound",
+        "audio",
+        ".handheldopti_backup"
+    };
+
+    private static readonly HashSet<string> InspectableFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe",
+        ".dll",
+        ".sys",
+        ".json",
+        ".ini",
+        ".cfg",
+        ".bin",
+        ".asi"
     };
 
     public static AntiCheatInfo Detect(string installDirectory, string? targetRenderDirectory = null)
@@ -64,6 +93,12 @@ public static class AntiCheatDetector
         {
             foreach (var file in Directory.EnumerateFiles(dir))
             {
+                var ext = Path.GetExtension(file);
+                if (!InspectableFileExtensions.Contains(ext))
+                {
+                    continue;
+                }
+
                 var name = Path.GetFileName(file);
                 MatchRules(name, detected, ref maxRisk);
             }
@@ -71,6 +106,11 @@ public static class AntiCheatDetector
             foreach (var subDir in Directory.EnumerateDirectories(dir))
             {
                 var dirName = Path.GetFileName(subDir);
+                if (SkippedAssetDirectories.Contains(dirName))
+                {
+                    continue;
+                }
+
                 MatchRules(dirName, detected, ref maxRisk);
                 ScanDirectory(subDir, depth + 1, maxDepth, detected, ref maxRisk);
             }
@@ -87,14 +127,6 @@ public static class AntiCheatDetector
         {
             if (candidate.Contains(pattern, StringComparison.OrdinalIgnoreCase))
             {
-                // Avoid matching random strings with short "EAC" unless exact/prefix/suffix
-                if (pattern == "EAC" && !candidate.Equals("EAC", StringComparison.OrdinalIgnoreCase) &&
-                    !candidate.StartsWith("EAC", StringComparison.OrdinalIgnoreCase) &&
-                    !candidate.Contains("_EAC", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
                 detected.Add(displayName);
                 if (risk > maxRisk)
                 {

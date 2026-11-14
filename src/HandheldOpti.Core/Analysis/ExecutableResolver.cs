@@ -17,7 +17,11 @@ public static class ExecutableResolver
         "unins",
         "crashreport",
         "crashhandler",
+        "crashpad",
+        "checkenv",
+        "createdump",
         "prereq",
+        "ueprereq",
         "vcredist",
         "dxwebsetup",
         "easyanticheat",
@@ -28,7 +32,16 @@ public static class ExecutableResolver
         "updater",
         "setup",
         "redist",
-        "dotnetfx"
+        "dotnetfx",
+        "8za",
+        "7za",
+        "7z",
+        "epicwebhelper",
+        "webhelper",
+        "cefprocess",
+        "installermessage",
+        "benchmark",
+        "cleanup"
     };
 
     public static ResolvedGameLayout Resolve(string installDirectory, string? knownExePath = null)
@@ -87,7 +100,7 @@ public static class ExecutableResolver
 
         if (mainExe is null || string.Equals(targetDir, installDirectory, StringComparison.OrdinalIgnoreCase))
         {
-            var scored = FindBestExecutableByScore(installDirectory, 3);
+            var scored = FindBestExecutableByScore(installDirectory, 4);
             if (scored is not null)
             {
                 mainExe = scored;
@@ -164,7 +177,7 @@ public static class ExecutableResolver
                 return candidates[0];
             }
 
-            // Fallback: any Win64 game binary not inside Engine\Binaries
+            // Fallback: large Win64 game binary (>= 15 MB) not inside Engine\Binaries
             var win64Candidates = Directory.EnumerateFiles(root, "*.exe", new EnumerationOptions
             {
                 RecurseSubdirectories = true,
@@ -176,12 +189,26 @@ public static class ExecutableResolver
                 var norm = p.Replace('/', '\\');
                 return norm.Contains(@"\Binaries\Win64\", StringComparison.OrdinalIgnoreCase) &&
                        !norm.Contains(@"\Engine\Binaries\", StringComparison.OrdinalIgnoreCase) &&
-                       !IsExcludedExe(Path.GetFileName(p));
+                       !IsExcludedExe(Path.GetFileName(p)) &&
+                       new FileInfo(p).Length >= 15L * 1024 * 1024;
             })
             .OrderByDescending(p => new FileInfo(p).Length)
             .ToList();
 
-            return win64Candidates.FirstOrDefault();
+            var topWin64 = win64Candidates.FirstOrDefault();
+            var topScored = FindBestExecutableByScore(root, 4);
+            if (topWin64 is null)
+            {
+                return topScored;
+            }
+
+            if (topScored is not null &&
+                new FileInfo(topScored).Length > new FileInfo(topWin64).Length * 2)
+            {
+                return topScored;
+            }
+
+            return topWin64;
         }
         catch
         {
@@ -250,16 +277,18 @@ public static class ExecutableResolver
             string rootName = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
             return exes
+                .Where(exe => !exe.Replace('/', '\\').Contains(@"\Engine\Binaries\", StringComparison.OrdinalIgnoreCase))
                 .Select(exe =>
                 {
                     var dir = Path.GetDirectoryName(exe)!;
+                    double sizeMb = new FileInfo(exe).Length / (1024.0 * 1024.0);
                     int score = 0;
 
                     if (Path.GetFileName(exe).Contains("-Shipping", StringComparison.OrdinalIgnoreCase))
                         score += 120;
 
-                    if (dir.Replace('/', '\\').Contains(@"\Binaries\Win64", StringComparison.OrdinalIgnoreCase))
-                        score += 100;
+                    if (dir.Replace('/', '\\').Contains(@"\Binaries\Win64", StringComparison.OrdinalIgnoreCase) && sizeMb >= 15.0)
+                        score += 35;
 
                     if (HasAnyUpscalerDllInDir(dir))
                         score += 90;
@@ -273,8 +302,14 @@ public static class ExecutableResolver
                          rootName.Contains(exeBase, StringComparison.OrdinalIgnoreCase)))
                         score += 40;
 
-                    var sizeMb = new FileInfo(exe).Length / (1024 * 1024);
-                    score += (int)Math.Min(sizeMb, 60);
+                    if (sizeMb >= 100.0)
+                        score += 95;
+                    else if (sizeMb >= 30.0)
+                        score += 55;
+                    else if (sizeMb >= 10.0)
+                        score += 25;
+                    else if (sizeMb < 2.5)
+                        score -= 40;
 
                     if (PeHeaderReader.ReadArchitecture(exe) == PeArchitecture.X64)
                         score += 20;
@@ -331,7 +366,7 @@ public static class ExecutableResolver
                 foreach (var dll in Directory.EnumerateFiles(dir, "*.dll", new EnumerationOptions
                 {
                     RecurseSubdirectories = true,
-                    MaxRecursionDepth = 4,
+                    MaxRecursionDepth = 9,
                     IgnoreInaccessible = true
                 }))
                 {
@@ -360,7 +395,7 @@ public static class ExecutableResolver
                     {
                         caps.HasFsr = true;
                     }
-                    if (lower.Contains("sl.interposer"))
+                    if (lower.Contains("sl.interposer") || lower.Contains("sl.common") || lower.Contains("sl.dlss"))
                     {
                         caps.HasStreamline = true;
                     }
@@ -384,6 +419,8 @@ public static class ExecutableResolver
                lower.StartsWith("amd_fidelityfx", StringComparison.Ordinal) ||
                lower.StartsWith("ffx_fsr", StringComparison.Ordinal) ||
                lower.StartsWith("sl.interposer", StringComparison.Ordinal) ||
+               lower.StartsWith("sl.common", StringComparison.Ordinal) ||
+               lower.StartsWith("sl.xess", StringComparison.Ordinal) ||
                lower.StartsWith("sl.dlss", StringComparison.Ordinal);
     }
 

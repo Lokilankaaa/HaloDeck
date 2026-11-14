@@ -20,15 +20,19 @@ public sealed class InjectionEngineRoundTripTests : IDisposable
         Directory.CreateDirectory(staging);
         Directory.CreateDirectory(gameDir);
 
-        // 1. Create simulated OptiScaler.zip with nested root folder & template OptiScaler.ini
+        // 1. Create simulated OptiScaler.zip with nested root folder, companion DLL, Licenses, README, & template OptiScaler.ini
         var optiZip = CreateZipPackage(
             Path.Combine(staging, "OptiScaler.zip"),
             new Dictionary<string, string>
             {
-                ["OptiScaler_v0.7.9/OptiScaler.dll"] = "OPTISCALER_BINARY_PAYLOAD_V079",
-                ["OptiScaler_v0.7.9/OptiScaler.ini"] = "; Official Header\n[Upscalers]\n;Dx12Upscaler=auto\n",
-                ["OptiScaler_v0.7.9/setup_windows.bat"] = "@echo skip",
-                ["OptiScaler_v0.7.9/D3D12_Optiscaler/amd_fidelityfx_dx12.dll"] = "FFX_HELPER"
+                ["OptiScaler_v0.9.4/OptiScaler.dll"] = "OPTISCALER_BINARY_PAYLOAD_V094",
+                ["OptiScaler_v0.9.4/OptiScaler.ini"] = "; Official Header\n[Upscalers]\n;Dx12Upscaler=auto\n",
+                ["OptiScaler_v0.9.4/setup_windows.bat"] = "@echo skip",
+                ["OptiScaler_v0.9.4/!! README_EXTRACT ALL FILES TO GAME FOLDER !!.txt"] = "skip readme",
+                ["OptiScaler_v0.9.4/Licenses/Apache.txt"] = "skip license",
+                ["OptiScaler_v0.9.4/Licenses/LICENSE.bin"] = "skip license binary",
+                ["OptiScaler_v0.9.4/libxess.dll"] = "NEW_OPTISCALER_LIBXESS_DLL",
+                ["OptiScaler_v0.9.4/D3D12_Optiscaler/D3D12Core.dll"] = "D3D12_CORE_HELPER"
             });
 
         var patcherZip = CreateZipPackage(
@@ -47,14 +51,18 @@ public sealed class InjectionEngineRoundTripTests : IDisposable
             });
 
         var cm = new ComponentManager(appData);
-        cm.ImportLocalPackage(ComponentSlot.OptiScalerStable, optiZip, "v0.7.9");
+        cm.ImportLocalPackage(ComponentSlot.OptiScalerStable, optiZip, "v0.9.4");
         cm.ImportLocalPackage(ComponentSlot.OptiPatcher, patcherZip, "v0.3.1");
         cm.ImportLocalPackage(ComponentSlot.Fakenvapi, fakeZip, "v1.4.1");
 
-        // 2. Pre-place third-party ReShade dxgi.dll in target game directory
+        // 2. Pre-place third-party ReShade dxgi.dll AND pre-existing game libxess.dll
         var reshadeDxgiPath = Path.Combine(gameDir, "dxgi.dll");
         await File.WriteAllTextAsync(reshadeDxgiPath, "RESHADE_THIRD_PARTY_ORIGINAL_CONTENT");
         var originalDxgiSha = InjectionEngine.ComputeSha256(reshadeDxgiPath);
+
+        var gameLibXessPath = Path.Combine(gameDir, "libxess.dll");
+        await File.WriteAllTextAsync(gameLibXessPath, "GAME_ORIGINAL_LIBXESS_V1");
+        var originalXessSha = InjectionEngine.ComputeSha256(gameLibXessPath);
 
         var game = new GameEntry
         {
@@ -77,27 +85,41 @@ public sealed class InjectionEngineRoundTripTests : IDisposable
         Assert.True(File.Exists(Path.Combine(gameDir, "winmm.dll")));
         Assert.True(File.Exists(Path.Combine(gameDir, "plugins", "OptiPatcher.asi")));
         Assert.True(File.Exists(Path.Combine(gameDir, "fakenvapi.dll")));
-        Assert.True(File.Exists(Path.Combine(gameDir, "D3D12_Optiscaler", "amd_fidelityfx_dx12.dll")));
+        Assert.True(File.Exists(Path.Combine(gameDir, "D3D12_Optiscaler", "D3D12Core.dll")));
+        Assert.Equal("NEW_OPTISCALER_LIBXESS_DLL", await File.ReadAllTextAsync(gameLibXessPath));
         Assert.False(File.Exists(Path.Combine(gameDir, "setup_windows.bat")));
+        Assert.False(File.Exists(Path.Combine(gameDir, "!! README_EXTRACT ALL FILES TO GAME FOLDER !!.txt")));
+        Assert.False(Directory.Exists(Path.Combine(gameDir, "Licenses")));
         Assert.Equal(originalDxgiSha, InjectionEngine.ComputeSha256(reshadeDxgiPath));
 
         var writtenIni = IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini"));
         Assert.Equal("true", writtenIni.Get("FrameGen", "Enabled"));
         Assert.Equal("upscaler", writtenIni.Get("FrameGen", "FGInput"));
         Assert.Equal("fsrfg", writtenIni.Get("FrameGen", "FGOutput"));
+        Assert.Equal("auto", writtenIni.Get("Spoofing", "Dxgi"));
         Assert.Equal("true", writtenIni.Get("Plugins", "LoadAsiPlugins"));
         Assert.Equal("true", writtenIni.Get("NvApi", "OverrideNvapiDll"));
         Assert.Equal("0x2D", writtenIni.Get("Menu", "ShortcutKey"));
 
-        // 3. Restore clean directory and verify complete removal + ReShade untouched
+        // Re-inject with EnableOptiPatcher = false and ensure OptiPatcher.asi is removed while original libxess backup remains intact
+        var reCfg = preset.Config.Clone();
+        reCfg.EnableOptiPatcher = false;
+        var reInjectRes = await engine.InjectAsync(game, reCfg, nameof(ComponentSlot.OptiScalerStable), preset.Id);
+        Assert.True(reInjectRes.Success, reInjectRes.Message);
+        Assert.False(File.Exists(Path.Combine(gameDir, "plugins", "OptiPatcher.asi")));
+
+        // 3. Restore clean directory and verify complete removal + ReShade untouched + original libxess SHA256 restored
         var restoreRes = await engine.RestoreCleanAsync(game);
         Assert.True(restoreRes.Success, restoreRes.Message);
         Assert.False(File.Exists(Path.Combine(gameDir, "winmm.dll")));
         Assert.False(File.Exists(Path.Combine(gameDir, "OptiScaler.ini")));
         Assert.False(File.Exists(Path.Combine(gameDir, "fakenvapi.dll")));
+        Assert.False(Directory.Exists(Path.Combine(gameDir, "D3D12_Optiscaler")));
         Assert.False(Directory.Exists(Path.Combine(gameDir, "plugins")));
         Assert.False(Directory.Exists(Path.Combine(gameDir, ".handheldopti_backup")));
         Assert.Equal(originalDxgiSha, InjectionEngine.ComputeSha256(reshadeDxgiPath));
+        Assert.True(File.Exists(gameLibXessPath));
+        Assert.Equal(originalXessSha, InjectionEngine.ComputeSha256(gameLibXessPath));
     }
 
     [Fact]

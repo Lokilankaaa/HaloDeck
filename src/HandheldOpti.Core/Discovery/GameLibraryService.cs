@@ -65,7 +65,9 @@ public sealed class GameLibraryService
         }
 
         return deduped.Values
-            .OrderByDescending(g => g.Injection.IsInjected)
+            .OrderByDescending(g => g.IsCurrentlyRunning)
+            .ThenByDescending(g => g.Injection.IsInjected)
+            .ThenByDescending(g => g.NativeUpscalers.HasAnyUpscaler)
             .ThenBy(g => g.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }

@@ -11,7 +11,7 @@ public static class PresetCatalog
             Id = "strix-halo-quality",
             Name = "Strix Halo 均衡画质帧生",
             Subtitle = "GPD Win 5 推荐预设 · RDNA 3.5",
-            Description = "优先通过 OptiPatcher 免显卡伪装解锁游戏原生 DLSS + OptiFG 帧生成，并启用 Fakenvapi 将 Reflex 映射为 AMD Anti-Lag 2。",
+            Description = "启用 OptiPatcher + Dxgi=auto 智能伪装解锁全部游戏 DLSS 与 OptiFG 帧生成，并配合 Fakenvapi 将 Reflex 映射为 AMD Anti-Lag 2。",
             RecommendedFor = "黑神话：悟空 / 赛博朋克 2077 / 多数 UE5 与 DX12 单机大作",
             Config = new OptiScalerConfig
             {
@@ -23,7 +23,7 @@ public static class PresetCatalog
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
-                SpoofDxgi = false,
+                SpoofDxgi = true,
                 StreamlineSpoofing = true,
                 ShortcutKeyHex = "0x2D"
             }
@@ -45,7 +45,7 @@ public static class PresetCatalog
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
-                SpoofDxgi = false,
+                SpoofDxgi = true,
                 StreamlineSpoofing = true,
                 ShortcutKeyHex = "0x2D"
             }
@@ -67,7 +67,7 @@ public static class PresetCatalog
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
-                SpoofDxgi = false,
+                SpoofDxgi = true,
                 StreamlineSpoofing = true,
                 ShortcutKeyHex = "0x2D"
             }
@@ -166,16 +166,32 @@ public static class PresetCatalog
 
         ini.Set("NvApi", "OverrideNvapiDll", config.EnableFakenvapi ? "true" : "false");
 
-        ini.Set("Spoofing", "Dxgi", config.SpoofDxgi ? "true" : "false");
         ini.Set("Spoofing", "StreamlineSpoofing", config.StreamlineSpoofing ? "true" : "false");
 
-        if (config.SpoofDxgi)
+        if (!config.SpoofDxgi)
         {
-            ini.Set("Spoofing", "SpoofedVendorId", string.IsNullOrWhiteSpace(config.SpoofedVendorId) ? "0x10de" : config.SpoofedVendorId);
-            ini.Set("Spoofing", "SpoofedDeviceId", string.IsNullOrWhiteSpace(config.SpoofedDeviceId) ? "0x2684" : config.SpoofedDeviceId);
-            if (!string.IsNullOrWhiteSpace(config.SpoofedGpuName))
+            ini.Set("Spoofing", "Dxgi", "false");
+        }
+        else
+        {
+            var vendor = config.SpoofedVendorId?.Trim();
+            bool hasExplicitVendor = !string.IsNullOrWhiteSpace(vendor) &&
+                                     !string.Equals(vendor, "auto", StringComparison.OrdinalIgnoreCase);
+
+            ini.Set("Spoofing", "Dxgi", hasExplicitVendor ? "true" : "auto");
+
+            if (hasExplicitVendor)
             {
-                ini.Set("Spoofing", "SpoofedGPUName", config.SpoofedGpuName);
+                ini.Set("Spoofing", "SpoofedVendorId", vendor!);
+                var device = config.SpoofedDeviceId?.Trim();
+                ini.Set("Spoofing", "SpoofedDeviceId",
+                    string.IsNullOrWhiteSpace(device) || string.Equals(device, "auto", StringComparison.OrdinalIgnoreCase)
+                        ? "0x2684"
+                        : device!);
+                if (!string.IsNullOrWhiteSpace(config.SpoofedGpuName))
+                {
+                    ini.Set("Spoofing", "SpoofedGPUName", config.SpoofedGpuName.Trim());
+                }
             }
         }
     }

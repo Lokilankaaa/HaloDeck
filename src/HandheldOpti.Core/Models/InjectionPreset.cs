@@ -10,7 +10,7 @@ public sealed class OptiScalerConfig
     public bool EnableOptiPatcher { get; set; } = true;
     public bool EnableFakenvapi { get; set; } = true;
     public bool EnableCustomDlls { get; set; } = true;
-    public bool SpoofDxgi { get; set; } = false;
+    public bool SpoofDxgi { get; set; } = true;
     public string SpoofedVendorId { get; set; } = "auto";
     public string SpoofedDeviceId { get; set; } = "auto";
     public string SpoofedGpuName { get; set; } = string.Empty;

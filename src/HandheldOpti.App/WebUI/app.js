@@ -589,8 +589,8 @@
           ${compact ? "" : `
           <button id="toggleSpoofDxgi" class="toggle-row" data-nav>
             <div>
-              <div class="toggle-title">启用 DXGI 显卡伪装 (RTX 4090)</div>
-              <div class="toggle-desc">仅当游戏未适配 OptiPatcher 且隐藏 DLSS 选项时启用</div>
+              <div class="toggle-title">启用 DXGI 智能伪装 (Dxgi=auto / RTX 4090)</div>
+              <div class="toggle-desc">AMD 8060S 解锁非 OptiPatcher 游戏内 DLSS 与 Reflex 选项必选，支持游戏会自动绕过</div>
             </div>
             <span class="switch-pill ${cfg.spoofDxgi ? "on" : ""}"></span>
           </button>

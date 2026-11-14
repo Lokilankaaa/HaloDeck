@@ -42,6 +42,7 @@ public sealed class UpscalerCapabilities
     public bool HasFsr { get; set; }
     public bool HasStreamline { get; set; }
     public List<string> DetectedDlls { get; set; } = new();
+    public bool HasAnyUpscaler => HasDlss || HasDlssG || HasXeSs || HasFsr || HasStreamline || DetectedDlls.Count > 0;
 }
 
 public sealed class AntiCheatInfo

@@ -38,8 +38,19 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("true", reparsed.Get("OptiFG", "HUDFix"));
         Assert.Equal("true", reparsed.Get("Plugins", "LoadAsiPlugins"));
         Assert.Equal("true", reparsed.Get("NvApi", "OverrideNvapiDll"));
-        Assert.Equal("false", reparsed.Get("Spoofing", "Dxgi"));
+        Assert.Equal("auto", reparsed.Get("Spoofing", "Dxgi"));
         Assert.Equal("0x2D", reparsed.Get("Menu", "ShortcutKey"));
+
+        var spoofPreset = PresetCatalog.GetById("dlss-spoof-compat");
+        PresetCatalog.ApplyToIni(doc, spoofPreset.Config);
+        Assert.Equal("true", doc.Get("Spoofing", "Dxgi"));
+        Assert.Equal("0x10de", doc.Get("Spoofing", "SpoofedVendorId"));
+        Assert.Equal("0x2684", doc.Get("Spoofing", "SpoofedDeviceId"));
+        Assert.Equal("NVIDIA GeForce RTX 4090", doc.Get("Spoofing", "SpoofedGPUName"));
+
+        spoofPreset.Config.SpoofDxgi = false;
+        PresetCatalog.ApplyToIni(doc, spoofPreset.Config);
+        Assert.Equal("false", doc.Get("Spoofing", "Dxgi"));
     }
 
     [Fact]

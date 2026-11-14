@@ -7,13 +7,21 @@ public sealed class SteamLibraryScanner
 {
     private static readonly HashSet<string> ExcludedAppIds = new(StringComparer.OrdinalIgnoreCase)
     {
-        "228980", // Steamworks Common Redistributables
+        "228980",  // Steamworks Common Redistributables
         "1070560", // Steam Linux Runtime
         "1391110",
         "1628350",
         "250820",  // SteamVR
         "1826330",
-        "1493710"  // Proton Experimental
+        "1493710", // Proton Experimental
+        "993090",  // Lossless Scaling
+        "241100",  // Steam Controller Configs
+        "431960",  // Wallpaper Engine
+        "223850",  // 3DMark
+        "388080",  // Borderless Gaming
+        "966610",  // FPS Monitor
+        "367670",  // Controller Companion
+        "629520"   // Soundpad
     };
 
     public IReadOnlyList<GameEntry> Scan(string? customSteamRoot = null)
