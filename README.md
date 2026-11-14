@@ -39,7 +39,14 @@ HandheldOpti 融合了 **ClawTweaks 式「当前运行游戏」即时注入重�
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 - Microsoft Edge WebView2 Runtime（Windows 11 已自带）
 
-### 本地构建与测试
+### 一键本地安装（Windows 掌机自包含部署）
+Release 发布的便携包及本机安装脚本均采用 `win-x64 --self-contained true` 自包含发布，无需在系统目录额外安装 .NET Desktop Runtime：
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
+```
+安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HandheldOpti`，自动创建桌面和开始菜单快捷方式，并注册当前用户卸载项（`uninstall.ps1`）。
+
+### 本地编译与测试
 ```powershell
 dotnet restore HandheldOpti.sln
 dotnet build HandheldOpti.sln -c Release
@@ -50,7 +57,8 @@ dotnet run --project src/HandheldOpti.App -c Release
 ### 命令行参数
 - `--minimized`：静默启动到系统托盘
 - `--qam`：启动并直接展开右侧 QAM 快捷菜单
-- `--verify-startup`：执行启动自检（验证 WebView2 初始化、游戏库扫描与输入总线状态）并退出
+- `--verify-startup`：执行基础启动自检（验证 WebView2 初始化、游戏库扫描与输入总线状态）并退出
+- `--verify-gui [输出目录]`：执行完整端到端真实 GUI 自检（遍历 Tab、弹窗、空间焦点、全屏切换、QAM 侧栏并抓取 PNG 截图与 JSON 报告）
 
 ---
 

@@ -8,8 +8,10 @@ namespace HandheldOpti.App;
 public partial class QamWindow : Window
 {
     private readonly WebUiBridge _bridge;
-    private bool _initialized;
+    private Task? _webViewInitTask;
     private nint _previousForegroundHwnd;
+
+    public bool WebViewInitialized { get; private set; }
 
     public QamWindow(WebUiBridge bridge)
     {
@@ -46,13 +48,15 @@ public partial class QamWindow : Window
         Show();
         Activate();
 
-        if (!_initialized)
-        {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            Win32Interop.EnableRoundedCorners(hwnd);
-            await _bridge.AttachWebViewAsync(QamWebView, "qam");
-            _initialized = true;
-        }
+        await (_webViewInitTask ??= InitializeWebViewCoreAsync());
+    }
+
+    private async Task InitializeWebViewCoreAsync()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        Win32Interop.EnableRoundedCorners(hwnd);
+        await _bridge.AttachWebViewAsync(QamWebView, "qam");
+        WebViewInitialized = true;
     }
 
     public void HideAndRestoreGameFocus()

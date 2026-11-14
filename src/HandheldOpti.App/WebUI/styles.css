@@ -93,11 +93,13 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .brand-sub {
   font-size: 11px;
   color: var(--text-dim);
+  white-space: nowrap;
 }
 
 .badge-hw {
@@ -108,6 +110,8 @@ html, body {
   color: #7dd3fc;
   border: 1px solid rgba(56, 189, 248, 0.32);
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .tab-strip {
@@ -132,6 +136,8 @@ html, body {
   display: flex;
   align-items: center;
   gap: 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.16s ease;
 }
 
@@ -162,6 +168,8 @@ html, body {
   color: #86efac;
   border: 1px solid rgba(34, 197, 94, 0.3);
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .status-pill.muted {
@@ -179,6 +187,36 @@ html, body {
   color: var(--text-main);
   font-size: 15px;
   cursor: pointer;
+  flex-shrink: 0;
+}
+
+@media (max-width: 1240px) {
+  .brand-sub {
+    display: none;
+  }
+  .badge-hw {
+    font-size: 10.5px;
+    padding: 2px 7px;
+  }
+  .tab-btn {
+    padding: 7px 11px;
+    font-size: 13px;
+    gap: 5px;
+  }
+  .status-pill {
+    font-size: 11.5px;
+    padding: 5px 10px;
+  }
+  .top-bar {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 1060px) {
+  .badge-hw {
+    display: none;
+  }
 }
 
 /* QAM Header */
@@ -391,6 +429,8 @@ body.mode-qam .viewport {
   font-weight: 600;
   cursor: pointer;
   min-height: 34px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chip-btn.active {

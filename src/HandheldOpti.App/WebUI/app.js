@@ -1,4 +1,12 @@
 (() => {
+  window.__hoErrors = [];
+  window.addEventListener("error", (ev) => {
+    window.__hoErrors.push(String(ev.message || ev.error || "error"));
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    window.__hoErrors.push(String(ev.reason?.message || ev.reason || "rejection"));
+  });
+
   const params = new URLSearchParams(window.location.search);
   const mode = params.get("mode") === "qam" ? "qam" : "console";
   document.body.classList.add(`mode-${mode}`);
@@ -139,7 +147,7 @@
   }
 
   function setFocusedElement(el) {
-    if (currentFocusedEl) currentFocusedEl.classList.remove("gp-focused");
+    document.querySelectorAll(".gp-focused").forEach((node) => node.classList.remove("gp-focused"));
     currentFocusedEl = el;
     if (el) {
       el.classList.add("gp-focused");
@@ -261,7 +269,7 @@
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tab === tabName);
     });
-    currentFocusedEl = null;
+    setFocusedElement(null);
     render();
   }
 
@@ -366,13 +374,13 @@
 
   function openModalBackdrop() {
     document.getElementById("modalBackdrop").classList.remove("hidden");
-    currentFocusedEl = null;
+    setFocusedElement(null);
     setTimeout(ensureFocusValid, 30);
   }
 
   function closeModal() {
     document.getElementById("modalBackdrop").classList.add("hidden");
-    currentFocusedEl = null;
+    setFocusedElement(null);
     setTimeout(ensureFocusValid, 30);
   }
 
@@ -1142,6 +1150,8 @@
     btn.onclick = () => switchTab(btn.dataset.tab);
   });
 
+  const btnOpenQam = document.getElementById("btnOpenQam");
+  if (btnOpenQam) btnOpenQam.onclick = () => rpc("toggleQam");
   document.getElementById("btnToggleFullscreen").onclick = () => rpc("toggleFullscreen");
   document.getElementById("btnMinimizeTray").onclick = () => rpc("minimizeToTray");
   document.getElementById("btnQamOpenConsole").onclick = () => rpc("showConsole");

@@ -23,6 +23,16 @@ public partial class MainWindow : Window
         _bridge = bridge;
         InitializeComponent();
 
+        var workArea = SystemParameters.WorkArea;
+        if (Width > workArea.Width - 24)
+        {
+            Width = Math.Max(MinWidth, workArea.Width - 24);
+        }
+        if (Height > workArea.Height - 20)
+        {
+            Height = Math.Max(MinHeight, workArea.Height - 20);
+        }
+
         Loaded += async (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
@@ -53,6 +63,10 @@ public partial class MainWindow : Window
             _savedState = WindowState;
             _savedResize = ResizeMode;
 
+            if (WindowState == WindowState.Maximized)
+            {
+                WindowState = WindowState.Normal;
+            }
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             WindowState = WindowState.Maximized;

@@ -41,6 +41,7 @@ public sealed class WebUiBridge
     private GameEntry? _runningGame;
 
     public event Action? RequestHideQam;
+    public event Action? RequestToggleQam;
     public event Action? RequestShowConsole;
     public event Action? RequestToggleFullscreen;
     public event Action? RequestMinimizeToTray;
@@ -217,6 +218,7 @@ public sealed class WebUiBridge
                 "cancelRecordGamepadCombo" => CancelRecordGamepadCombo(),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
+                "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
                 "showConsole" => InvokeUiAction(() => RequestShowConsole?.Invoke()),
                 "toggleFullscreen" => InvokeUiAction(() => RequestToggleFullscreen?.Invoke()),
                 "minimizeToTray" => InvokeUiAction(() => RequestMinimizeToTray?.Invoke()),
