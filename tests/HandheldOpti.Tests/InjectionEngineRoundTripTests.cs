@@ -95,7 +95,9 @@ public sealed class InjectionEngineRoundTripTests : IDisposable
         var writtenIni = IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini"));
         Assert.Equal("true", writtenIni.Get("FrameGen", "Enabled"));
         Assert.Equal("upscaler", writtenIni.Get("FrameGen", "FGInput"));
-        Assert.Equal("fsrfg", writtenIni.Get("FrameGen", "FGOutput"));
+        Assert.Equal("xefg", writtenIni.Get("FrameGen", "FGOutput"));
+        Assert.Equal("fsr31", writtenIni.Get("Upscalers", "Dx12Upscaler"));
+        Assert.Equal("true", writtenIni.Get("FSR", "Fsr4ForceEnableInt8"));
         Assert.Equal("auto", writtenIni.Get("Spoofing", "Dxgi"));
         Assert.Equal("true", writtenIni.Get("Plugins", "LoadAsiPlugins"));
         Assert.Equal("true", writtenIni.Get("NvApi", "OverrideNvapiDll"));

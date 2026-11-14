@@ -92,10 +92,8 @@ public sealed class SteamLibraryScanner
                         continue;
                     }
 
-                    var localCover = ResolveLocalSteamCover(steamRoot, appId);
-                    var coverUrl = localCover is not null
-                        ? new Uri(localCover).AbsoluteUri
-                        : $"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appId}/library_600x900.jpg";
+                    var artworks = ResolveSteamArtworks(steamRoot, appId);
+                    var fallbackCover = $"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appId}/library_600x900.jpg";
 
                     games.Add(new GameEntry
                     {
@@ -105,7 +103,10 @@ public sealed class SteamLibraryScanner
                         InstallDirectory = fullInstallDir,
                         TargetRenderDirectory = fullInstallDir,
                         LaunchUri = $"steam://rungameid/{appId}",
-                        CoverImageUrl = coverUrl
+                        CoverImageUrl = artworks.Cover ?? fallbackCover,
+                        HeroImageUrl = artworks.Hero,
+                        HeroBlurImageUrl = artworks.HeroBlur,
+                        LogoImageUrl = artworks.Logo
                     });
                 }
                 catch
@@ -150,23 +151,139 @@ public sealed class SteamLibraryScanner
         return Directory.Exists(defaultPath) ? defaultPath : null;
     }
 
-    private static string? ResolveLocalSteamCover(string steamRoot, string appId)
+    public static string? ResolveSteamLibraryCacheDir()
     {
-        var cacheDir = Path.Combine(steamRoot, "appcache", "librarycache");
-        if (!Directory.Exists(cacheDir))
+        var steamRoot = ResolveSteamInstallPath();
+        if (string.IsNullOrWhiteSpace(steamRoot))
         {
             return null;
         }
 
-        string[] candidates =
-        {
-            Path.Combine(cacheDir, $"{appId}_library_600x900.jpg"),
-            Path.Combine(cacheDir, $"{appId}_library_capsule.jpg"),
-            Path.Combine(cacheDir, $"{appId}_header.jpg"),
-            Path.Combine(cacheDir, appId, "library_600x900.jpg"),
-            Path.Combine(cacheDir, appId, "header.jpg")
-        };
+        var cacheDir = Path.Combine(steamRoot, "appcache", "librarycache");
+        return Directory.Exists(cacheDir) ? cacheDir : null;
+    }
 
-        return candidates.FirstOrDefault(File.Exists);
+    private sealed record SteamArtworkSet(string? Cover, string? Hero, string? HeroBlur, string? Logo);
+
+    private static SteamArtworkSet ResolveSteamArtworks(string steamRoot, string appId)
+    {
+        var cacheDir = Path.Combine(steamRoot, "appcache", "librarycache");
+        if (!Directory.Exists(cacheDir))
+        {
+            return new SteamArtworkSet(null, null, null, null);
+        }
+
+        var files = new List<string>();
+        var appDir = Path.Combine(cacheDir, appId);
+        if (Directory.Exists(appDir))
+        {
+            try
+            {
+                files.AddRange(Directory.EnumerateFiles(appDir, "*.*", SearchOption.AllDirectories)
+                    .Where(IsImageFile));
+            }
+            catch
+            {
+                // Ignore transient Steam cache read lock
+            }
+        }
+
+        try
+        {
+            files.AddRange(Directory.EnumerateFiles(cacheDir, $"{appId}_*.*", SearchOption.TopDirectoryOnly)
+                .Where(IsImageFile));
+        }
+        catch
+        {
+            // Ignore transient Steam cache read lock
+        }
+
+        if (files.Count == 0)
+        {
+            return new SteamArtworkSet(null, null, null, null);
+        }
+
+        string? cover = PickArtwork(files,
+            "library_600x900_schinese",
+            "library_600x900",
+            "library_capsule_schinese",
+            "library_capsule",
+            "header_schinese",
+            "header");
+
+        string? hero = PickArtwork(files,
+            f => IsArtworkMatch(f, "library_hero_schinese") && !f.Contains("blur", StringComparison.OrdinalIgnoreCase),
+            f => IsArtworkMatch(f, "library_hero") && !f.Contains("blur", StringComparison.OrdinalIgnoreCase),
+            f => IsArtworkMatch(f, "page_bg") && !f.Contains("blur", StringComparison.OrdinalIgnoreCase));
+
+        string? heroBlur = PickArtwork(files,
+            "library_hero_blur_schinese",
+            "library_hero_blur") ?? hero;
+
+        string? logo = PickArtwork(files,
+            "logo_schinese",
+            "logo");
+
+        return new SteamArtworkSet(
+            ToCacheUrl(cacheDir, cover),
+            ToCacheUrl(cacheDir, hero),
+            ToCacheUrl(cacheDir, heroBlur),
+            ToCacheUrl(cacheDir, logo));
+    }
+
+    private static bool IsImageFile(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsArtworkMatch(string filePath, string token) =>
+        Path.GetFileNameWithoutExtension(filePath).Contains(token, StringComparison.OrdinalIgnoreCase);
+
+    private static string? PickArtwork(List<string> files, params string[] orderedTokens)
+    {
+        foreach (var token in orderedTokens)
+        {
+            var match = files.FirstOrDefault(f =>
+                Path.GetFileNameWithoutExtension(f).Contains(token, StringComparison.OrdinalIgnoreCase) &&
+                !Path.GetFileNameWithoutExtension(f).Contains("_2x", StringComparison.OrdinalIgnoreCase))
+                ?? files.FirstOrDefault(f =>
+                    Path.GetFileNameWithoutExtension(f).Contains(token, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? PickArtwork(List<string> files, params Func<string, bool>[] predicates)
+    {
+        foreach (var predicate in predicates)
+        {
+            var match = files.FirstOrDefault(f => predicate(Path.GetFileNameWithoutExtension(f)));
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ToCacheUrl(string cacheDir, string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return null;
+        }
+
+        var rel = Path.GetRelativePath(cacheDir, filePath).Replace('\\', '/');
+        var encoded = string.Join("/", rel.Split('/').Select(Uri.EscapeDataString));
+        return $"https://steamcache.handheldopti.local/{encoded}";
     }
 }

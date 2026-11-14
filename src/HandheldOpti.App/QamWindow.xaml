@@ -10,8 +10,8 @@
         ShowInTaskbar="False"
         AllowsTransparency="False"
         Icon="Assets/app.ico"
-        Background="#0B101B">
-    <Border BorderBrush="#26334E" BorderThickness="1,0,0,0" Background="#0B101B">
-        <wv2:WebView2 x:Name="QamWebView" DefaultBackgroundColor="#0B101B" />
+        Background="#0E1014">
+    <Border BorderBrush="#232730" BorderThickness="1,0,0,0" Background="#0E1014">
+        <wv2:WebView2 x:Name="QamWebView" DefaultBackgroundColor="#0E1014" />
     </Border>
 </Window>

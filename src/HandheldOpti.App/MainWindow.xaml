@@ -10,7 +10,7 @@
         WindowStartupLocation="CenterScreen"
         AllowsTransparency="False"
         Icon="Assets/app.ico"
-        Background="#090D16">
+        Background="#0E1014">
     <Grid Background="#090D16">
         <wv2:WebView2 x:Name="ConsoleWebView" DefaultBackgroundColor="#090D16" />
     </Grid>

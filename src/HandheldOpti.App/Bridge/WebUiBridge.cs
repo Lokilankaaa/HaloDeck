@@ -109,6 +109,15 @@ public sealed class WebUiBridge
             webUiDir,
             CoreWebView2HostResourceAccessKind.Allow);
 
+        var steamLibraryCache = SteamLibraryScanner.ResolveSteamLibraryCacheDir();
+        if (!string.IsNullOrWhiteSpace(steamLibraryCache) && Directory.Exists(steamLibraryCache))
+        {
+            core.SetVirtualHostNameToFolderMapping(
+                "steamcache.handheldopti.local",
+                steamLibraryCache,
+                CoreWebView2HostResourceAccessKind.Allow);
+        }
+
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.AreDevToolsEnabled = true;
         core.Settings.IsStatusBarEnabled = false;

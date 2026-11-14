@@ -77,6 +77,9 @@ public sealed class GameEntry
     public string? MainExecutablePath { get; set; }
     public string? LaunchUri { get; set; }
     public string? CoverImageUrl { get; set; }
+    public string? HeroImageUrl { get; set; }
+    public string? HeroBlurImageUrl { get; set; }
+    public string? LogoImageUrl { get; set; }
     public GameEngine Engine { get; set; } = GameEngine.Unknown;
     public PeArchitecture Architecture { get; set; } = PeArchitecture.Unknown;
     public UpscalerCapabilities NativeUpscalers { get; set; } = new();

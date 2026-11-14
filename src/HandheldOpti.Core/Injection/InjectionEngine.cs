@@ -355,7 +355,7 @@ public sealed class InjectionEngine
                 createdSet.Add("OptiScaler.ini");
             }
 
-            PresetCatalog.ApplyToIni(iniDoc, effectiveConfig);
+            PresetCatalog.ApplyToIni(iniDoc, effectiveConfig, game.NativeUpscalers.HasDlssG);
             iniDoc.Save(targetIniPath);
 
             manifest.CreatedFiles = createdSet.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();

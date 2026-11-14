@@ -15,7 +15,7 @@ public sealed class GamepadComboBinding
 
 public sealed class AppSettings
 {
-    public string ActiveOptiScalerSlot { get; set; } = nameof(ComponentSlot.OptiScalerStable);
+    public string ActiveOptiScalerSlot { get; set; } = nameof(ComponentSlot.OptiScalerNightly);
     public string DefaultPresetId { get; set; } = "strix-halo-quality";
     public bool BackgroundAutoInjectEnabled { get; set; } = false;
     public bool StartMinimizedToTray { get; set; } = false;

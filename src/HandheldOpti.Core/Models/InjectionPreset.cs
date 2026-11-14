@@ -3,10 +3,12 @@ namespace HandheldOpti.Core.Models;
 public sealed class OptiScalerConfig
 {
     public string ProxyDllName { get; set; } = "auto";
-    public string Dx12Upscaler { get; set; } = "auto";
-    public string Dx11Upscaler { get; set; } = "fsr31";
-    public string VulkanUpscaler { get; set; } = "fsr31";
-    public string FgType { get; set; } = "optifg";
+    public string SrMode { get; set; } = "fsr4_int8";
+    public string Dx12Upscaler { get; set; } = "ffx";
+    public string Dx11Upscaler { get; set; } = "ffx_12";
+    public string VulkanUpscaler { get; set; } = "ffx_12";
+    public string FgType { get; set; } = "xefg";
+    public string FgInputMode { get; set; } = "auto";
     public bool EnableOptiPatcher { get; set; } = true;
     public bool EnableFakenvapi { get; set; } = true;
     public bool EnableCustomDlls { get; set; } = true;
@@ -16,15 +18,18 @@ public sealed class OptiScalerConfig
     public string SpoofedGpuName { get; set; } = string.Empty;
     public bool StreamlineSpoofing { get; set; } = true;
     public string ShortcutKeyHex { get; set; } = "0x2D";
-    public bool EnableFsr4Int8Hint { get; set; } = false;
+    public bool EnableFsr4Int8Hint { get; set; } = true;
+    public bool Fsr4Watermark { get; set; } = false;
 
     public OptiScalerConfig Clone() => new()
     {
         ProxyDllName = ProxyDllName,
+        SrMode = SrMode,
         Dx12Upscaler = Dx12Upscaler,
         Dx11Upscaler = Dx11Upscaler,
         VulkanUpscaler = VulkanUpscaler,
         FgType = FgType,
+        FgInputMode = FgInputMode,
         EnableOptiPatcher = EnableOptiPatcher,
         EnableFakenvapi = EnableFakenvapi,
         EnableCustomDlls = EnableCustomDlls,
@@ -34,7 +39,8 @@ public sealed class OptiScalerConfig
         SpoofedGpuName = SpoofedGpuName,
         StreamlineSpoofing = StreamlineSpoofing,
         ShortcutKeyHex = ShortcutKeyHex,
-        EnableFsr4Int8Hint = EnableFsr4Int8Hint
+        EnableFsr4Int8Hint = EnableFsr4Int8Hint,
+        Fsr4Watermark = Fsr4Watermark
     };
 }
 

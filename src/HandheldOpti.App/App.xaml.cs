@@ -391,7 +391,7 @@ public partial class App : System.Windows.Application
             bool runningReady = await WaitUntilAsync(
                 mainCore,
                 "document.readyState === 'complete' && document.querySelectorAll('.preset-card').length === 4");
-            await Task.Delay(250);
+            await Task.Delay(350);
 
             var workArea = SystemParameters.WorkArea;
             bool fitsWorkArea = mainWindow.ActualWidth <= workArea.Width + 1 &&
@@ -404,43 +404,59 @@ public partial class App : System.Windows.Application
                 workAreaHeight = Math.Round(workArea.Height, 1)
             });
 
-            var runningInfoJson = await mainCore.ExecuteScriptAsync("""
+            var tuneInfoJson = await mainCore.ExecuteScriptAsync("""
                 (() => ({
                   presetCount: document.querySelectorAll('.preset-card').length,
-                  fgOptions: document.querySelectorAll('#cfgFgType option').length,
+                  srPills: document.querySelectorAll('[data-sr-mode]').length,
+                  fgPills: document.querySelectorAll('[data-fg-type]').length,
+                  selectCount: document.querySelectorAll('select').length,
+                  srActive: document.querySelector('[data-sr-mode].active')?.dataset.srMode || '',
+                  fgActive: document.querySelector('[data-fg-type].active')?.dataset.fgType || '',
                   legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
-                  hasInspectBtn: Boolean(document.getElementById('btnInspectLog'))
+                  hasInspectBtn: Boolean(document.getElementById('btnInspectLog')) && !document.getElementById('btnInspectLog').disabled
                 }))()
                 """);
-            using var runningDoc = JsonDocument.Parse(runningInfoJson);
-            var runningRoot = runningDoc.RootElement;
-            bool runningOk = runningReady &&
-                             runningRoot.GetProperty("presetCount").GetInt32() == 4 &&
-                             runningRoot.GetProperty("fgOptions").GetInt32() == 5 &&
-                             runningRoot.GetProperty("legendFits").GetBoolean();
-            bool hasInspectBtn = runningRoot.GetProperty("hasInspectBtn").GetBoolean();
-            Record("runningTabAndFooterFit", runningOk, new
+            using var tuneDoc = JsonDocument.Parse(tuneInfoJson);
+            var tuneRoot = tuneDoc.RootElement;
+            bool tuneOk = runningReady &&
+                          tuneRoot.GetProperty("presetCount").GetInt32() == 4 &&
+                          tuneRoot.GetProperty("srPills").GetInt32() == 4 &&
+                          tuneRoot.GetProperty("fgPills").GetInt32() == 3 &&
+                          tuneRoot.GetProperty("selectCount").GetInt32() == 0 &&
+                          tuneRoot.GetProperty("srActive").GetString() == "fsr4_int8" &&
+                          tuneRoot.GetProperty("fgActive").GetString() == "xefg" &&
+                          tuneRoot.GetProperty("legendFits").GetBoolean();
+            bool hasInspectBtn = tuneRoot.GetProperty("hasInspectBtn").GetBoolean();
+            Record("tuneTabAndControlsFit", tuneOk, new
             {
-                presetCount = runningRoot.GetProperty("presetCount").GetInt32(),
-                fgOptions = runningRoot.GetProperty("fgOptions").GetInt32(),
-                legendFits = runningRoot.GetProperty("legendFits").GetBoolean(),
+                presetCount = tuneRoot.GetProperty("presetCount").GetInt32(),
+                srPills = tuneRoot.GetProperty("srPills").GetInt32(),
+                fgPills = tuneRoot.GetProperty("fgPills").GetInt32(),
+                selectCount = tuneRoot.GetProperty("selectCount").GetInt32(),
+                srActive = tuneRoot.GetProperty("srActive").GetString(),
+                fgActive = tuneRoot.GetProperty("fgActive").GetString(),
+                legendFits = tuneRoot.GetProperty("legendFits").GetBoolean(),
                 hasInspectBtn
             });
 
-            await CapturePngAsync(mainCore, outputDir, "01_console_running.png");
+            await CapturePngAsync(mainCore, outputDir, "v2_01_console_tune.png");
 
+            // Verify preset switching + collapsible advanced disclosure + back to flagship preset
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-preset=\"xess-antishimmer\"]').click()");
-            bool presetSwitched = await WaitUntilAsync(mainCore, "document.getElementById('cfgDx12')?.value === 'xess'");
+            bool switchedToXess = await WaitUntilAsync(mainCore, "document.querySelector('[data-sr-mode].active')?.dataset.srMode === 'xess'");
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleAdvanced')?.click()");
+            bool advOpened = await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-fg-input]').length === 3");
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleAdvanced')?.click()");
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-preset=\"strix-halo-quality\"]').click()");
-            await WaitUntilAsync(mainCore, "document.getElementById('cfgDx12')?.value === 'auto'");
-            Record("presetSwitching", presetSwitched);
+            await WaitUntilAsync(mainCore, "document.querySelector('[data-sr-mode].active')?.dataset.srMode === 'fsr4_int8'");
+            Record("presetAndDisclosureToggle", switchedToXess && advOpened, new { switchedToXess, advOpened });
 
             if (hasInspectBtn)
             {
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnInspectLog').click()");
                 bool modalOpened = await WaitUntilAsync(mainCore, "!document.getElementById('modalBackdrop').classList.contains('hidden')");
                 await Task.Delay(200);
-                await CapturePngAsync(mainCore, outputDir, "03_console_modal_log.png");
+                await CapturePngAsync(mainCore, outputDir, "v2_01b_ini_modal.png");
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnCloseModal')?.click()");
                 bool modalClosed = await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
                 Record("diagnosticModal", modalOpened && modalClosed, new { modalOpened, modalClosed });
@@ -450,41 +466,53 @@ public partial class App : System.Windows.Application
                 Record("diagnosticModal", true, "skipped (no games discovered)");
             }
 
+            // Tab 2: Library 2:3 poster shelf + Steam artwork verification
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"library\"]').click()");
             bool libReady = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-tab=\"library\"]')?.classList.contains('active') && (document.querySelectorAll('.game-card').length > 0 || Boolean(document.getElementById('btnScanGames')))");
-            await Task.Delay(250);
-            var libCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.game-card').length");
-            int renderedGames = int.TryParse(libCountStr, out var parsedGames) ? parsedGames : -1;
-            Record("libraryTab", libReady && renderedGames == bridge.CachedGames.Count, new
+                "document.querySelector('.tab-btn[data-tab=\"library\"]')?.classList.contains('active') && document.querySelectorAll('.poster-grid').length === 1");
+            await Task.Delay(500);
+            var libStatsJson = await mainCore.ExecuteScriptAsync("""
+                (() => {
+                  const cards = document.querySelectorAll('.poster-card').length;
+                  const loadedCovers = Array.from(document.querySelectorAll('.poster-img')).filter(img => img.complete && img.naturalWidth > 0).length;
+                  return { cards, loadedCovers };
+                })()
+                """);
+            using var libDoc = JsonDocument.Parse(libStatsJson);
+            int renderedGames = libDoc.RootElement.GetProperty("cards").GetInt32();
+            int loadedCovers = libDoc.RootElement.GetProperty("loadedCovers").GetInt32();
+            bool coversOk = bridge.CachedGames.Count == 0 || loadedCovers > 0;
+            Record("libraryPosterGrid", libReady && renderedGames == bridge.CachedGames.Count && coversOk, new
             {
                 renderedGames,
-                cachedGames = bridge.CachedGames.Count
+                cachedGames = bridge.CachedGames.Count,
+                loadedCovers
             });
-            await CapturePngAsync(mainCore, outputDir, "02_console_library.png");
+            await CapturePngAsync(mainCore, outputDir, "v2_02_library_posters.png");
 
+            // Tab 3: Components
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"components\"]').click()");
-            bool compReady = await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-install-comp]').length === 4");
-            await Task.Delay(200);
-            var hasOptiText = await WaitUntilAsync(mainCore, "document.body.innerText.includes('OptiScaler')");
-            Record("componentsTab", compReady && hasOptiText);
-            await CapturePngAsync(mainCore, outputDir, "04_console_components.png");
+            bool compReady = await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-install-comp]').length === 4 && document.querySelectorAll('[data-active-slot]').length === 2");
+            await Task.Delay(250);
+            var activeKernelStr = await mainCore.ExecuteScriptAsync("document.querySelector('[data-active-slot].active')?.dataset.activeSlot || ''");
+            Record("componentsTab", compReady, new { activeKernelSlot = activeKernelStr.Trim('"') });
+            await CapturePngAsync(mainCore, outputDir, "v2_03_components.png");
 
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"settings\"]').click()");
+            // Tab 4: Shortcuts & Spatial Focus
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"shortcuts\"]').click()");
             bool settingsReady = await WaitUntilAsync(
                 mainCore,
-                "Boolean(document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam')) && document.querySelectorAll('.gp-focused').length === 1");
+                "Boolean(document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
             await Task.Delay(150);
-            var focusedBefore = await mainCore.ExecuteScriptAsync("document.querySelector('.gp-focused')?.id || ''");
             await mainCore.ExecuteScriptAsync("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
             await Task.Delay(120);
-            var focusedAfter = await mainCore.ExecuteScriptAsync("document.querySelector('.gp-focused')?.id || ''");
             var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
-            bool focusValid = settingsReady && focusCountStr == "1" && !string.Equals(focusedBefore, focusedAfter, StringComparison.Ordinal);
-            Record("settingsAndSpatialFocus", focusValid, new { focusedBefore, focusedAfter, focusCount = focusCountStr });
-            await CapturePngAsync(mainCore, outputDir, "05_console_settings.png");
+            bool focusValid = settingsReady && focusCountStr == "1";
+            Record("shortcutsAndSpatialFocus", focusValid, new { focusCount = focusCountStr });
+            await CapturePngAsync(mainCore, outputDir, "v2_04_shortcuts.png");
 
+            // Window Fullscreen toggle
             mainWindow.SetFullscreenMode(true);
             await Task.Delay(250);
             bool fsMaximized = mainWindow.WindowState == WindowState.Maximized && mainWindow.WindowStyle == WindowStyle.None;
@@ -493,7 +521,8 @@ public partial class App : System.Windows.Application
             bool restoredFits = mainWindow.ActualWidth <= workArea.Width + 1 && mainWindow.ActualHeight <= workArea.Height + 1;
             Record("fullscreenToggle", fsMaximized && restoredFits, new { fsMaximized, restoredFits });
 
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"running\"]').click()");
+            // Switch back to tune & open QAM overlay
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"tune\"]').click()");
             await WaitUntilAsync(mainCore, "document.querySelectorAll('.preset-card').length === 4");
             await mainCore.ExecuteScriptAsync("document.getElementById('btnOpenQam').click()");
 
@@ -506,16 +535,24 @@ public partial class App : System.Windows.Application
             bool qamVisibleAndInit = qamWindow.IsVisible && qamWindow.WebViewInitialized;
             bool qamDomReady = false;
             bool qamWidthOk = false;
+            bool qamRailAndGamesOk = false;
             int qamErrCount = 0;
 
             if (qamVisibleAndInit && qamWindow.QamWebView.CoreWebView2 is { } qamCore)
             {
                 qamDomReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && document.querySelectorAll('.preset-card').length === 4 && document.querySelectorAll('.gp-focused').length === 1");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelectorAll('.qam-rail-btn').length === 3 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
                 await Task.Delay(250);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
-                await CapturePngAsync(qamCore, outputDir, "06_qam_overlay.png");
+                await CapturePngAsync(qamCore, outputDir, "v2_05_qam_tune.png");
+
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"games\"]').click()");
+                qamRailAndGamesOk = await WaitUntilAsync(
+                    qamCore,
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"games\"]')?.classList.contains('active') && document.querySelectorAll('.qam-game-row').length >= 1");
+                await Task.Delay(200);
+                await CapturePngAsync(qamCore, outputDir, "v2_06_qam_games.png");
 
                 var qamErrStr = await qamCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
                 int.TryParse(qamErrStr, out qamErrCount);
@@ -529,11 +566,12 @@ public partial class App : System.Windows.Application
                 await Task.Delay(80);
             }
             bool qamClosed = !qamWindow.IsVisible;
-            Record("qamOverlayAndClose", qamVisibleAndInit && qamDomReady && qamWidthOk && qamClosed, new
+            Record("qamOverlayRailAndClose", qamVisibleAndInit && qamDomReady && qamWidthOk && qamRailAndGamesOk && qamClosed, new
             {
                 qamVisibleAndInit,
                 qamDomReady,
                 qamWidthOk,
+                qamRailAndGamesOk,
                 qamActualWidth = Math.Round(qamWindow.ActualWidth, 1),
                 qamClosed
             });

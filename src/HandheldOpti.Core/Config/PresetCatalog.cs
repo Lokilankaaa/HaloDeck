@@ -9,92 +9,105 @@ public static class PresetCatalog
         new()
         {
             Id = "strix-halo-quality",
-            Name = "Strix Halo 均衡画质帧生",
-            Subtitle = "GPD Win 5 推荐预设 · RDNA 3.5",
-            Description = "启用 OptiPatcher + Dxgi=auto 智能伪装解锁全部游戏 DLSS 与 OptiFG 帧生成，并配合 Fakenvapi 将 Reflex 映射为 AMD Anti-Lag 2。",
-            RecommendedFor = "黑神话：悟空 / 赛博朋克 2077 / 多数 UE5 与 DX12 单机大作",
+            Name = "FSR 4.1.2 INT8 + XeFG",
+            Subtitle = "2026 主流推荐 · RDNA 3.5",
+            Description = "默认启用 FSR 4.1.2 INT8 超分搭配 Intel XeSS 帧生成 (XeFG)，并启用 Anti-Lag 2 与智能 DLSS-G 接管，兼顾画质与流畅度。",
+            RecommendedFor = "绝大多数 DX12 单机大作（如黑神话、真三起源、仁王 3 等）",
             Config = new OptiScalerConfig
             {
                 ProxyDllName = "auto",
-                Dx12Upscaler = "auto",
-                Dx11Upscaler = "fsr31",
-                VulkanUpscaler = "fsr31",
-                FgType = "optifg",
+                SrMode = "fsr4_int8",
+                Dx12Upscaler = "ffx",
+                Dx11Upscaler = "ffx_12",
+                VulkanUpscaler = "ffx_12",
+                FgType = "xefg",
+                FgInputMode = "auto",
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
                 SpoofDxgi = true,
                 StreamlineSpoofing = true,
-                ShortcutKeyHex = "0x2D"
+                ShortcutKeyHex = "0x2D",
+                EnableFsr4Int8Hint = true,
+                Fsr4Watermark = false
             }
         },
         new()
         {
-            Id = "xess-antishimmer",
-            Name = "XeSS 稳定抗闪烁",
-            Subtitle = "细线条 / 植被 / 粒子抗抖动",
-            Description = "DX12 下强制使用 Intel XeSS 2.x/DP4a 管线配合 OptiFG，显著减少铁丝网与远景植被的闪烁问题。",
-            RecommendedFor = "UE5 远景多闪烁游戏 / 追求画面稳定性",
+            Id = "handheld-lite-xefg",
+            Name = "FSR 4.1.2 Lite + XeFG",
+            Subtitle = "掌机高帧省电",
+            Description = "切换至开销更低的 FSR 4.1.2 INT8 Lite 轻量模型配合 XeFG 帧生成，在掌机功耗墙下换取更高基础帧率与更低渲染耗时。",
+            RecommendedFor = "高负载虚幻 5 新作 / 需要稳定高帧率或省电续航",
             Config = new OptiScalerConfig
             {
                 ProxyDllName = "auto",
-                Dx12Upscaler = "xess",
-                Dx11Upscaler = "fsr31",
-                VulkanUpscaler = "fsr31",
-                FgType = "optifg",
+                SrMode = "fsr4_int8_lite",
+                Dx12Upscaler = "ffx",
+                Dx11Upscaler = "ffx_12",
+                VulkanUpscaler = "ffx_12",
+                FgType = "xefg",
+                FgInputMode = "auto",
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
                 SpoofDxgi = true,
                 StreamlineSpoofing = true,
-                ShortcutKeyHex = "0x2D"
+                ShortcutKeyHex = "0x2D",
+                EnableFsr4Int8Hint = true,
+                Fsr4Watermark = false
             }
         },
         new()
         {
             Id = "low-latency-upscale",
-            Name = "低延迟纯超分 (无帧生成)",
-            Subtitle = "60+ FPS 跟手操控 · 掌机省电",
-            Description = "关闭插帧仅启用 FFX FSR 3.1/4 超分与 Anti-Lag 2 延迟优化，降低输入延迟与 8060S 额外插帧功耗。",
-            RecommendedFor = "动作类游戏 / 灵魂类 / 高帧率低延迟场景",
+            Name = "FSR 4.1.2 纯超分 (无插帧)",
+            Subtitle = "动作 / 魂类低延迟",
+            Description = "仅启用 FSR 4.1.2 INT8 超分与 Anti-Lag 2 管线，关闭帧生成以消除额外输入延迟与 UI 伪影。",
+            RecommendedFor = "动作格斗 / 魂类 / 竞技及对跟手度要求极高的场景",
             Config = new OptiScalerConfig
             {
                 ProxyDllName = "auto",
-                Dx12Upscaler = "fsr31",
-                Dx11Upscaler = "fsr31",
-                VulkanUpscaler = "fsr31",
+                SrMode = "fsr4_int8",
+                Dx12Upscaler = "ffx",
+                Dx11Upscaler = "ffx_12",
+                VulkanUpscaler = "ffx_12",
                 FgType = "nofg",
+                FgInputMode = "upscaler",
                 EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
                 SpoofDxgi = true,
                 StreamlineSpoofing = true,
-                ShortcutKeyHex = "0x2D"
+                ShortcutKeyHex = "0x2D",
+                EnableFsr4Int8Hint = true,
+                Fsr4Watermark = false
             }
         },
         new()
         {
-            Id = "dlss-spoof-compat",
-            Name = "强力显卡伪装兼容 (RTX 4090)",
-            Subtitle = "针对未适配 OptiPatcher 的老游戏",
-            Description = "当游戏检测显卡型号并隐藏 DLSS 选项时，启用 DXGI 显卡伪装为 RTX 4090 (0x10DE / 0x2684) 解锁选项。",
-            RecommendedFor = "老版本 UE4 / 严格检测 GPU Vendor 的非支持列表游戏",
+            Id = "xess-antishimmer",
+            Name = "XeSS 2.0 + XeFG 稳态方案",
+            Subtitle = "植被 / 细线 / 粒子抗闪烁",
+            Description = "使用 Intel XeSS 2.0 超分配合 XeFG 帧生成，有效缓解部分游戏远景栅栏、草地与细小粒子闪烁。",
+            RecommendedFor = "UE5 远景多闪烁游戏 / 偏好稳态抗锯齿场景",
             Config = new OptiScalerConfig
             {
                 ProxyDllName = "auto",
-                Dx12Upscaler = "fsr31",
-                Dx11Upscaler = "fsr31",
-                VulkanUpscaler = "fsr31",
-                FgType = "optifg",
-                EnableOptiPatcher = false,
+                SrMode = "xess",
+                Dx12Upscaler = "xess",
+                Dx11Upscaler = "xess_12",
+                VulkanUpscaler = "xess_12",
+                FgType = "xefg",
+                FgInputMode = "auto",
+                EnableOptiPatcher = true,
                 EnableFakenvapi = true,
                 EnableCustomDlls = true,
                 SpoofDxgi = true,
-                SpoofedVendorId = "0x10de",
-                SpoofedDeviceId = "0x2684",
-                SpoofedGpuName = "NVIDIA GeForce RTX 4090",
                 StreamlineSpoofing = true,
-                ShortcutKeyHex = "0x2D"
+                ShortcutKeyHex = "0x2D",
+                EnableFsr4Int8Hint = false,
+                Fsr4Watermark = false
             }
         }
     };
@@ -105,30 +118,149 @@ public static class PresetCatalog
         return all.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? all[0];
     }
 
-    private static string NormalizeUpscaler(string? value)
+    private static string NormalizeUpscaler(string? value, bool isV10)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return "auto";
         }
 
-        var trimmed = value.Trim();
-        return trimmed.ToLowerInvariant() switch
+        var lower = value.Trim().ToLowerInvariant();
+        if (isV10)
+        {
+            return lower switch
+            {
+                "fsr31" => "ffx",
+                "fsr31_12" => "ffx_12",
+                _ => value.Trim()
+            };
+        }
+
+        return lower switch
         {
             "ffx" => "fsr31",
             "ffx_12" => "fsr31_12",
-            _ => trimmed
+            _ => value.Trim()
         };
     }
 
-    public static void ApplyToIni(IniDocument ini, OptiScalerConfig config)
+    private static string ResolveEffectiveSrMode(OptiScalerConfig config)
     {
-        ini.Set("Upscalers", "Dx11Upscaler", NormalizeUpscaler(config.Dx11Upscaler));
-        ini.Set("Upscalers", "Dx12Upscaler", NormalizeUpscaler(config.Dx12Upscaler));
-        ini.Set("Upscalers", "VulkanUpscaler", NormalizeUpscaler(config.VulkanUpscaler));
+        var sr = (config.SrMode ?? string.Empty).Trim().ToLowerInvariant();
+        if (sr is "fsr4_int8" or "fsr4_int8_lite" or "xess" or "fsr31")
+        {
+            return sr;
+        }
 
-        // OptiScaler v0.9.4+ replaced [FrameGen] FgType with Enabled + FGInput + FGOutput.
-        var fg = (config.FgType ?? "auto").Trim().ToLowerInvariant();
+        var dx12 = (config.Dx12Upscaler ?? string.Empty).Trim().ToLowerInvariant();
+        if (dx12 is "xess" or "xess_12")
+        {
+            return "xess";
+        }
+
+        if (config.EnableFsr4Int8Hint)
+        {
+            return "fsr4_int8";
+        }
+
+        return dx12 is "ffx" or "fsr31" ? "fsr31" : "custom";
+    }
+
+    public static void ApplyToIni(IniDocument ini, OptiScalerConfig config, bool gameHasNativeDlssG = false)
+    {
+        // v10.0.0+ (Nightly) uses [FSR] Fsr4GpuSupport + Fsr4Model and Dx12Upscaler=ffx;
+        // v0.9.4 Stable uses [FSR] Fsr4ForceEnableInt8 and Dx12Upscaler=fsr31.
+        bool isV10 = ini.Get("FSR", "Fsr4GpuSupport") is not null;
+        string srMode = ResolveEffectiveSrMode(config);
+
+        switch (srMode)
+        {
+            case "fsr4_int8":
+                ini.Set("Upscalers", "Dx12Upscaler", isV10 ? "ffx" : "fsr31");
+                ini.Set("Upscalers", "Dx11Upscaler", isV10 ? "ffx_12" : "fsr31_12");
+                ini.Set("Upscalers", "VulkanUpscaler", isV10 ? "ffx_12" : "fsr31_12");
+                if (isV10)
+                {
+                    ini.Set("FSR", "UpscalerIndex", "0");
+                    ini.Set("FSR", "Fsr4GpuSupport", "2");
+                    ini.Set("FSR", "Fsr4Model", "1");
+                    ini.Set("FSR", "FsrAgilitySDKUpgrade", "true");
+                }
+                else
+                {
+                    ini.Set("FSR", "Fsr4ForceEnableInt8", "true");
+                }
+                break;
+
+            case "fsr4_int8_lite":
+                ini.Set("Upscalers", "Dx12Upscaler", isV10 ? "ffx" : "fsr31");
+                ini.Set("Upscalers", "Dx11Upscaler", isV10 ? "ffx_12" : "fsr31_12");
+                ini.Set("Upscalers", "VulkanUpscaler", isV10 ? "ffx_12" : "fsr31_12");
+                if (isV10)
+                {
+                    ini.Set("FSR", "UpscalerIndex", "0");
+                    ini.Set("FSR", "Fsr4GpuSupport", "4");
+                    ini.Set("FSR", "Fsr4Model", "3");
+                    ini.Set("FSR", "FsrAgilitySDKUpgrade", "true");
+                }
+                else
+                {
+                    ini.Set("FSR", "Fsr4ForceEnableInt8", "true");
+                }
+                break;
+
+            case "xess":
+                ini.Set("Upscalers", "Dx12Upscaler", "xess");
+                ini.Set("Upscalers", "Dx11Upscaler", "xess_12");
+                ini.Set("Upscalers", "VulkanUpscaler", "xess_12");
+                if (isV10)
+                {
+                    ini.Set("FSR", "Fsr4GpuSupport", "0");
+                }
+                else
+                {
+                    ini.Set("FSR", "Fsr4ForceEnableInt8", "false");
+                }
+                break;
+
+            case "fsr31":
+                ini.Set("Upscalers", "Dx12Upscaler", isV10 ? "ffx" : "fsr31");
+                ini.Set("Upscalers", "Dx11Upscaler", isV10 ? "ffx_12" : "fsr31_12");
+                ini.Set("Upscalers", "VulkanUpscaler", isV10 ? "ffx_12" : "fsr31_12");
+                if (isV10)
+                {
+                    ini.Set("FSR", "UpscalerIndex", "0");
+                    ini.Set("FSR", "Fsr4GpuSupport", "0");
+                }
+                else
+                {
+                    ini.Set("FSR", "Fsr4ForceEnableInt8", "false");
+                }
+                break;
+
+            default:
+                ini.Set("Upscalers", "Dx11Upscaler", NormalizeUpscaler(config.Dx11Upscaler, isV10));
+                ini.Set("Upscalers", "Dx12Upscaler", NormalizeUpscaler(config.Dx12Upscaler, isV10));
+                ini.Set("Upscalers", "VulkanUpscaler", NormalizeUpscaler(config.VulkanUpscaler, isV10));
+                break;
+        }
+
+        if (isV10)
+        {
+            ini.Set("FSR", "Fsr4EnableWatermark", config.Fsr4Watermark ? "true" : "false");
+        }
+
+        // Resolve FGInput: prefer native dlssg when game ships nvngx_dlssg.dll (zero HUD ghosting),
+        // or honour explicit user override ("dlssg" / "upscaler").
+        var fgInputMode = (config.FgInputMode ?? "auto").Trim().ToLowerInvariant();
+        string effectiveFgInput = fgInputMode switch
+        {
+            "dlssg" => "dlssg",
+            "upscaler" => "upscaler",
+            _ => gameHasNativeDlssG ? "dlssg" : "upscaler"
+        };
+
+        var fg = (config.FgType ?? "xefg").Trim().ToLowerInvariant();
         switch (fg)
         {
             case "nofg":
@@ -143,13 +275,17 @@ public static class PresetCatalog
                 break;
             case "xefg":
                 ini.Set("FrameGen", "Enabled", "true");
-                ini.Set("FrameGen", "FGInput", "upscaler");
+                ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "xefg");
+                if (effectiveFgInput == "upscaler")
+                {
+                    ini.Set("OptiFG", "HUDFix", "true");
+                }
                 break;
             case "optifg":
             case "fsrfg":
                 ini.Set("FrameGen", "Enabled", "true");
-                ini.Set("FrameGen", "FGInput", "upscaler");
+                ini.Set("FrameGen", "FGInput", effectiveFgInput);
                 ini.Set("FrameGen", "FGOutput", "fsrfg");
                 ini.Set("OptiFG", "HUDFix", "true");
                 break;

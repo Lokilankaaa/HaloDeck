@@ -3,71 +3,126 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HandheldOpti · GPD Win 5 自动 OptiScaler</title>
+  <title>HandheldOpti</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
-  <div id="app" class="app-shell">
-    <!-- Top Header (Hidden in compact QAM mode or streamlined) -->
-    <header id="consoleHeader" class="top-bar">
-      <div class="brand-cluster">
-        <div class="brand-logo">HO</div>
-        <div>
-          <div class="brand-title">HandheldOpti <span class="badge-hw">GPD Win 5 · RDNA 3.5</span></div>
-          <div class="brand-sub">现代化掌机自动 OptiScaler 注入控制台</div>
+<body class="mode-console">
+  <!-- Dynamic Game Hero Blurred Backdrop -->
+  <div id="ambientBackdrop" class="ambient-backdrop" aria-hidden="true">
+    <img id="ambientHeroImg" class="ambient-hero-img is-empty" alt="" />
+    <div class="ambient-vignette"></div>
+  </div>
+
+  <div id="appShell" class="app-shell">
+    <!-- Console Top Navigation Bar (48px, hidden in QAM mode) -->
+    <header id="topBar" class="top-bar">
+      <div class="top-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 20.5 7 20.5 17 12 22 3.5 17 3.5 7"></polygon>
+            <circle cx="12" cy="12" r="3.2"></circle>
+          </svg>
+        </div>
+        <div class="brand-copy">
+          <span class="brand-title">HandheldOpti</span>
+          <span id="deviceTag" class="brand-sub">GPD WIN 5 · 8060S</span>
         </div>
       </div>
 
-      <nav class="tab-strip" role="tablist">
-        <button class="tab-btn active" data-nav data-tab="running"><span class="tab-icon">⚡</span> 正在运行</button>
-        <button class="tab-btn" data-nav data-tab="library"><span class="tab-icon">🎮</span> 游戏库 <span id="libCountPill" class="pill-count">0</span></button>
-        <button class="tab-btn" data-nav data-tab="components"><span class="tab-icon">📦</span> 组件中心</button>
-        <button class="tab-btn" data-nav data-tab="settings"><span class="tab-icon">⚙️</span> 掌机设置</button>
+      <nav class="top-nav" aria-label="主功能导航">
+        <span class="bumper-cap" title="LB 向左切换">LB</span>
+        <button class="tab-btn active" data-tab="tune" data-focusable="true">调优注入</button>
+        <button class="tab-btn" data-tab="library" data-focusable="true">游戏库</button>
+        <button class="tab-btn" data-tab="components" data-focusable="true">组件</button>
+        <button class="tab-btn" data-tab="shortcuts" data-focusable="true">快捷键</button>
+        <span class="bumper-cap" title="RB 向右切换">RB</span>
       </nav>
 
-      <div class="header-actions">
-        <span id="controllerPill" class="status-pill muted">🎮 检测手柄中</span>
-        <button id="btnOpenQam" class="chip-btn" data-nav title="切换右侧快捷菜单 (Ctrl+Alt+O)">◫ 快捷侧栏</button>
-        <button id="btnToggleFullscreen" class="icon-btn" data-nav title="切换全屏">⛶</button>
-        <button id="btnMinimizeTray" class="icon-btn" data-nav title="最小化到托盘">⎯</button>
-      </div>
-    </header>
+      <div class="top-actions">
+        <div id="controllerChip" class="gp-status-chip" title="控制器连接状态">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="6" width="20" height="12" rx="5"></rect>
+            <path d="M7 12h4M9 10v4"></path>
+            <circle cx="15.5" cy="11" r="0.8" fill="currentColor"></circle>
+            <circle cx="17.5" cy="13" r="0.8" fill="currentColor"></circle>
+          </svg>
+          <span id="controllerLabel">键鼠 / 触摸</span>
+        </div>
 
-    <!-- QAM Compact Header -->
-    <header id="qamHeader" class="qam-bar hidden">
-      <div class="qam-title-row">
-        <div class="brand-logo sm">HO</div>
-        <div>
-          <div class="qam-title">HandheldOpti 快捷菜单</div>
-          <div id="qamControllerSub" class="qam-sub">GPD Win 5 · XInput 就绪</div>
+        <button id="btnOpenQam" class="top-pill-btn" data-focusable="true" title="打开右侧掌机快捷侧栏">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <line x1="15" y1="4" x2="15" y2="20"></line>
+          </svg>
+          <span>快捷侧栏</span>
+        </button>
+
+        <div class="win-controls">
+          <button id="btnMinimize" class="win-btn" title="最小化到托盘" aria-label="最小化">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="3" y1="11" x2="13" y2="11"></line></svg>
+          </button>
+          <button id="btnFullscreen" class="win-btn" title="切换全屏掌机模式" aria-label="全屏">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" rx="1.2"></rect></svg>
+          </button>
+          <button id="btnCloseApp" class="win-btn win-btn-close" title="隐藏到系统托盘" aria-label="关闭">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="4" y1="4" x2="12" y2="12"></line><line x1="12" y1="4" x2="4" y2="12"></line></svg>
+          </button>
         </div>
       </div>
-      <div class="qam-top-actions">
-        <button id="btnQamOpenConsole" class="chip-btn" data-nav>控制台</button>
-        <button id="btnQamClose" class="chip-btn danger" data-nav>✕</button>
-      </div>
     </header>
 
-    <!-- Main Scrollable Viewport -->
-    <main id="viewport" class="viewport">
-      <!-- Views rendered dynamically by app.js -->
-    </main>
+    <!-- Primary Content Region (dynamically rendered for Console OR QAM mode) -->
+    <main id="mainView" class="main-view"></main>
 
-    <!-- Persistent Handheld Key Legend Footer -->
-    <footer id="gamepadLegend" class="legend-bar">
-      <div class="legend-items" id="legendItems"></div>
-      <div id="globalNotice" class="global-notice"></div>
-    </footer>
+    <!-- Right Vertical Icon Rail (visible only in QAM mode) -->
+    <aside id="qamRail" class="qam-rail hidden" aria-label="侧栏页面切换">
+      <span class="qam-bumper">LB</span>
+      <div class="qam-rail-items">
+        <button class="qam-rail-btn active" data-qam-tab="tune" title="超分调优">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <line x1="4" y1="6" x2="20" y2="6"></line><circle cx="9" cy="6" r="2" fill="#0e1014"></circle>
+            <line x1="4" y1="12" x2="20" y2="12"></line><circle cx="15" cy="12" r="2" fill="#0e1014"></circle>
+            <line x1="4" y1="18" x2="20" y2="18"></line><circle cx="11" cy="18" r="2" fill="#0e1014"></circle>
+          </svg>
+        </button>
+        <button class="qam-rail-btn" data-qam-tab="compat" title="兼容与底层参数">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v5c0 5-3.2 8.7-7 10-3.8-1.3-7-5-7-10V6l7-3z"></path>
+          </svg>
+        </button>
+        <button class="qam-rail-btn" data-qam-tab="games" title="切换目标游戏">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="7" height="7" rx="1.5"></rect>
+            <rect x="14" y="4" width="7" height="7" rx="1.5"></rect>
+            <rect x="3" y="13" width="7" height="7" rx="1.5"></rect>
+            <rect x="14" y="13" width="7" height="7" rx="1.5"></rect>
+          </svg>
+        </button>
+      </div>
+      <span class="qam-bumper">RB</span>
+    </aside>
+
+    <!-- Handheld Bottom Action Prompt Strip -->
+    <footer id="gamepadLegend" class="bottom-legend"></footer>
   </div>
 
-  <!-- Modal / Drawer Layer -->
+  <!-- Frosted Diagnostics / INI Viewer Modal -->
   <div id="modalBackdrop" class="modal-backdrop hidden">
-    <div id="modalCard" class="modal-card"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <div>
+          <h3 id="modalTitle" class="modal-title">诊断详情</h3>
+          <p id="modalSubtitle" class="modal-sub"></p>
+        </div>
+        <button id="btnCloseModal" class="win-btn" data-focusable="true" aria-label="关闭弹窗">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><line x1="4" y1="4" x2="12" y2="12"></line><line x1="12" y1="4" x2="4" y2="12"></line></svg>
+        </button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
   </div>
 
-  <!-- Toast Stack -->
   <div id="toastStack" class="toast-stack"></div>
-
   <script src="app.js"></script>
 </body>
 </html>
