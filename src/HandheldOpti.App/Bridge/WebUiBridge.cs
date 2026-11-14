@@ -232,6 +232,7 @@ public sealed class WebUiBridge
                 "toggleFullscreen" => InvokeUiAction(() => RequestToggleFullscreen?.Invoke()),
                 "minimizeToTray" => InvokeUiAction(() => RequestMinimizeToTray?.Invoke()),
                 "runAutoInjectNow" => await RunBackgroundAutoInjectAsync(),
+                "expandPagefile" => await ExpandPagefileAsync(),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -263,6 +264,7 @@ public sealed class WebUiBridge
             settings = _settings,
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
+            memoryHealth = HandheldOpti.App.Native.Win32Interop.GetSystemMemoryHealth(),
             hardwareProfile = new
             {
                 deviceName = "GPD Win 5 / Windows 掌机",
@@ -270,6 +272,47 @@ public sealed class WebUiBridge
                 menuKeyHint = "L4/R4 推荐绑定 Ctrl+Alt+O / Ctrl+Alt+I"
             }
         };
+    }
+
+    private async Task<object> ExpandPagefileAsync()
+    {
+        const string script =
+            "$path = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management'; " +
+            "$pf = \"$env:SystemDrive\\pagefile.sys 24576 40960\"; " +
+            "Set-ItemProperty -Path $path -Name PagingFiles -Value ([string[]]@($pf))";
+        string encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
+        };
+
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException("无法启动管理员 PowerShell 进程。");
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"写入系统分页文件注册表失败（退出码 {process.ExitCode}）。");
+            }
+
+            return new
+            {
+                ok = true,
+                rebootRequired = true,
+                message = "已将系统虚拟内存扩容为 24–40 GB，请重启掌机后生效。",
+                memoryHealth = HandheldOpti.App.Native.Win32Interop.GetSystemMemoryHealth()
+            };
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new InvalidOperationException("用户已取消管理员授权，系统虚拟内存设置未更改。");
+        }
     }
 
     private async Task<object> ScanGamesAsync()

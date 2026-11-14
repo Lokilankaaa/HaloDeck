@@ -215,4 +215,54 @@ internal static class Win32Interop
         0x21 or // VK_PRIOR (PageUp)
         0x22 or // VK_NEXT (PageDown)
         0x25 or 0x26 or 0x27 or 0x28; // Arrow keys
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    public static object GetSystemMemoryHealth()
+    {
+        var stat = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (!GlobalMemoryStatusEx(ref stat))
+        {
+            return new
+            {
+                totalRamGb = 0.0,
+                availRamGb = 0.0,
+                commitLimitGb = 0.0,
+                commitAvailGb = 0.0,
+                lowCommitHeadroom = false
+            };
+        }
+
+        const double gb = 1024.0 * 1024.0 * 1024.0;
+        double totalRamGb = Math.Round(stat.ullTotalPhys / gb, 2);
+        double availRamGb = Math.Round(stat.ullAvailPhys / gb, 2);
+        double commitLimitGb = Math.Round(stat.ullTotalPageFile / gb, 2);
+        double commitAvailGb = Math.Round(stat.ullAvailPageFile / gb, 2);
+        bool lowCommitHeadroom = (totalRamGb <= 20.0 && commitLimitGb < 38.0) || commitAvailGb < 8.0;
+
+        return new
+        {
+            totalRamGb,
+            availRamGb,
+            commitLimitGb,
+            commitAvailGb,
+            lowCommitHeadroom
+        };
+    }
 }

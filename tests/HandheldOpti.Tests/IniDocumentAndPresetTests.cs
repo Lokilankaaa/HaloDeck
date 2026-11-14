@@ -55,6 +55,7 @@ public sealed class IniDocumentAndPresetTests
         spoofCfg.SpoofDxgi = false;
         PresetCatalog.ApplyToIni(doc, spoofCfg);
         Assert.Equal("false", doc.Get("Spoofing", "Dxgi"));
+        Assert.Equal("auto", doc.Get("Spoofing", "DxgiVRAM"));
     }
 
     [Fact]
@@ -118,6 +119,11 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("true", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("dlssg", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
+        Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
+        Assert.Equal("true", doc.Get("Log", "LogToFile"));
+        Assert.Equal("2", doc.Get("Log", "LogLevel"));
+        Assert.Equal("true", doc.Get("V-Sync", "OverrideVsync"));
+        Assert.Equal("false", doc.Get("V-Sync", "ForceVsync"));
 
         var lite = PresetCatalog.GetById("handheld-lite-xefg");
         PresetCatalog.ApplyToIni(doc, lite.Config, gameHasNativeDlssG: false);
@@ -126,5 +132,6 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("false", doc.Get("FSR", "Fsr4EnableWatermark"));
         Assert.Equal("upscaler", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
+        Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
     }
 }

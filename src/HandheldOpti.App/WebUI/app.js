@@ -370,6 +370,14 @@
 
         <!-- Right: ClawTweaks Segmented Controls -->
         <div class="tune-right">
+          ${state.snapshot?.memoryHealth?.lowCommitHeadroom ? `
+            <div class="mem-alert-card">
+              <div class="mem-alert-copy">
+                <div class="mem-alert-title">检测到高 UMA 显存拆分：可用内存 ${esc(state.snapshot.memoryHealth.totalRamGb)} GB · 提交上限 ${esc(state.snapshot.memoryHealth.commitLimitGb)} GB</div>
+                <div class="mem-alert-sub">大型 DX12 游戏（如仁王3）易因虚拟内存耗尽报 Insufficient Memory。已默认将伪装显存限制为 10GB，建议扩容系统分页文件。</div>
+              </div>
+              <button class="mem-alert-btn" id="btnExpandPagefile" data-nav="action">扩容至 24-40GB</button>
+            </div>` : ""}
           <div>
             <div class="section-label">
               <span>主流预设方案 (${esc(kernelShort)})</span>
@@ -487,8 +495,8 @@
 
                 <div class="cw-row">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">DXGI 显卡身份伪装 (Dxgi=auto)</span>
-                    <span class="cw-row-sub">隐藏 AMD RDNA 身份检查，配合 Streamline Spoofing 启用 XeFG/FSR4</span>
+                    <span class="cw-row-title">DXGI 显卡身份伪装 (Dxgi=auto · 上限 10GB)</span>
+                    <span class="cw-row-sub">隐藏 AMD RDNA 身份检查，配合 Streamline Spoofing 启用 XeFG/FSR4（已限制伪装显存 10GB；若游戏如仁王3仍报显存不足可尝试关闭）</span>
                   </div>
                   ${renderSwitch("swSpoofDxgi", !!cfg.spoofDxgi)}
                 </div>
@@ -1054,6 +1062,18 @@
     document.getElementById("btnToggleAdvanced")?.addEventListener("click", () => {
       state.advancedOpen = !state.advancedOpen;
       render();
+    });
+    document.getElementById("btnExpandPagefile")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("expandPagefile", {});
+        if (res?.memoryHealth && state.snapshot) {
+          state.snapshot.memoryHealth = res.memoryHealth;
+        }
+        toast(res?.message || "已扩容虚拟内存分页文件，请重启后生效", "success");
+        render();
+      } catch (err) {
+        toast(err.message, "error");
+      }
     });
 
     // Quick target switching

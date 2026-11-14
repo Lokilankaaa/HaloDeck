@@ -13,6 +13,7 @@ public sealed class OptiScalerConfig
     public bool EnableFakenvapi { get; set; } = true;
     public bool EnableCustomDlls { get; set; } = true;
     public bool SpoofDxgi { get; set; } = true;
+    public int DxgiVramGb { get; set; } = 10;
     public string SpoofedVendorId { get; set; } = "auto";
     public string SpoofedDeviceId { get; set; } = "auto";
     public string SpoofedGpuName { get; set; } = string.Empty;
@@ -34,6 +35,7 @@ public sealed class OptiScalerConfig
         EnableFakenvapi = EnableFakenvapi,
         EnableCustomDlls = EnableCustomDlls,
         SpoofDxgi = SpoofDxgi,
+        DxgiVramGb = DxgiVramGb,
         SpoofedVendorId = SpoofedVendorId,
         SpoofedDeviceId = SpoofedDeviceId,
         SpoofedGpuName = SpoofedGpuName,

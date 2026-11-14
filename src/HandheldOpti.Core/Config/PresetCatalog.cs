@@ -281,6 +281,11 @@ public static class PresetCatalog
                 {
                     ini.Set("OptiFG", "HUDFix", "true");
                 }
+                if (isV10)
+                {
+                    ini.Set("V-Sync", "OverrideVsync", "true");
+                    ini.Set("V-Sync", "ForceVsync", "false");
+                }
                 break;
             case "optifg":
             case "fsrfg":
@@ -302,11 +307,15 @@ public static class PresetCatalog
 
         ini.Set("NvApi", "OverrideNvapiDll", config.EnableFakenvapi ? "true" : "false");
 
+        ini.Set("Log", "LogToFile", "true");
+        ini.Set("Log", "LogLevel", "2");
+
         ini.Set("Spoofing", "StreamlineSpoofing", config.StreamlineSpoofing ? "true" : "false");
 
         if (!config.SpoofDxgi)
         {
             ini.Set("Spoofing", "Dxgi", "false");
+            ini.Set("Spoofing", "DxgiVRAM", "auto");
         }
         else
         {
@@ -315,6 +324,11 @@ public static class PresetCatalog
                                      !string.Equals(vendor, "auto", StringComparison.OrdinalIgnoreCase);
 
             ini.Set("Spoofing", "Dxgi", hasExplicitVendor ? "true" : "auto");
+
+            if (config.DxgiVramGb > 0)
+            {
+                ini.Set("Spoofing", "DxgiVRAM", config.DxgiVramGb.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
 
             if (hasExplicitVendor)
             {
