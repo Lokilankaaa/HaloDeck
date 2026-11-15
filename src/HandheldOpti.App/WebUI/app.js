@@ -360,6 +360,25 @@
   }
 
   // ---------------- Formatters & Live Telemetry ----------------
+  function formatRefreshTag(sys) {
+    if (!sys) return "--Hz";
+    if (sys.isDynamicRefreshRate) {
+      const baseHz = sys.baseRefreshRateHz || Math.round((sys.refreshRateHz || 120) / 2);
+      return `动态 ${baseHz}–${sys.refreshRateHz || 120}Hz`;
+    }
+    return `${sys.refreshRateHz || "--"}Hz`;
+  }
+
+  function buildRefreshOptions(sys) {
+    const baseRates = (sys?.supportedRefreshRates && sys.supportedRefreshRates.length)
+      ? sys.supportedRefreshRates.map((h) => ({ value: String(h), label: `${h}Hz` }))
+      : [{ value: "60", label: "60Hz" }, { value: "120", label: "120Hz" }];
+    if (sys?.dynamicRefreshSupported || sys?.isDynamicRefreshRate) {
+      return [...baseRates, { value: "drr", label: "动态" }];
+    }
+    return baseRates;
+  }
+
   function formatStandbyEta(sys) {
     if (!sys?.hasBattery) return "无电池";
     const mins = (typeof sys.estimatedStandbyMinutes === "number" && sys.estimatedStandbyMinutes > 0)
@@ -371,25 +390,142 @@
     return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m} 分钟`;
   }
 
-  function formatPowerBadge(sys) {
-    if (!sys) return "--%";
-    if (!sys.hasBattery) return "AC 直连 (无电池)";
-    const sysW = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
+  function computePowerFlowUi(sys, curTdp = 45) {
+    if (!sys) {
+      return {
+        sysDrawNow: 0,
+        modeText: "读取中",
+        modeClass: "",
+        sysVal: "-- W",
+        sysSub: "读取电源传感器...",
+        batVal: "--%",
+        batSub: "--",
+        batWarn: false,
+        etaVal: "--",
+        etaSub: "正在采样",
+        badge: "--%",
+        kpiBatSub: "整机功耗读取中"
+      };
+    }
+
+    const apuPowerText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${curTdp}W`;
+    const sysDrawNow = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
       ? sys.systemDrawWatts
-      : (!sys.isAcOnline && sys.batteryPowerWatts > 0 ? sys.batteryPowerWatts : 0);
+      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
+    const sysVal = sysDrawNow > 0 ? `${sysDrawNow.toFixed(1)} W` : "-- W";
+
+    const mode = sys.powerRuntimeMode || (
+      !sys.hasBattery
+        ? "no_battery"
+        : (sys.isAcOnline
+          ? (sys.isBatteryDischarging && (sys.batteryDischargeWatts > 0.35 || sys.batteryPowerWatts > 0.35)
+            ? "ac_discharging"
+            : (sys.isCharging ? "charging" : "ac_sustained"))
+          : "battery")
+    );
+
+    if (mode === "no_battery") {
+      return {
+        apuPowerText,
+        sysDrawNow,
+        modeText: "AC 直连 (无电池)",
+        modeClass: "live",
+        sysVal,
+        sysSub: "AC 直供运行功耗",
+        batVal: "无电池",
+        batSub: "外接供电直连",
+        batWarn: false,
+        etaVal: "持续供电",
+        etaSub: "未安装电池组",
+        badge: "AC 直连 (无电池)",
+        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · AC 无电池直连`
+      };
+    }
+
+    if (mode === "charging") {
+      const chgW = Math.max(0, Number(sys.batteryPowerWatts || 0));
+      const estIn = sys.estimatedChargerWatts ?? (sysDrawNow + chgW);
+      const chgEta = sys.chargeEtaMinutes > 0 ? formatEta(sys.chargeEtaMinutes) : "";
+      return {
+        apuPowerText,
+        sysDrawNow,
+        modeText: "正在充电",
+        modeClass: "live",
+        sysVal,
+        sysSub: `不含充电 · 充电器 ≈${estIn.toFixed(1)}W`,
+        batVal: chgW > 0 ? `+${chgW.toFixed(1)} W` : `${sys.batteryPercent}%`,
+        batSub: `${sys.batteryPercent}% · 净充入电池${chgEta ? ` (${chgEta})` : ""}`,
+        batWarn: false,
+        etaVal: "正在充电",
+        etaSub: chgEta ? `供电充足 · ${chgEta}充满` : "充电功率 > 整机功耗 · 持续供电",
+        badge: `${sys.batteryPercent}% 正在充电${chgW > 0.5 ? ` (+${chgW.toFixed(0)}W)` : ""}`,
+        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 充电器 ≈${estIn.toFixed(1)}W`
+      };
+    }
+
+    if (mode === "ac_sustained") {
+      return {
+        apuPowerText,
+        sysDrawNow,
+        modeText: sys.isBypassPower ? "AC 旁路直供" : "AC 持续供电",
+        modeClass: "live",
+        sysVal,
+        sysSub: sys.isBypassPower ? "AC 旁路直供整机" : "AC 外接覆盖整机",
+        batVal: `${sys.batteryPercent}%`,
+        batSub: `电池未放电 · ${(sys.batteryRemainingWh || 0).toFixed(1)} Wh`,
+        batWarn: false,
+        etaVal: "插电长续航",
+        etaSub: sys.isBypassPower ? "充电器功率充足 · 零损耗旁路" : "充电器功率充足 · 持续供电不掉电",
+        badge: `${sys.batteryPercent}% ${sys.isBypassPower ? "旁路持续供电" : "插电长续航"}`,
+        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 充电器 ≈${(sys.estimatedChargerWatts ?? sysDrawNow).toFixed(1)}W`
+      };
+    }
+
+    if (mode === "ac_discharging") {
+      const disW = Number(sys.batteryDischargeWatts || sys.batteryPowerWatts || 0);
+      const estIn = sys.estimatedChargerWatts ?? Math.max(0, sysDrawNow - disW);
+      const eta = formatStandbyEta(sys);
+      const etaPart = eta && eta !== "计算中..." ? ` · 续航${eta}` : "";
+      return {
+        apuPowerText,
+        sysDrawNow,
+        modeText: "供电不足 · 电池补电",
+        modeClass: "warn",
+        sysVal,
+        sysSub: `充电器 ≈${estIn.toFixed(1)}W + 电池补电 ${disW.toFixed(1)}W`,
+        batVal: `-${disW.toFixed(1)} W`,
+        batSub: `${sys.batteryPercent}% · 充电器低于整机功耗，正在掉电`,
+        batWarn: true,
+        etaVal: eta,
+        etaSub: `充电器不足 · 按电池净放电 ${disW.toFixed(1)}W 计算`,
+        badge: `${sys.batteryPercent}% 补电-${disW.toFixed(1)}W${etaPart}`,
+        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 补电-${disW.toFixed(1)}W 续航${eta}`
+      };
+    }
+
+    const disW = Number(sys.batteryDischargeWatts || sysDrawNow || 0);
+    const batShownW = sys.batteryPowerWatts > 0 ? sys.batteryPowerWatts : disW;
     const eta = formatStandbyEta(sys);
     const etaPart = eta && eta !== "计算中..." ? ` · 续航${eta}` : "";
-    if (sys.isAcOnline) {
-      if (sys.isCharging) {
-        const chg = typeof sys.batteryPowerWatts === "number" && sys.batteryPowerWatts > 0
-          ? `充+${sys.batteryPowerWatts.toFixed(0)}W`
-          : "充电";
-        return `${sys.batteryPercent}% ${chg}${etaPart}`;
-      }
-      return `${sys.batteryPercent}% 旁路${etaPart}`;
-    }
-    const wStr = sysW > 0 ? ` -${sysW.toFixed(1)}W` : " 电池";
-    return `${sys.batteryPercent}%${wStr}${etaPart}`;
+    return {
+      apuPowerText,
+      sysDrawNow,
+      modeText: "便携电池供电",
+      modeClass: "",
+      sysVal,
+      sysSub: "APU + 外围即时融合功耗",
+      batVal: batShownW > 0 ? `-${batShownW.toFixed(1)} W` : `${sys.batteryPercent}%`,
+      batSub: `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`,
+      batWarn: false,
+      etaVal: eta,
+      etaSub: `余电 ${(sys.batteryRemainingWh || 0).toFixed(1)} / ${(sys.batteryFullWh || 0).toFixed(1)} Wh`,
+      badge: `${sys.batteryPercent}%${sysDrawNow > 0 ? ` -${sysDrawNow.toFixed(1)}W` : " 电池"}${etaPart}`,
+      kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 预计续航 ${eta}`
+    };
+  }
+
+  function formatPowerBadge(sys) {
+    return computePowerFlowUi(sys, state.snapshot?.settings?.currentTdpWatts || 45).badge;
   }
 
   function formatResShort(resStr) {
@@ -614,56 +750,56 @@
       topApuLabel.textContent = `${fpsPrefix}APU ${apuText} · C${sys.cpuTempC || "--"}°/G${sys.gpuTempC || "--"}° · VRAM ${vramUsedGb}G`;
     }
 
+    const curTdp = state.snapshot?.settings?.currentTdpWatts || 45;
+    const pfUi = computePowerFlowUi(sys, curTdp);
+
     const topSysLabel = document.getElementById("topSysLabel");
     if (topSysLabel) {
-      topSysLabel.textContent = `${formatResShort(`${sys.screenWidth}x${sys.screenHeight}`)} · ${sys.refreshRateHz || "--"}Hz · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`;
+      topSysLabel.textContent = `${formatResShort(`${sys.screenWidth}x${sys.screenHeight}`)} · ${formatRefreshTag(sys)} · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`;
+    }
+
+    const dispRefreshSub = document.getElementById("dispRefreshSub");
+    if (dispRefreshSub) {
+      dispRefreshSub.textContent = `当前 ${formatRefreshTag(sys)} · 「动态」同步 Win11 DRR (VRR 自适应)`;
+    }
+
+    const qamDispSummary = document.getElementById("qamDispSummary");
+    if (qamDispSummary) {
+      qamDispSummary.textContent = `${formatRefreshTag(sys)} · ${formatResShort(`${sys.screenWidth}x${sys.screenHeight}`)}`;
+    }
+
+    const pfModeBadge = document.getElementById("pfModeBadge");
+    if (pfModeBadge) {
+      pfModeBadge.textContent = pfUi.modeText;
+      pfModeBadge.className = `hh-card-badge ${pfUi.modeClass}`.trim();
     }
 
     const pfApuVal = document.getElementById("pfApuVal");
-    if (pfApuVal) pfApuVal.textContent = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${state.snapshot?.settings?.currentTdpWatts || 45}W`;
+    if (pfApuVal) pfApuVal.textContent = pfUi.apuPowerText;
 
     const pfApuSub = document.getElementById("pfApuSub");
     if (pfApuSub) pfApuSub.textContent = `GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuTempC || "--"}° / GPU ${sys.gpuTempC || "--"}°C`;
 
     const pfSysVal = document.getElementById("pfSysVal");
-    const sysDraw = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
-      ? sys.systemDrawWatts
-      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
-    if (pfSysVal) pfSysVal.textContent = sysDraw > 0 ? `${sysDraw.toFixed(1)} W` : "-- W";
+    if (pfSysVal) pfSysVal.textContent = pfUi.sysVal;
 
     const pfSysSub = document.getElementById("pfSysSub");
-    if (pfSysSub) {
-      if (!sys.hasBattery) pfSysSub.textContent = "AC 直供运行功耗";
-      else if (sys.isAcOnline && sys.isCharging) pfSysSub.textContent = `不含充电 · 充电器 ≈${(sys.estimatedChargerWatts ?? (sysDraw + (sys.batteryPowerWatts || 0))).toFixed(1)}W`;
-      else if (sys.isAcOnline) pfSysSub.textContent = "AC 旁路直供整机";
-      else pfSysSub.textContent = "电池实测整机功耗";
-    }
+    if (pfSysSub) pfSysSub.textContent = pfUi.sysSub;
 
     const pfBatVal = document.getElementById("pfBatVal");
     if (pfBatVal) {
-      if (!sys.hasBattery) pfBatVal.textContent = "无电池";
-      else if (sys.isCharging) pfBatVal.textContent = `+${(sys.batteryPowerWatts || 0).toFixed(1)} W`;
-      else if (!sys.isAcOnline && sys.batteryPowerWatts > 0) pfBatVal.textContent = `-${sys.batteryPowerWatts.toFixed(1)} W`;
-      else pfBatVal.textContent = `${sys.batteryPercent}%`;
+      pfBatVal.textContent = pfUi.batVal;
+      pfBatVal.classList.toggle("warn-amber", !!pfUi.batWarn);
     }
 
     const pfBatSub = document.getElementById("pfBatSub");
-    if (pfBatSub) {
-      if (!sys.hasBattery) pfBatSub.textContent = "外接供电直连";
-      else if (sys.isCharging) pfBatSub.textContent = `${sys.batteryPercent}% · 充电 ${formatEta(sys.chargeEtaMinutes)}`.trim();
-      else if (sys.isAcOnline) pfBatSub.textContent = `${sys.batteryPercent}% · ${sys.batteryRemainingWh?.toFixed(1) || "--"} Wh`;
-      else pfBatSub.textContent = `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`;
-    }
+    if (pfBatSub) pfBatSub.textContent = pfUi.batSub;
 
     const pfEtaVal = document.getElementById("pfEtaVal");
-    if (pfEtaVal) pfEtaVal.textContent = formatStandbyEta(sys);
+    if (pfEtaVal) pfEtaVal.textContent = pfUi.etaVal;
 
     const pfEtaSub = document.getElementById("pfEtaSub");
-    if (pfEtaSub) {
-      if (!sys.hasBattery) pfEtaSub.textContent = "未安装电池组";
-      else if (sys.isAcOnline) pfEtaSub.textContent = `按整机 ${sysDraw.toFixed(1)}W 离电推算 (${sys.batteryRemainingWh?.toFixed(1) || "--"}Wh)`;
-      else pfEtaSub.textContent = `余电 ${sys.batteryRemainingWh?.toFixed(1) || "--"} / ${sys.batteryFullWh?.toFixed(1) || "--"} Wh`;
-    }
+    if (pfEtaSub) pfEtaSub.textContent = pfUi.etaSub;
 
     const fanRpmBadge = document.getElementById("fanRpmBadge");
     if (fanRpmBadge) {
@@ -700,10 +836,8 @@
     setEl("kpiCpuTemp", `CPU ${sys.cpuTempC || "--"}°C`);
     setEl("kpiGpuTempSub", `GPU ${sys.gpuTempC || "--"}°C · 风扇 ${hw.fanRpm || 0} RPM`);
     setEl("kpiMem", sys.totalRamGb > 0 ? `${sys.usedRamGb} / ${sys.totalRamGb} GB` : "-- GB");
-    setEl("kpiBat", formatPowerBadge(sys));
-    setEl("kpiBatSub", sys.isAcOnline && sys.estimatedChargerWatts != null
-      ? `整机 ${sysDraw.toFixed(1)}W · 充电器 ≈${sys.estimatedChargerWatts.toFixed(1)}W`
-      : `整机 ${sysDraw.toFixed(1)}W · 预计续航 ${formatStandbyEta(sys)}`);
+    setEl("kpiBat", pfUi.badge);
+    setEl("kpiBatSub", pfUi.kpiBatSub);
 
     // QAM live tiles & monitor grid
     setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
@@ -1036,9 +1170,8 @@
     const fanCurves = (settings.fanCurves && settings.fanCurves.length) ? settings.fanCurves : getDefaultFanCurves();
     const activeCurve = getActiveFanCurve(settings);
 
-    const hzOptions = (sys.supportedRefreshRates && sys.supportedRefreshRates.length)
-      ? sys.supportedRefreshRates.map((h) => ({ value: String(h), label: `${h}Hz` }))
-      : [{ value: "60", label: "60Hz" }, { value: "120", label: "120Hz" }];
+    const hzOptions = buildRefreshOptions(sys);
+    const activeRefreshVal = sys.isDynamicRefreshRate ? "drr" : String(sys.refreshRateHz || 120);
 
     const resOptions = (sys.supportedResolutions && sys.supportedResolutions.length)
       ? sys.supportedResolutions.slice(0, 3).map((r) => ({ value: r, label: formatResShort(r) }))
@@ -1048,36 +1181,7 @@
     const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
     const curTempEval = maxTemp > 0 ? maxTemp : 48;
     const curveEvalPct = evaluateFanCurvePct(curTempEval, activeCurve.points);
-    const apuPowerText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${curTdp}W`;
-    const sysDrawNow = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
-      ? sys.systemDrawWatts
-      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
-    const sysDrawText = sysDrawNow > 0 ? `${sysDrawNow.toFixed(1)} W` : "-- W";
-    const sysDrawSubText = !sys.hasBattery
-      ? "AC 直供运行功耗"
-      : (sys.isAcOnline && sys.isCharging
-        ? `不含充电 · 充电器 ≈${(sys.estimatedChargerWatts ?? (sysDrawNow + (sys.batteryPowerWatts || 0))).toFixed(1)}W`
-        : (sys.isAcOnline ? "AC 旁路直供整机" : "电池实测整机功耗"));
-    const batMainText = !sys.hasBattery
-      ? "无电池"
-      : sys.isCharging
-        ? `+${(sys.batteryPowerWatts || 0).toFixed(1)} W`
-        : (!sys.isAcOnline && sys.batteryPowerWatts > 0)
-          ? `-${sys.batteryPowerWatts.toFixed(1)} W`
-          : `${sys.batteryPercent || "--"}%`;
-    const batSubText = !sys.hasBattery
-      ? "AC 电源直连"
-      : sys.isCharging
-        ? `${sys.batteryPercent}% · 充电 ${formatEta(sys.chargeEtaMinutes)}`.trim()
-        : sys.isAcOnline
-          ? `${sys.batteryPercent}% · ${(sys.batteryRemainingWh || 0).toFixed(1)} Wh`
-          : `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`;
-    const etaValText = formatStandbyEta(sys);
-    const etaSubText = !sys.hasBattery
-      ? "未安装电池组"
-      : (sys.isAcOnline
-        ? `按整机 ${sysDrawNow.toFixed(1)}W 离电推算 (${(sys.batteryRemainingWh || 0).toFixed(1)}Wh)`
-        : `余电 ${(sys.batteryRemainingWh || 0).toFixed(1)} / ${(sys.batteryFullWh || 0).toFixed(1)} Wh`);
+    const pfUi = computePowerFlowUi(sys, curTdp);
 
     const perGameProfiles = settings.perGameProfiles || {};
     const gamePerf = active ? (perGameProfiles[active.id] || {
@@ -1141,28 +1245,28 @@
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">实时整机电源流</span>
-                <span class="hh-card-badge ${sys.isBypassPower ? "live" : ""}">${sys.isAcOnline ? (sys.isBypassPower ? "AC 旁路直供" : "AC 供电中") : "便携电池供电"}</span>
+                <span id="pfModeBadge" class="hh-card-badge ${pfUi.modeClass}">${esc(pfUi.modeText)}</span>
               </div>
               <div class="power-flow-grid">
                 <div class="pf-box">
                   <span class="pf-label">APU 封装功耗</span>
-                  <span id="pfApuVal" class="pf-val">${esc(apuPowerText)}</span>
+                  <span id="pfApuVal" class="pf-val">${esc(pfUi.apuPowerText || "-- W")}</span>
                   <span id="pfApuSub" class="pf-sub">GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuTempC || "--"}° / GPU ${sys.gpuTempC || "--"}°C</span>
                 </div>
                 <div class="pf-box">
                   <span class="pf-label">整机运行功耗</span>
-                  <span id="pfSysVal" class="pf-val">${esc(sysDrawText)}</span>
-                  <span id="pfSysSub" class="pf-sub">${esc(sysDrawSubText)}</span>
+                  <span id="pfSysVal" class="pf-val">${esc(pfUi.sysVal)}</span>
+                  <span id="pfSysSub" class="pf-sub">${esc(pfUi.sysSub)}</span>
                 </div>
                 <div class="pf-box">
                   <span class="pf-label">电池充放功率</span>
-                  <span id="pfBatVal" class="pf-val">${esc(batMainText)}</span>
-                  <span id="pfBatSub" class="pf-sub">${esc(batSubText)}</span>
+                  <span id="pfBatVal" class="pf-val ${pfUi.batWarn ? "warn-amber" : ""}">${esc(pfUi.batVal)}</span>
+                  <span id="pfBatSub" class="pf-sub">${esc(pfUi.batSub)}</span>
                 </div>
                 <div class="pf-box">
                   <span class="pf-label">实时剩余待机 / 续航</span>
-                  <span id="pfEtaVal" class="pf-val accent-teal">${esc(etaValText)}</span>
-                  <span id="pfEtaSub" class="pf-sub">${esc(etaSubText)}</span>
+                  <span id="pfEtaVal" class="pf-val accent-teal">${esc(pfUi.etaVal)}</span>
+                  <span id="pfEtaSub" class="pf-sub">${esc(pfUi.etaSub)}</span>
                 </div>
               </div>
             </div>
@@ -1356,9 +1460,9 @@
                 <div class="cw-row">
                   <div class="cw-row-copy">
                     <span class="cw-row-title">屏幕刷新率</span>
-                    <span class="cw-row-sub">当前 ${sys.refreshRateHz || "--"} Hz · GPD Win 5 推荐 120Hz + VRR</span>
+                    <span id="dispRefreshSub" class="cw-row-sub">当前 ${esc(formatRefreshTag(sys))} · 「动态」同步 Win11 DRR (VRR 自适应)</span>
                   </div>
-                  ${renderSegmented("data-refresh-hz", hzOptions, String(sys.refreshRateHz || 120), "compact")}
+                  ${renderSegmented("data-refresh-hz", hzOptions, activeRefreshVal, "compact wrap")}
                 </div>
 
                 <div class="cw-row">
@@ -2412,9 +2516,8 @@
       const curveEvalPct = evaluateFanCurvePct(curTempEval, activeCurve.points);
       const apuStr = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--W";
       const rpm = hw.fanRpm || 0;
-      const hzOptions = (sys.supportedRefreshRates && sys.supportedRefreshRates.length)
-        ? sys.supportedRefreshRates.map((h) => ({ value: String(h), label: `${h}Hz` }))
-        : [{ value: "60", label: "60Hz" }, { value: "120", label: "120Hz" }];
+      const hzOptions = buildRefreshOptions(sys);
+      const activeRefreshVal = sys.isDynamicRefreshRate ? "drr" : String(sys.refreshRateHz || 120);
       const curRes = `${sys.screenWidth || 1920}x${sys.screenHeight || 1080}`;
       const resOptions = [
         { value: "1920x1080", label: "1080p" },
@@ -2529,10 +2632,10 @@
           <div class="qam-section">
             <div class="qam-section-title">
               <span>显示 · CPU 调度 · 亮度与音量</span>
-              <span style="font-size:11px;color:var(--text-secondary);">${sys.refreshRateHz || "--"}Hz · ${formatResShort(curRes)}</span>
+              <span id="qamDispSummary" style="font-size:11px;color:var(--text-secondary);">${esc(formatRefreshTag(sys))} · ${formatResShort(curRes)}</span>
             </div>
             <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px;">
-              ${renderSegmented("data-refresh-hz", hzOptions, String(sys.refreshRateHz || 120), "compact")}
+              ${renderSegmented("data-refresh-hz", hzOptions, activeRefreshVal, "compact wrap")}
               ${renderSegmented("data-res-mode", resOptions, curRes, "compact")}
               ${renderSegmented("data-cpu-boost", [
                 { value: "off", label: "关睿频" },
@@ -3612,8 +3715,19 @@
     // Display / Audio / CPU system controls (used across Handheld & QAM)
     document.querySelectorAll("[data-refresh-hz]").forEach((el) => {
       el.addEventListener("click", () => {
-        const hz = Number(el.dataset.refreshHz);
-        applySys("setRefreshRate", { hz }, `屏幕刷新率已切换为 ${hz}Hz`);
+        const raw = el.dataset.refreshHz;
+        if (raw === "drr") {
+          const ceilingHz = state.snapshot?.systemControl?.dynamicCeilingHz || 120;
+          const baseHz = Math.round(ceilingHz / 2);
+          applySys("setRefreshRate", { hz: ceilingHz, dynamic: true }, `已开启系统动态刷新率 (${baseHz}–${ceilingHz}Hz · VRR 自适应)`);
+          return;
+        }
+        const hz = Number(raw);
+        const supportsDrr = !!(state.snapshot?.systemControl?.dynamicRefreshSupported);
+        const toastMsg = supportsDrr && hz >= 100
+          ? `已锁定固定 ${hz}Hz（点选「动态」可恢复系统 DRR）`
+          : `屏幕刷新率已切换为 ${hz}Hz`;
+        applySys("setRefreshRate", { hz, dynamic: false }, toastMsg);
       });
     });
     document.querySelectorAll("[data-res-mode]").forEach((el) => {

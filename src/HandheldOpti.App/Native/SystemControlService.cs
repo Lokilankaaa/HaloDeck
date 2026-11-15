@@ -15,6 +15,10 @@ public sealed class SystemControlState
     public int ScreenWidth { get; set; }
     public int ScreenHeight { get; set; }
     public int RefreshRateHz { get; set; }
+    public int BaseRefreshRateHz { get; set; }
+    public bool IsDynamicRefreshRate { get; set; }
+    public bool DynamicRefreshSupported { get; set; }
+    public int DynamicCeilingHz { get; set; }
     public List<int> SupportedRefreshRates { get; set; } = new();
     public List<string> SupportedResolutions { get; set; } = new();
     public bool BrightnessSupported { get; set; }
@@ -28,8 +32,10 @@ public sealed class SystemControlState
     public bool IsAcOnline { get; set; }
     public bool HasBattery { get; set; } = true;
     public bool IsCharging { get; set; }
+    public bool IsBatteryDischarging { get; set; }
     public int BatteryPercent { get; set; } = 100;
     public double? BatteryPowerWatts { get; set; }
+    public double BatteryDischargeWatts { get; set; }
     public double BatteryRemainingWh { get; set; }
     public double BatteryFullWh { get; set; }
     public double VoltageVolts { get; set; }
@@ -37,6 +43,7 @@ public sealed class SystemControlState
     public double SystemDrawWatts { get; set; }
     public int? EstimatedStandbyMinutes { get; set; }
     public bool IsBypassPower { get; set; }
+    public string PowerRuntimeMode { get; set; } = "battery";
     public int BatteryEtaMinutes { get; set; }
     public int ChargeEtaMinutes { get; set; }
 
@@ -81,6 +88,17 @@ public sealed class SystemControlService : IDisposable
     private const uint DmPelsHeight = 0x00100000;
     private const uint DmDisplayFrequency = 0x00400000;
 
+    private const uint QdcOnlyActivePaths = 0x00000002u;
+    private const uint QdcVirtualRefreshRateAware = 0x00000040u;
+    private const uint SdcUseSuppliedDisplayConfig = 0x00000020u;
+    private const uint SdcApply = 0x00000080u;
+    private const uint SdcSaveToDatabase = 0x00000200u;
+    private const uint SdcAllowChanges = 0x00000400u;
+    private const uint SdcVirtualRefreshRateAware = 0x00020000u;
+    private const uint DisplayConfigPathActive = DisplayRefreshModeResolver.PathActive;
+    private const uint DisplayConfigPathBoostRefreshRate = DisplayRefreshModeResolver.PathBoostRefreshRate;
+    private const uint DisplayConfigModeInfoTypeTarget = 2u;
+
     private static readonly Guid SubProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
     private static readonly Guid PerfBoostMode = new("be337238-0d82-4146-a960-4f3749d470c7");
     private static readonly Guid ProcFreqMax = new("75b0ae3f-bce0-45a7-8c89-c9611c25e100");
@@ -107,22 +125,27 @@ public sealed class SystemControlService : IDisposable
     private int _lastCpuPercent;
 
     private DateTime _wmiCachedAtUtc = DateTime.MinValue;
+    private DateTime _batteryCachedAtUtc = DateTime.MinValue;
     private DateTime _fullCapCachedAtUtc = DateTime.MinValue;
     private bool _cachedBrightnessSupported;
     private int _cachedBrightnessPercent = 70;
     private int _cachedThermalZoneTempC;
+    private bool _skipThermalZoneWmi;
+    private bool _cachedHasBatteryWmi;
     private bool _cachedIsCharging;
+    private bool _cachedIsDischarging;
     private double? _cachedBatteryWatts;
     private double _cachedRemainingWh;
     private double _cachedFullWh;
     private double _cachedVoltageVolts;
     private double _emaSystemDrawWatts;
+    private double _slowApuWatts = -1;
 
     private readonly object _displayCacheLock = new();
     private DateTime _lastDisplayEnumUtc = DateTime.MinValue;
-    private int _cachedScreenW;
-    private int _cachedScreenH;
-    private int _cachedRefreshHz;
+    private uint _cachedDisplayWidth;
+    private uint _cachedDisplayHeight;
+    private uint _cachedDisplayOrient;
     private List<int> _cachedSupportedRates = new();
     private List<string> _cachedSupportedResolutions = new();
 
@@ -156,16 +179,19 @@ public sealed class SystemControlService : IDisposable
         PopulateMemoryStats(state);
         PopulateDisplayInfo(state);
         PopulatePowerStatus(state);
-        PopulateWmiCachedInfo(state);
-        PopulateAudioInfo(state);
-        state.CpuBoostMode = ReadCpuBoostMode(state.IsAcOnline);
-        state.CpuMaxFreqMhz = ReadCpuMaxFreqMhz(state.IsAcOnline);
 
         var hw = _hwClient.GetStatus(includeHardwareRefresh, targetPid);
         state.HardwareService = hw;
 
         var amd = _telemetry.Sample();
         _telemetry.RecordHistoryPoint(amd, state.CpuUsagePercent, hw.CurrentFps);
+        _skipThermalZoneWmi = hw.CpuTempC > 0 || amd.CpuTempDirect;
+
+        PopulateWmiCachedInfo(state);
+        PopulateAudioInfo(state);
+        state.CpuBoostMode = ReadCpuBoostMode(state.IsAcOnline);
+        state.CpuMaxFreqMhz = ReadCpuMaxFreqMhz(state.IsAcOnline);
+
         state.AdlAvailable = amd.Available;
         state.ApuPowerWatts = amd.ApuPowerWatts;
         state.GpuUsagePercent = amd.GpuUsagePercent;
@@ -202,7 +228,7 @@ public sealed class SystemControlService : IDisposable
         _telemetry.Dispose();
     }
 
-    public SystemControlState SetRefreshRate(int targetHz)
+    public SystemControlState SetRefreshRate(int targetHz, bool dynamicRefresh = false)
     {
         if (targetHz < 30 || targetHz > 360)
         {
@@ -217,9 +243,53 @@ public sealed class SystemControlService : IDisposable
         }
 
         var supported = EnumerateRefreshRatesForResolution(devName, dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayOrientation);
+        if (dynamicRefresh)
+        {
+            bool curDyn = TryQueryPrimaryCcdRefreshState(out uint pathFlags, out var tgtRate, out var tgtModeVSync) &&
+                          (pathFlags & DisplayConfigPathBoostRefreshRate) != 0;
+            int curPhysical = curDyn
+                ? DisplayRefreshModeResolver.ResolveFromCcd(
+                    pathFlags, tgtRate.Numerator, tgtRate.Denominator, tgtModeVSync.Numerator, tgtModeVSync.Denominator, (int)dm.dmDisplayFrequency).RefreshRateHz
+                : (int)dm.dmDisplayFrequency;
+
+            int ceilingHz = DisplayRefreshModeResolver.ResolveDynamicCeilingHz(supported, curDyn, targetHz > 0 ? targetHz : 120);
+            if (ceilingHz <= 0)
+            {
+                throw new InvalidOperationException("当前显示器或分辨率不支持动态刷新率 (DRR)。");
+            }
+
+            if (curPhysical != ceilingHz)
+            {
+                dm.dmDisplayFrequency = (uint)ceilingHz;
+                dm.dmFields = DmDisplayFrequency;
+                ApplyDisplayMode(devName, ref dm);
+            }
+
+            int rc = ApplyCcdBoostRefreshRate(enableBoost: true, ceilingHz);
+            if (rc != 0)
+            {
+                throw new InvalidOperationException($"开启 Windows 动态刷新率失败 (SetDisplayConfig={rc})。");
+            }
+
+            InvalidateDisplayCache();
+            return GetState();
+        }
+
         if (supported.Count > 0 && !supported.Contains(targetHz))
         {
             throw new InvalidOperationException($"当前分辨率 {dm.dmPelsWidth}x{dm.dmPelsHeight} 不支持 {targetHz}Hz。");
+        }
+
+        if (TryQueryPrimaryCcdRefreshState(out uint flagsNow, out var tRateNow, out var vSyncNow) &&
+            (flagsNow & DisplayConfigPathBoostRefreshRate) != 0)
+        {
+            var resolvedNow = DisplayRefreshModeResolver.ResolveFromCcd(
+                flagsNow, tRateNow.Numerator, tRateNow.Denominator, vSyncNow.Numerator, vSyncNow.Denominator, (int)dm.dmDisplayFrequency);
+            if (resolvedNow.RefreshRateHz == targetHz && ApplyCcdBoostRefreshRate(enableBoost: false, targetHz) == 0)
+            {
+                InvalidateDisplayCache();
+                return GetState();
+            }
         }
 
         dm.dmDisplayFrequency = (uint)targetHz;
@@ -237,6 +307,11 @@ public sealed class SystemControlService : IDisposable
             throw new ArgumentOutOfRangeException(nameof(width), "不支持的目标分辨率。");
         }
 
+        var probe = new SystemControlState();
+        PopulateDisplayInfo(probe);
+        bool wasDynamic = probe.IsDynamicRefreshRate;
+        int currentHz = probe.RefreshRateHz > 0 ? probe.RefreshRateHz : 120;
+
         var devName = ResolvePrimaryDisplayDevice();
         var current = CreateDevMode();
         if (!EnumDisplaySettingsA(devName, EnumCurrentSettings, ref current))
@@ -250,7 +325,6 @@ public sealed class SystemControlService : IDisposable
             throw new InvalidOperationException($"主显示器不支持 {width}×{height} 分辨率。");
         }
 
-        int currentHz = (int)current.dmDisplayFrequency;
         int chosenHz = targetRates.Contains(currentHz)
             ? currentHz
             : targetRates.Where(hz => hz <= 120).DefaultIfEmpty(targetRates[^1]).Max();
@@ -260,6 +334,12 @@ public sealed class SystemControlService : IDisposable
         current.dmDisplayFrequency = (uint)chosenHz;
         current.dmFields = DmPelsWidth | DmPelsHeight | DmDisplayFrequency;
         ApplyDisplayMode(devName, ref current);
+
+        if (wasDynamic && chosenHz >= 100 && chosenHz % 2 == 0 && targetRates.Contains(chosenHz / 2))
+        {
+            try { ApplyCcdBoostRefreshRate(enableBoost: true, chosenHz); } catch { }
+        }
+
         InvalidateDisplayCache();
 
         return GetState();
@@ -507,19 +587,6 @@ public sealed class SystemControlService : IDisposable
 
     private void PopulateDisplayInfo(SystemControlState state)
     {
-        lock (_displayCacheLock)
-        {
-            if (_cachedScreenW > 0 && (DateTime.UtcNow - _lastDisplayEnumUtc) < TimeSpan.FromSeconds(30))
-            {
-                state.ScreenWidth = _cachedScreenW;
-                state.ScreenHeight = _cachedScreenH;
-                state.RefreshRateHz = _cachedRefreshHz;
-                state.SupportedRefreshRates = _cachedSupportedRates.ToList();
-                state.SupportedResolutions = _cachedSupportedResolutions.ToList();
-                return;
-            }
-        }
-
         try
         {
             var devName = ResolvePrimaryDisplayDevice();
@@ -531,55 +598,207 @@ public sealed class SystemControlService : IDisposable
 
             state.ScreenWidth = (int)dm.dmPelsWidth;
             state.ScreenHeight = (int)dm.dmPelsHeight;
-            state.RefreshRateHz = (int)dm.dmDisplayFrequency;
 
-            var rates = EnumerateRefreshRatesForResolution(devName, dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayOrientation);
-            if (rates.Count == 0 && state.RefreshRateHz > 0)
-            {
-                rates.Add(state.RefreshRateHz);
-            }
-            state.SupportedRefreshRates = rates;
-
-            var supportedRes = new List<string>();
-            var probe = CreateDevMode();
-            var seenRes = new HashSet<(uint W, uint H)>();
-            for (int i = 0; EnumDisplaySettingsA(devName, i, ref probe); i++)
-            {
-                if (probe.dmBitsPerPel == 32 && probe.dmDisplayOrientation == dm.dmDisplayOrientation)
-                {
-                    seenRes.Add((probe.dmPelsWidth, probe.dmPelsHeight));
-                }
-            }
-
-            foreach (var (w, h) in StandardResolutions)
-            {
-                if (seenRes.Contains(((uint)w, (uint)h)))
-                {
-                    supportedRes.Add($"{w}x{h}");
-                }
-            }
-
-            var currentTag = $"{dm.dmPelsWidth}x{dm.dmPelsHeight}";
-            if (!supportedRes.Contains(currentTag) && dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0)
-            {
-                supportedRes.Insert(0, currentTag);
-            }
-            state.SupportedResolutions = supportedRes;
-
+            List<int> rates;
+            List<string> supportedRes;
+            bool cacheHit = false;
             lock (_displayCacheLock)
             {
-                _cachedScreenW = state.ScreenWidth;
-                _cachedScreenH = state.ScreenHeight;
-                _cachedRefreshHz = state.RefreshRateHz;
-                _cachedSupportedRates = rates.ToList();
-                _cachedSupportedResolutions = supportedRes.ToList();
-                _lastDisplayEnumUtc = DateTime.UtcNow;
+                if (_cachedDisplayWidth == dm.dmPelsWidth &&
+                    _cachedDisplayHeight == dm.dmPelsHeight &&
+                    _cachedDisplayOrient == dm.dmDisplayOrientation &&
+                    _cachedSupportedRates.Count > 0 &&
+                    (DateTime.UtcNow - _lastDisplayEnumUtc) < TimeSpan.FromSeconds(30))
+                {
+                    rates = _cachedSupportedRates.ToList();
+                    supportedRes = _cachedSupportedResolutions.ToList();
+                    cacheHit = true;
+                }
+                else
+                {
+                    rates = new List<int>();
+                    supportedRes = new List<string>();
+                }
             }
+
+            if (!cacheHit)
+            {
+                rates = EnumerateRefreshRatesForResolution(devName, dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayOrientation);
+                if (rates.Count == 0 && dm.dmDisplayFrequency > 0)
+                {
+                    rates.Add((int)dm.dmDisplayFrequency);
+                }
+
+                supportedRes = new List<string>();
+                var probe = CreateDevMode();
+                var seenRes = new HashSet<(uint W, uint H)>();
+                for (int i = 0; EnumDisplaySettingsA(devName, i, ref probe); i++)
+                {
+                    if (probe.dmBitsPerPel == 32 && probe.dmDisplayOrientation == dm.dmDisplayOrientation)
+                    {
+                        seenRes.Add((probe.dmPelsWidth, probe.dmPelsHeight));
+                    }
+                }
+
+                foreach (var (w, h) in StandardResolutions)
+                {
+                    if (seenRes.Contains(((uint)w, (uint)h)))
+                    {
+                        supportedRes.Add($"{w}x{h}");
+                    }
+                }
+
+                var currentTag = $"{dm.dmPelsWidth}x{dm.dmPelsHeight}";
+                if (!supportedRes.Contains(currentTag) && dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0)
+                {
+                    supportedRes.Insert(0, currentTag);
+                }
+
+                lock (_displayCacheLock)
+                {
+                    _cachedDisplayWidth = dm.dmPelsWidth;
+                    _cachedDisplayHeight = dm.dmPelsHeight;
+                    _cachedDisplayOrient = dm.dmDisplayOrientation;
+                    _cachedSupportedRates = rates.ToList();
+                    _cachedSupportedResolutions = supportedRes.ToList();
+                    _lastDisplayEnumUtc = DateTime.UtcNow;
+                }
+            }
+
+            state.SupportedRefreshRates = rates;
+            state.SupportedResolutions = supportedRes;
+
+            if (TryQueryPrimaryCcdRefreshState(out uint pathFlags, out var targetRate, out var targetModeVSync))
+            {
+                var modeInfo = DisplayRefreshModeResolver.ResolveFromCcd(
+                    pathFlags,
+                    targetRate.Numerator,
+                    targetRate.Denominator,
+                    targetModeVSync.Numerator,
+                    targetModeVSync.Denominator,
+                    (int)dm.dmDisplayFrequency);
+                state.RefreshRateHz = modeInfo.RefreshRateHz;
+                state.BaseRefreshRateHz = modeInfo.BaseRefreshRateHz;
+                state.IsDynamicRefreshRate = modeInfo.IsDynamicRefreshRate;
+            }
+            else
+            {
+                state.RefreshRateHz = (int)dm.dmDisplayFrequency;
+                state.BaseRefreshRateHz = (int)dm.dmDisplayFrequency;
+                state.IsDynamicRefreshRate = false;
+            }
+
+            state.DynamicCeilingHz = DisplayRefreshModeResolver.ResolveDynamicCeilingHz(
+                rates,
+                state.IsDynamicRefreshRate,
+                state.RefreshRateHz);
+            state.DynamicRefreshSupported = state.DynamicCeilingHz > 0;
         }
         catch
         {
             // Keep default values on headless sessions
         }
+    }
+
+    private static bool TryQueryPrimaryCcdRefreshState(
+        out uint pathFlags,
+        out DISPLAYCONFIG_RATIONAL targetRate,
+        out DISPLAYCONFIG_RATIONAL targetModeVSync)
+    {
+        pathFlags = 0;
+        targetRate = default;
+        targetModeVSync = default;
+
+        try
+        {
+            uint flags = QdcOnlyActivePaths | QdcVirtualRefreshRateAware;
+            if (GetDisplayConfigBufferSizes(flags, out uint numPath, out uint numMode) != 0 || numPath == 0)
+            {
+                return false;
+            }
+
+            var paths = new DISPLAYCONFIG_PATH_INFO[numPath];
+            var modes = new DISPLAYCONFIG_MODE_INFO[numMode];
+            if (QueryDisplayConfig(flags, ref numPath, paths, ref numMode, modes, 0) != 0 || numPath == 0)
+            {
+                return false;
+            }
+
+            int idx = FindPrimaryPathIndex(paths, numPath);
+            pathFlags = paths[idx].flags;
+            targetRate = paths[idx].targetInfo.refreshRate;
+
+            uint modeIdx = paths[idx].targetInfo.modeInfoIdx;
+            if (modeIdx < numMode && modes[modeIdx].infoType == DisplayConfigModeInfoTypeTarget)
+            {
+                targetModeVSync = modes[modeIdx].vSyncFreq;
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int FindPrimaryPathIndex(DISPLAYCONFIG_PATH_INFO[] paths, uint numPath)
+    {
+        for (int i = 0; i < numPath; i++)
+        {
+            if (paths[i].sourceInfo.id == 0)
+            {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static int ApplyCcdBoostRefreshRate(bool enableBoost, int ceilingHz)
+    {
+        uint qdcFlags = QdcOnlyActivePaths | QdcVirtualRefreshRateAware;
+        int rc = GetDisplayConfigBufferSizes(qdcFlags, out uint numPath, out uint numMode);
+        if (rc != 0 || numPath == 0)
+        {
+            return rc != 0 ? rc : -1;
+        }
+
+        var paths = new DISPLAYCONFIG_PATH_INFO[numPath];
+        var modes = new DISPLAYCONFIG_MODE_INFO[numMode];
+        rc = QueryDisplayConfig(qdcFlags, ref numPath, paths, ref numMode, modes, 0);
+        if (rc != 0 || numPath == 0)
+        {
+            return rc != 0 ? rc : -1;
+        }
+
+        int idx = FindPrimaryPathIndex(paths, numPath);
+        if (enableBoost)
+        {
+            paths[idx].flags |= DisplayConfigPathBoostRefreshRate | DisplayConfigPathActive;
+            paths[idx].targetInfo.refreshRate = new DISPLAYCONFIG_RATIONAL
+            {
+                Numerator = (uint)ceilingHz,
+                Denominator = 2u
+            };
+        }
+        else
+        {
+            paths[idx].flags &= ~DisplayConfigPathBoostRefreshRate;
+            paths[idx].targetInfo.refreshRate = new DISPLAYCONFIG_RATIONAL
+            {
+                Numerator = (uint)ceilingHz,
+                Denominator = 1u
+            };
+        }
+
+        uint sdcFlags = SdcApply | SdcUseSuppliedDisplayConfig | SdcSaveToDatabase | SdcAllowChanges | SdcVirtualRefreshRateAware;
+        rc = SetDisplayConfig(numPath, paths, numMode, modes, sdcFlags);
+        if (rc != 0)
+        {
+            uint fallbackFlags = SdcApply | SdcUseSuppliedDisplayConfig | SdcAllowChanges | SdcVirtualRefreshRateAware;
+            rc = SetDisplayConfig(numPath, paths, numMode, modes, fallbackFlags);
+        }
+        return rc;
     }
 
     private static List<int> EnumerateRefreshRatesForResolution(string? devName, uint width, uint height, uint orientation)
@@ -648,16 +867,34 @@ public sealed class SystemControlService : IDisposable
     {
         lock (_wmiCacheLock)
         {
-            if ((DateTime.UtcNow - _wmiCachedAtUtc) > TimeSpan.FromSeconds(3))
+            if ((DateTime.UtcNow - _batteryCachedAtUtc) > TimeSpan.FromMilliseconds(800))
+            {
+                RefreshBatteryWmiFastLocked();
+            }
+
+            if ((DateTime.UtcNow - _wmiCachedAtUtc) > TimeSpan.FromSeconds(5))
             {
                 RefreshWmiCacheLocked();
             }
 
             state.BrightnessSupported = _cachedBrightnessSupported;
             state.BrightnessPercent = _cachedBrightnessPercent;
-            if (_cachedIsCharging)
+            if (_cachedHasBatteryWmi)
             {
-                state.IsCharging = true;
+                if (_cachedIsDischarging)
+                {
+                    state.IsBatteryDischarging = true;
+                    state.IsCharging = false;
+                }
+                else if (_cachedIsCharging)
+                {
+                    state.IsBatteryDischarging = false;
+                    state.IsCharging = true;
+                }
+                else
+                {
+                    state.IsBatteryDischarging = !state.IsAcOnline && (_cachedBatteryWatts ?? 0) > 0.35;
+                }
             }
             state.BatteryPowerWatts = _cachedBatteryWatts;
             state.BatteryRemainingWh = _cachedRemainingWh;
@@ -668,38 +905,111 @@ public sealed class SystemControlService : IDisposable
 
     private void PopulatePowerFlowEstimates(SystemControlState state)
     {
-        var flow = PowerRuntimeEstimator.Compute(
-            state.IsAcOnline,
-            state.HasBattery,
-            state.IsCharging,
-            state.BatteryPercent,
-            state.BatteryPowerWatts,
-            state.BatteryRemainingWh,
-            state.ApuPowerWatts,
-            state.BrightnessPercent,
-            state.HardwareService.FanRpm,
-            _emaSystemDrawWatts);
-
-        _emaSystemDrawWatts = flow.NextEmaSystemDrawWatts;
-        state.SystemDrawWatts = flow.SystemDrawWatts;
-        state.EstimatedChargerWatts = flow.ChargerInputWatts;
-        state.EstimatedStandbyMinutes = flow.EstimatedStandbyMinutes;
-        state.IsBypassPower = flow.IsBypassPower;
-
-        if (!state.IsAcOnline && flow.EstimatedStandbyMinutes is > 0)
+        lock (_wmiCacheLock)
         {
-            state.BatteryEtaMinutes = flow.EstimatedStandbyMinutes.Value;
-        }
+            var flow = PowerRuntimeEstimator.Compute(
+                state.IsAcOnline,
+                state.HasBattery,
+                state.IsCharging,
+                state.BatteryPercent,
+                state.BatteryPowerWatts,
+                state.BatteryRemainingWh,
+                state.ApuPowerWatts,
+                state.BrightnessPercent,
+                state.HardwareService.FanRpm,
+                _emaSystemDrawWatts,
+                state.IsBatteryDischarging,
+                _slowApuWatts);
 
-        if (state.IsAcOnline && state.IsCharging && flow.ChargeWatts > 1.5 && state.BatteryFullWh > state.BatteryRemainingWh)
-        {
-            state.ChargeEtaMinutes = Math.Clamp((int)Math.Round((state.BatteryFullWh - state.BatteryRemainingWh) / flow.ChargeWatts * 60.0), 1, 600);
+            _emaSystemDrawWatts = flow.NextEmaSystemDrawWatts;
+            _slowApuWatts = flow.NextSlowApuWatts;
+            state.SystemDrawWatts = flow.SystemDrawWatts;
+            state.EstimatedChargerWatts = flow.ChargerInputWatts;
+            state.BatteryDischargeWatts = flow.BatteryDischargeWatts;
+            state.EstimatedStandbyMinutes = flow.EstimatedStandbyMinutes;
+            state.IsBypassPower = flow.IsBypassPower;
+            state.PowerRuntimeMode = flow.RuntimeMode;
+
+            if (flow.RuntimeMode is "battery" or "ac_discharging" && flow.EstimatedStandbyMinutes is > 0)
+            {
+                state.BatteryEtaMinutes = flow.EstimatedStandbyMinutes.Value;
+            }
+
+            if (flow.RuntimeMode == "charging" && flow.ChargeWatts > 1.5 && state.BatteryFullWh > state.BatteryRemainingWh)
+            {
+                state.ChargeEtaMinutes = Math.Clamp((int)Math.Round((state.BatteryFullWh - state.BatteryRemainingWh) / flow.ChargeWatts * 60.0), 1, 600);
+            }
         }
     }
 
     public void RecomputePowerFlow(SystemControlState state)
     {
         PopulatePowerFlowEstimates(state);
+    }
+
+    private void RefreshBatteryWmiFastLocked()
+    {
+        _cachedHasBatteryWmi = false;
+        _cachedIsCharging = false;
+        _cachedIsDischarging = false;
+        _cachedBatteryWatts = null;
+        _cachedRemainingWh = 0;
+        _cachedVoltageVolts = 0;
+
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                @"root\wmi",
+                "SELECT Discharging, Charging, DischargeRate, ChargeRate, RemainingCapacity, Voltage FROM BatteryStatus");
+            using var results = searcher.Get();
+            double totalWh = 0;
+            foreach (ManagementBaseObject obj in results)
+            {
+                using (obj)
+                {
+                    _cachedHasBatteryWmi = true;
+                    bool charging = obj["Charging"] is true;
+                    bool discharging = obj["Discharging"] is true;
+                    uint chargeMw = obj["ChargeRate"] is null ? 0u : Convert.ToUInt32(obj["ChargeRate"]);
+                    uint dischargeMw = obj["DischargeRate"] is null ? 0u : Convert.ToUInt32(obj["DischargeRate"]);
+                    uint capMwh = obj["RemainingCapacity"] is null ? 0u : Convert.ToUInt32(obj["RemainingCapacity"]);
+                    uint voltageMv = obj["Voltage"] is null ? 0u : Convert.ToUInt32(obj["Voltage"]);
+
+                    totalWh += capMwh / 1000.0;
+                    if (voltageMv is > 3000 and < 35000)
+                    {
+                        _cachedVoltageVolts = Math.Round(voltageMv / 1000.0, 2);
+                    }
+                    if (discharging && dischargeMw is > 0 and < 250000)
+                    {
+                        _cachedIsDischarging = true;
+                        _cachedIsCharging = false;
+                        _cachedBatteryWatts = Math.Round(dischargeMw / 1000.0, 1);
+                    }
+                    else if (charging && chargeMw is > 0 and < 250000)
+                    {
+                        _cachedIsCharging = true;
+                        _cachedIsDischarging = false;
+                        _cachedBatteryWatts = Math.Round(chargeMw / 1000.0, 1);
+                    }
+                    else if (charging)
+                    {
+                        _cachedIsCharging = true;
+                    }
+                    else if (discharging)
+                    {
+                        _cachedIsDischarging = true;
+                    }
+                }
+            }
+            _cachedRemainingWh = Math.Round(totalWh, 1);
+        }
+        catch
+        {
+            // Ignore WMI battery telemetry errors on systems without Smart Battery WMI
+        }
+
+        _batteryCachedAtUtc = DateTime.UtcNow;
     }
 
     private void RefreshWmiCacheLocked()
@@ -725,57 +1035,6 @@ public sealed class SystemControlService : IDisposable
         catch
         {
             _cachedBrightnessSupported = false;
-        }
-
-        _cachedIsCharging = false;
-        _cachedBatteryWatts = null;
-        _cachedRemainingWh = 0;
-        _cachedVoltageVolts = 0;
-
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(
-                @"root\wmi",
-                "SELECT Discharging, Charging, DischargeRate, ChargeRate, RemainingCapacity, Voltage FROM BatteryStatus");
-            using var results = searcher.Get();
-            double totalWh = 0;
-            foreach (ManagementBaseObject obj in results)
-            {
-                using (obj)
-                {
-                    bool charging = obj["Charging"] is true;
-                    bool discharging = obj["Discharging"] is true;
-                    uint chargeMw = obj["ChargeRate"] is null ? 0u : Convert.ToUInt32(obj["ChargeRate"]);
-                    uint dischargeMw = obj["DischargeRate"] is null ? 0u : Convert.ToUInt32(obj["DischargeRate"]);
-                    uint capMwh = obj["RemainingCapacity"] is null ? 0u : Convert.ToUInt32(obj["RemainingCapacity"]);
-                    uint voltageMv = obj["Voltage"] is null ? 0u : Convert.ToUInt32(obj["Voltage"]);
-
-                    totalWh += capMwh / 1000.0;
-                    if (voltageMv is > 3000 and < 35000)
-                    {
-                        _cachedVoltageVolts = Math.Round(voltageMv / 1000.0, 2);
-                    }
-                    if (discharging && dischargeMw is > 0 and < 250000)
-                    {
-                        _cachedIsCharging = false;
-                        _cachedBatteryWatts = Math.Round(dischargeMw / 1000.0, 1);
-                    }
-                    else if (charging && chargeMw is > 0 and < 250000)
-                    {
-                        _cachedIsCharging = true;
-                        _cachedBatteryWatts = Math.Round(chargeMw / 1000.0, 1);
-                    }
-                    else if (charging)
-                    {
-                        _cachedIsCharging = true;
-                    }
-                }
-            }
-            _cachedRemainingWh = Math.Round(totalWh, 1);
-        }
-        catch
-        {
-            // Ignore WMI battery telemetry errors on systems without Smart Battery WMI
         }
 
         if ((DateTime.UtcNow - _fullCapCachedAtUtc) > TimeSpan.FromSeconds(30) || _cachedFullWh <= 0)
@@ -807,31 +1066,34 @@ public sealed class SystemControlService : IDisposable
             }
         }
 
-        try
+        if (!_skipThermalZoneWmi)
         {
-            using var tzSearcher = new ManagementObjectSearcher(@"root\CIMV2", "SELECT HighPrecisionTemperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
-            int hottestC = 0;
-            foreach (ManagementBaseObject obj in tzSearcher.Get())
+            try
             {
-                using (obj)
+                using var tzSearcher = new ManagementObjectSearcher(@"root\CIMV2", "SELECT HighPrecisionTemperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
+                int hottestC = 0;
+                foreach (ManagementBaseObject obj in tzSearcher.Get())
                 {
-                    if (obj["HighPrecisionTemperature"] is null) continue;
-                    uint raw = Convert.ToUInt32(obj["HighPrecisionTemperature"]);
-                    if (raw is >= 2880 and <= 3950)
+                    using (obj)
                     {
-                        int c = (int)Math.Round(raw / 10.0 - 273.15);
-                        if (c > hottestC) hottestC = c;
+                        if (obj["HighPrecisionTemperature"] is null) continue;
+                        uint raw = Convert.ToUInt32(obj["HighPrecisionTemperature"]);
+                        if (raw is >= 2880 and <= 3950)
+                        {
+                            int c = (int)Math.Round(raw / 10.0 - 273.15);
+                            if (c > hottestC) hottestC = c;
+                        }
                     }
                 }
+                if (hottestC > 0)
+                {
+                    _cachedThermalZoneTempC = hottestC;
+                }
             }
-            if (hottestC > 0)
+            catch
             {
-                _cachedThermalZoneTempC = hottestC;
+                // Ignore ThermalZone WMI fallback
             }
-        }
-        catch
-        {
-            // Ignore ThermalZone WMI fallback
         }
 
         _wmiCachedAtUtc = DateTime.UtcNow;
@@ -1037,6 +1299,97 @@ public sealed class SystemControlService : IDisposable
         public ulong ullAvailVirtual;
         public ulong ullAvailExtendedVirtual;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_RATIONAL
+    {
+        public uint Numerator;
+        public uint Denominator;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_2DREGION
+    {
+        public uint cx;
+        public uint cy;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_PATH_SOURCE_INFO
+    {
+        public DISPLAYCONFIG_LUID adapterId;
+        public uint id;
+        public uint modeInfoIdx;
+        public uint statusFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_PATH_TARGET_INFO
+    {
+        public DISPLAYCONFIG_LUID adapterId;
+        public uint id;
+        public uint modeInfoIdx;
+        public uint outputTechnology;
+        public uint rotation;
+        public uint scaling;
+        public DISPLAYCONFIG_RATIONAL refreshRate;
+        public uint scanLineOrdering;
+        public int targetAvailable;
+        public uint statusFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DISPLAYCONFIG_PATH_INFO
+    {
+        public DISPLAYCONFIG_PATH_SOURCE_INFO sourceInfo;
+        public DISPLAYCONFIG_PATH_TARGET_INFO targetInfo;
+        public uint flags;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    private struct DISPLAYCONFIG_MODE_INFO
+    {
+        [FieldOffset(0)] public uint infoType;
+        [FieldOffset(4)] public uint id;
+        [FieldOffset(8)] public DISPLAYCONFIG_LUID adapterId;
+        [FieldOffset(16)] public ulong pixelRate;
+        [FieldOffset(24)] public DISPLAYCONFIG_RATIONAL hSyncFreq;
+        [FieldOffset(32)] public DISPLAYCONFIG_RATIONAL vSyncFreq;
+        [FieldOffset(40)] public DISPLAYCONFIG_2DREGION activeSize;
+        [FieldOffset(48)] public DISPLAYCONFIG_2DREGION totalSize;
+        [FieldOffset(56)] public uint videoStandard;
+        [FieldOffset(60)] public uint scanLineOrdering;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetDisplayConfigBufferSizes(
+        uint flags,
+        out uint numPathArrayElements,
+        out uint numModeInfoArrayElements);
+
+    [DllImport("user32.dll")]
+    private static extern int QueryDisplayConfig(
+        uint flags,
+        ref uint numPathArrayElements,
+        [Out] DISPLAYCONFIG_PATH_INFO[] pathArray,
+        ref uint numModeInfoArrayElements,
+        [Out] DISPLAYCONFIG_MODE_INFO[] modeInfoArray,
+        nint currentTopologyId);
+
+    [DllImport("user32.dll")]
+    private static extern int SetDisplayConfig(
+        uint numPathArrayElements,
+        [In] DISPLAYCONFIG_PATH_INFO[]? pathArray,
+        uint numModeInfoArrayElements,
+        [In] DISPLAYCONFIG_MODE_INFO[]? modeInfoArray,
+        uint flags);
 
     [DllImport("user32.dll", CharSet = CharSet.Ansi)]
     [return: MarshalAs(UnmanagedType.Bool)]

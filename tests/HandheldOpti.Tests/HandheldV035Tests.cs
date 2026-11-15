@@ -28,8 +28,8 @@ public sealed class HandheldV035Tests
         Assert.Equal(18.0, res.ChargeWatts);
         Assert.NotNull(res.ChargerInputWatts);
         Assert.InRange(res.ChargerInputWatts!.Value, 58.0, 62.0);
-        Assert.NotNull(res.EstimatedStandbyMinutes);
-        Assert.InRange(res.EstimatedStandbyMinutes!.Value, 50, 90);
+        Assert.Null(res.EstimatedStandbyMinutes);
+        Assert.Equal("charging", res.RuntimeMode);
         Assert.False(res.IsBypassPower);
     }
 

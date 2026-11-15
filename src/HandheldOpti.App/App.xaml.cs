@@ -132,12 +132,12 @@ public partial class App : System.Windows.Application
 
         _pollTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(1)
+            Interval = TimeSpan.FromMilliseconds(800)
         };
         _pollTimer.Tick += (_, _) =>
         {
             _pollCounter++;
-            bool runAutoInject = _pollCounter % 15 == 0;
+            bool runAutoInject = _pollCounter % 19 == 0;
             _bridge.PollRunningAndAutoInjectTick(runAutoInject);
 
             var latestSys = _bridge.LatestSystemState;
@@ -146,9 +146,9 @@ public partial class App : System.Windows.Application
                 _overlayHudWindow.UpdateMetrics(latestSys, _bridge.RunningGame, _bridge.Settings.CurrentTdpWatts);
             }
 
-            if (_pollCounter % 2 == 0 && ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true)))
+            if ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true))
             {
-                _bridge.PushSystemTelemetryTick();
+                _bridge.BroadcastLatestTelemetry();
             }
             UpdateUiActiveFlag();
         };
@@ -493,6 +493,11 @@ public partial class App : System.Windows.Application
                   hasFanSlider: Boolean(document.getElementById('fanManualRange')),
                   hasPfSys: Boolean(document.getElementById('pfSysVal')?.textContent?.trim()),
                   hasPfEta: Boolean(document.getElementById('pfEtaVal')?.textContent?.trim()),
+                  pfModeText: document.getElementById('pfModeBadge')?.textContent?.trim() || '',
+                  pfEtaText: document.getElementById('pfEtaVal')?.textContent?.trim() || '',
+                  hasDrrPill: Boolean(document.querySelector('[data-refresh-hz="drr"]')),
+                  activeRefreshVal: document.querySelector('[data-refresh-hz].active')?.dataset.refreshHz || '',
+                  dispRefreshSub: document.getElementById('dispRefreshSub')?.textContent?.trim() || '',
                   hasBrightRange: Boolean(document.getElementById('brightRange')),
                   hasVolRange: Boolean(document.getElementById('volRange')),
                   tdpRangeStep: document.getElementById('tdpRangeInput')?.getAttribute('step') || '',
@@ -507,6 +512,10 @@ public partial class App : System.Windows.Application
                 """);
             using var homeDoc = JsonDocument.Parse(homeInfoJson);
             var homeRoot = homeDoc.RootElement;
+            var initSys = bridge.LatestSystemState;
+            bool drrUiMatches = !initSys.DynamicRefreshSupported ||
+                                (homeRoot.GetProperty("hasDrrPill").GetBoolean() &&
+                                 (!initSys.IsDynamicRefreshRate || homeRoot.GetProperty("activeRefreshVal").GetString() == "drr"));
             bool homeOk = handheldReady &&
                           homeRoot.GetProperty("tdpChips").GetInt32() >= 3 &&
                           homeRoot.GetProperty("legacyTdpPresets").GetInt32() == 0 &&
@@ -515,6 +524,7 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("hasFanSlider").GetBoolean() &&
                           homeRoot.GetProperty("hasPfSys").GetBoolean() &&
                           homeRoot.GetProperty("hasPfEta").GetBoolean() &&
+                          drrUiMatches &&
                           homeRoot.GetProperty("hasBrightRange").GetBoolean() &&
                           homeRoot.GetProperty("hasVolRange").GetBoolean() &&
                           homeRoot.GetProperty("tdpRangeStep").GetString() == "1" &&
@@ -524,7 +534,15 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           homeRoot.GetProperty("legendFits").GetBoolean() &&
                           homeRoot.GetProperty("noHorizOverflow").GetBoolean();
-            Record("handheldHomeDefault", homeOk, homeRoot.Clone());
+            Record("handheldHomeDefault", homeOk, new
+            {
+                home = homeRoot.Clone(),
+                sysIsDrr = initSys.IsDynamicRefreshRate,
+                sysRefreshHz = initSys.RefreshRateHz,
+                sysBaseHz = initSys.BaseRefreshRateHz,
+                sysDrrSupported = initSys.DynamicRefreshSupported,
+                sysPowerMode = initSys.PowerRuntimeMode
+            });
             await CapturePngAsync(mainCore, outputDir, "v3_01_console_handheld.png");
 
             // Tab 2: Monitor & Click-Through Overlay HUD Verification
@@ -766,7 +784,7 @@ public partial class App : System.Windows.Application
             {
                 qamHandheldReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange'))");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange')) && document.querySelectorAll('[data-refresh-hz]').length >= 2");
 
                 var qamLiveSlideOkStr = await qamCore.ExecuteScriptAsync("""
                     (() => {

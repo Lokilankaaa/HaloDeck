@@ -46,6 +46,7 @@ public sealed class WebUiBridge : IDisposable
     private bool? _lastObservedAcOnline;
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
+    private bool? _preProfileDynamicRefreshRate;
     private SystemControlState? _latestSystemState;
     private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
     private readonly SemaphoreSlim _brightFastGate = new(1, 1);
@@ -203,7 +204,7 @@ public sealed class WebUiBridge : IDisposable
                        updatedRunning?.Injection.IsInjected != _runningGame?.Injection.IsInjected;
         _runningGame = updatedRunning;
 
-        var sys = _systemControl.GetState();
+        var sys = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
         _latestSystemState = sys;
 
         // Fan curve temperature heartbeat when daemon is online & using active curve mode
@@ -250,6 +251,14 @@ public sealed class WebUiBridge : IDisposable
         return sys;
     }
 
+    public void BroadcastLatestTelemetry()
+    {
+        if (_latestSystemState is { } sys)
+        {
+            BroadcastEvent("systemTelemetry", sys);
+        }
+    }
+
     public void CycleOverlayHud()
     {
         _settings.OverlayLevel = (_settings.OverlayLevel + 1) % 5;
@@ -289,12 +298,15 @@ public sealed class WebUiBridge : IDisposable
         {
             if (_appliedProfileGameId is not null && runningId is null)
             {
-                // Exiting game: restore pre-game Hz and global/power-linked TDP
-                if (_preProfileRefreshRateHz is { } restoreHz && sys.RefreshRateHz != restoreHz)
+                // Exiting game: restore pre-game Hz (preserving DRR if it was active) and global/power-linked TDP
+                bool restoreDyn = _preProfileDynamicRefreshRate ?? false;
+                if (_preProfileRefreshRateHz is { } restoreHz &&
+                    (sys.RefreshRateHz != restoreHz || sys.IsDynamicRefreshRate != restoreDyn))
                 {
-                    try { _systemControl.SetRefreshRate(restoreHz); } catch { }
+                    try { _systemControl.SetRefreshRate(restoreHz, restoreDyn); } catch { }
                 }
                 _preProfileRefreshRateHz = null;
+                _preProfileDynamicRefreshRate = null;
                 _appliedProfileGameId = null;
 
                 int fallbackWatts = _settings.PowerLinkageEnabled
@@ -310,6 +322,7 @@ public sealed class WebUiBridge : IDisposable
                      prof.Enabled)
             {
                 _preProfileRefreshRateHz ??= sys.RefreshRateHz;
+                _preProfileDynamicRefreshRate ??= sys.IsDynamicRefreshRate;
                 _appliedProfileGameId = runningId;
                 if (prof.RefreshRateHz > 0 && sys.RefreshRateHz != prof.RefreshRateHz)
                 {
@@ -1047,7 +1060,14 @@ public sealed class WebUiBridge : IDisposable
 
     private SystemControlState ApplyRefreshRate(JsonElement payload)
     {
-        var updated = _systemControl.SetRefreshRate(payload.GetProperty("hz").GetInt32());
+        bool dynamic = payload.TryGetProperty("dynamic", out var dynProp) &&
+                       dynProp.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                       dynProp.GetBoolean();
+        int hz = payload.TryGetProperty("hz", out var hzProp) && hzProp.ValueKind == JsonValueKind.Number
+            ? hzProp.GetInt32()
+            : 120;
+        var updated = _systemControl.SetRefreshRate(hz, dynamic);
+        _latestSystemState = updated;
         _dispatcher.InvokeAsync(() => RequestRepositionQam?.Invoke());
         BroadcastStateSnapshot();
         return updated;
@@ -1250,6 +1270,16 @@ public sealed class WebUiBridge : IDisposable
                 appliedFastWatts = appliedFast,
                 message = note
             });
+
+            if (hardwareApplied)
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(280).ConfigureAwait(false);
+                    try { PushSystemTelemetryTick(); } catch { }
+                });
+            }
+
             return new
             {
                 ok = true,

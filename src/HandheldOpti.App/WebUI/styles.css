@@ -1758,6 +1758,10 @@ body.mode-qam .bottom-legend {
   color: #2dd4bf;
 }
 
+.pf-val.warn-amber {
+  color: #fbbf24;
+}
+
 .pf-sub {
   font-size: 11px;
   color: var(--text-muted, #64748b);
@@ -2842,4 +2846,15 @@ body.mode-qam .modal-backdrop {
 .combo-chip-pill.interactive:hover {
   background: rgba(255, 93, 108, 0.28);
   border-color: rgba(255, 93, 108, 0.65);
+}
+
+.seg-group.wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+  justify-content: flex-end;
+}
+
+body.mode-qam .seg-group {
+  flex-wrap: wrap;
+  max-width: 100%;
 }

@@ -28,9 +28,10 @@ function Resolve-DotnetPath {
 }
 
 Write-Host "[1/5] 停止正在运行的 HaloDeck / 旧版 HandheldOpti 实例并清理旧安装..."
-Get-Process -Name "HaloDeck", "HandheldOpti" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name "HaloDeck", "HandheldOpti" -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $hwSvc = Get-Service -Name "HaloDeckHardwareSvc" -ErrorAction SilentlyContinue
-if ($null -ne $hwSvc -and $hwSvc.Status -eq 'Running') {
+if ($isAdmin -and $null -ne $hwSvc -and $hwSvc.Status -eq 'Running') {
     try {
         Stop-Service -Name "HaloDeckHardwareSvc" -Force -ErrorAction SilentlyContinue
     } catch {
@@ -154,7 +155,7 @@ Write-Host "[4/5] 注册当前用户已安装应用信息..."
 $uninstallRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HaloDeck"
 New-Item -Path $uninstallRegPath -Force | Out-Null
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayName" -Value "HaloDeck"
-Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.5"
+Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.6"
 Set-ItemProperty -Path $uninstallRegPath -Name "Publisher" -Value "HaloDeck"
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayIcon" -Value $AppExe
 Set-ItemProperty -Path $uninstallRegPath -Name "InstallLocation" -Value $InstallDir

@@ -78,11 +78,13 @@ public partial class OverlayHudWindow : Window
         string etaShort = FormatMinutesShort(sys.EstimatedStandbyMinutes);
         string batStr = !sys.HasBattery
             ? "AC 直连"
-            : sys.IsAcOnline
-                ? (sys.IsCharging
-                    ? $"整机 {sys.SystemDrawWatts:F1}W · {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)"
-                    : $"整机 {sys.SystemDrawWatts:F1}W · AC {sys.BatteryPercent}%{(etaShort != "" ? $" ({etaShort})" : "")}")
-                : $"{sys.BatteryPercent}% (-{sys.SystemDrawWatts:F1}W{(etaShort != "" ? $" · {etaShort}" : "")})";
+            : sys.PowerRuntimeMode switch
+            {
+                "charging" => $"整机 {sys.SystemDrawWatts:F1}W · 正在充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)",
+                "ac_sustained" => $"整机 {sys.SystemDrawWatts:F1}W · 插电持续供电 ({sys.BatteryPercent}%)",
+                "ac_discharging" => $"整机 {sys.SystemDrawWatts:F1}W · 供电不足 补电-{sys.BatteryDischargeWatts:F1}W{(etaShort != "" ? $" ({etaShort})" : "")}",
+                _ => $"{sys.BatteryPercent}% (-{sys.SystemDrawWatts:F1}W{(etaShort != "" ? $" · {etaShort}" : "")})"
+            };
 
         if (_level == 1)
         {
@@ -121,8 +123,11 @@ public partial class OverlayHudWindow : Window
                 ? $"{runningGame.Title}"
                 : "HaloDeck 性能监控";
             string injShort = runningGame?.Injection?.IsInjected == true ? " · OptiScaler 已注入" : "";
+            string hzLabel = sys.IsDynamicRefreshRate
+                ? $"{(sys.BaseRefreshRateHz > 0 ? sys.BaseRefreshRateHz : 60)}-{sys.RefreshRateHz}Hz DRR"
+                : $"{sys.RefreshRateHz}Hz";
             HeaderTitleText.Text = title + injShort;
-            HeaderRightText.Text = $"{sys.ScreenWidth}×{sys.ScreenHeight} @ {sys.RefreshRateHz}Hz";
+            HeaderRightText.Text = $"{sys.ScreenWidth}×{sys.ScreenHeight} @ {hzLabel}";
             FpsLineText.Text = sys.CurrentFps > 0
                 ? $"帧率: {sys.CurrentFps} FPS ({sys.FrameTimeMs:F1} ms)"
                 : (sys.HardwareService.DaemonVersion >= 3 ? "帧率: 待检测 DX/全屏渲染" : "帧率: 升级硬件服务 v3 解锁");
@@ -147,9 +152,15 @@ public partial class OverlayHudWindow : Window
             string bypassOrWatts = sys.IsBypassPower
                 ? $"整机 {sys.SystemDrawWatts:F1}W · 旁路直供"
                 : $"整机 {sys.SystemDrawWatts:F1}W / 输入≈{sys.EstimatedChargerWatts ?? 0:F0}W";
-            PowerLineText.Text = sys.IsAcOnline
-                ? $"{bypassOrWatts} ({sys.BatteryPercent}%{(etaShort != "" ? $" · 离电约{etaShort}" : "")})"
-                : $"整机: {sys.SystemDrawWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)";
+            PowerLineText.Text = sys.PowerRuntimeMode switch
+            {
+                "charging" => $"{bypassOrWatts} · 正在充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)",
+                "ac_sustained" => $"{bypassOrWatts} · 持续供电 ({sys.BatteryPercent}%)",
+                "ac_discharging" => $"整机 {sys.SystemDrawWatts:F1}W · 电池放电-{sys.BatteryDischargeWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)",
+                _ => !sys.HasBattery
+                    ? $"整机: {sys.SystemDrawWatts:F1}W (AC 直连)"
+                    : $"整机: {sys.SystemDrawWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)"
+            };
 
             if (_level >= 4)
             {
