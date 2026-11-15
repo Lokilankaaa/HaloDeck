@@ -1315,11 +1315,15 @@ public sealed class WebUiBridge : IDisposable
         return new { ok = true, settings = _settings, systemControl = sys, message = "已重新载入 settings.json 并同步电源与风扇配置" };
     }
 
-    public void TriggerPhysicalOskToggle()
+    public void TriggerPhysicalOskToggle(bool forceClose = false)
     {
         try
         {
-            string msg = HandheldToolboxService.ToggleOnScreenKeyboard(_settings.PreferredOskMode, fromUiClick: false);
+            string msg = HandheldToolboxService.ToggleOnScreenKeyboard(
+                _settings.PreferredOskMode,
+                fromUiClick: false,
+                forceClose: forceClose,
+                fromPhysicalChord: true);
             BroadcastEvent("toast", new { kind = "info", message = msg });
         }
         catch (Exception ex)

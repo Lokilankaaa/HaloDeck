@@ -255,17 +255,17 @@ public partial class App : System.Windows.Application
             Dispatcher.InvokeAsync(() => _bridge.ToggleGamepadMouseMode());
         };
 
-        _inputHub.ToggleOnScreenKeyboardRequested += () =>
+        _inputHub.ToggleOnScreenKeyboardRequested += forceClose =>
         {
             Dispatcher.InvokeAsync(async () =>
             {
-                if (_qamWindow != null && _qamWindow.IsVisible)
+                if (!forceClose && _qamWindow != null && _qamWindow.IsVisible)
                 {
                     _qamWindow.HideAndRestoreGameFocus();
                     UpdateUiActiveFlag();
                     await Task.Delay(75);
                 }
-                _bridge?.TriggerPhysicalOskToggle();
+                _bridge?.TriggerPhysicalOskToggle(forceClose);
             });
         };
 
@@ -834,47 +834,127 @@ public partial class App : System.Windows.Application
                 qamClosed
             });
 
-            // Live OSK open + close toggle verification via GPD Tool 1.66 TabTip/IFrameworkInputPane flow
+            // Live OSK open + close toggle verification (both physical Ctrl+Win+O chord race and live WebView2 UI click)
             if (HandheldToolboxService.QueryTabTipVisible())
             {
                 await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false, forceClose: true));
-                await Task.Delay(150);
+                await Task.Delay(500);
             }
-            string oskOpenMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false, forceClose: false));
-            bool oskOpened = false;
-            var oskOpenDeadline = DateTime.UtcNow.AddMilliseconds(1200);
-            while (DateTime.UtcNow < oskOpenDeadline)
+
+            // Cycle 1: Simulated physical Ctrl+Win+O race (TabTip open -> Ctrl tap starts auto-dismiss -> 90ms later chord toggles close -> must stay closed)
+            string chordOpenMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false, forceClose: false));
+            bool chordOpened = false;
+            var chordOpenDeadline = DateTime.UtcNow.AddMilliseconds(1500);
+            while (DateTime.UtcNow < chordOpenDeadline)
             {
                 if (HandheldToolboxService.QueryTabTipVisible())
                 {
-                    oskOpened = true;
+                    chordOpened = true;
                     break;
                 }
                 await Task.Delay(50);
             }
 
-            string oskCloseMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false));
-            bool oskClosedOnSecondToggle = false;
-            var oskCloseDeadline = DateTime.UtcNow.AddMilliseconds(1200);
-            while (DateTime.UtcNow < oskCloseDeadline)
+            await Task.Delay(400);
+            bool hookSawOpenBeforeChord = HandheldToolboxService.ShouldCloseFromHookSnapshot();
+            Win32Interop.SendStandaloneCtrlTap();
+            await Task.Delay(90);
+            string chordCloseMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard(
+                "tabtip",
+                fromUiClick: false,
+                forceClose: hookSawOpenBeforeChord,
+                fromPhysicalChord: true));
+
+            bool chordClosed = false;
+            var chordCloseDeadline = DateTime.UtcNow.AddMilliseconds(1200);
+            while (DateTime.UtcNow < chordCloseDeadline)
             {
                 if (!HandheldToolboxService.QueryTabTipVisible())
                 {
-                    oskClosedOnSecondToggle = true;
+                    chordClosed = true;
                     break;
                 }
                 await Task.Delay(50);
             }
 
-            bool noGpdKeyboardSpawned = Process.GetProcessesByName("GPDKeyboard").Length == 0;
-            Record("oskTabTipOpenAndClose", oskOpened && oskClosedOnSecondToggle && noGpdKeyboardSpawned, new
+            bool chordStayedClosed = chordClosed;
+            if (chordClosed)
             {
-                oskOpened,
-                oskClosedOnSecondToggle,
-                noGpdKeyboardSpawned,
-                oskOpenMsg,
-                oskCloseMsg
-            });
+                for (int elapsed = 0; elapsed < 650; elapsed += 60)
+                {
+                    await Task.Delay(60);
+                    if (HandheldToolboxService.QueryTabTipVisible())
+                    {
+                        chordStayedClosed = false;
+                        break;
+                    }
+                }
+            }
+
+            // Cycle 2: Live WebView2 #btnTestOsk click open -> click close -> must stay closed
+            await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"controls\"]')?.click()");
+            bool controlsReadyForOsk = await WaitUntilAsync(mainCore, "Boolean(document.getElementById('btnTestOsk'))");
+            await Task.Delay(150);
+
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnTestOsk')?.click()");
+            bool uiClickOpened = false;
+            var uiOpenDeadline = DateTime.UtcNow.AddMilliseconds(1500);
+            while (DateTime.UtcNow < uiOpenDeadline)
+            {
+                if (HandheldToolboxService.QueryTabTipVisible())
+                {
+                    uiClickOpened = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+
+            await Task.Delay(350);
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnTestOsk')?.click()");
+            bool uiClickClosed = false;
+            var uiCloseDeadline = DateTime.UtcNow.AddMilliseconds(1200);
+            while (DateTime.UtcNow < uiCloseDeadline)
+            {
+                if (!HandheldToolboxService.QueryTabTipVisible())
+                {
+                    uiClickClosed = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+
+            bool uiClickStayedClosed = uiClickClosed;
+            if (uiClickClosed)
+            {
+                for (int elapsed = 0; elapsed < 650; elapsed += 60)
+                {
+                    await Task.Delay(60);
+                    if (HandheldToolboxService.QueryTabTipVisible())
+                    {
+                        uiClickStayedClosed = false;
+                        break;
+                    }
+                }
+            }
+
+            bool noGpdKeyboardSpawned = Process.GetProcessesByName("GPDKeyboard").Length == 0;
+            Record("oskTabTipOpenAndClose",
+                chordOpened && hookSawOpenBeforeChord && chordStayedClosed &&
+                controlsReadyForOsk && uiClickOpened && uiClickStayedClosed && noGpdKeyboardSpawned,
+                new
+                {
+                    chordOpened,
+                    hookSawOpenBeforeChord,
+                    chordClosed,
+                    chordStayedClosed,
+                    controlsReadyForOsk,
+                    uiClickOpened,
+                    uiClickClosed,
+                    uiClickStayedClosed,
+                    noGpdKeyboardSpawned,
+                    chordOpenMsg,
+                    chordCloseMsg
+                });
 
             var mainErrStr = await mainCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
             int.TryParse(mainErrStr, out var mainErrCount);

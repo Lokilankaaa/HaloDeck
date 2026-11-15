@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using HandheldOpti.Core.Config;
 using HandheldOpti.Core.Models;
+using HandheldOpti.Core.Services;
 using Xunit;
 
 namespace HandheldOpti.Tests;
@@ -170,5 +171,41 @@ public sealed class HandheldV032Tests
         {
             try { Directory.Delete(tempDir, recursive: true); } catch { }
         }
+    }
+
+    [Fact]
+    public void OskToggleStateGuard_PreventsBounceOnAutoDismissAndAllowsCleanReopen()
+    {
+        var guard = new OskToggleStateGuard();
+
+        // Initially closed
+        Assert.False(guard.CachedVisible);
+        Assert.False(guard.ShouldCloseFromSnapshot(900));
+        Assert.False(guard.ShouldCloseWithLiveQuery(liveVisible: false, nowTicks: 900));
+
+        // Keyboard opens and monitor observes visible at t = 1000
+        guard.BeginIntentionalOpen();
+        guard.RecordSample(isVisible: true, nowTicks: 1000);
+        Assert.True(guard.CachedVisible);
+        Assert.True(guard.ShouldCloseFromSnapshot(1050));
+
+        // Physical Ctrl+Win or mouse pointer-down auto-dismisses TabTip right before toggle executes (t = 1120)
+        guard.RecordSample(isVisible: false, nowTicks: 1120);
+        Assert.False(guard.CachedVisible);
+        Assert.True(guard.ShouldCloseFromSnapshot(1120));
+        Assert.True(guard.ShouldCloseWithLiveQuery(liveVisible: false, nowTicks: 1120));
+
+        // Close completes cleanly at t = 1400; 3rd press at t = 1600 must open (not treat as auto-dismiss)
+        guard.BeginIntentionalClose(1130);
+        guard.CompleteIntentionalClose(1400, postCloseSuppressMs: 350);
+        Assert.False(guard.ShouldCloseFromSnapshot(1600));
+        Assert.False(guard.ShouldCloseWithLiveQuery(liveVisible: false, nowTicks: 1600));
+
+        // Stale visibility sample from an earlier session beyond the grace window must open cleanly
+        guard.BeginIntentionalOpen();
+        guard.RecordSample(isVisible: true, nowTicks: 3000);
+        guard.RecordSample(isVisible: false, nowTicks: 3050);
+        Assert.False(guard.ShouldCloseFromSnapshot(4000));
+        Assert.False(guard.ShouldCloseWithLiveQuery(liveVisible: false, nowTicks: 4000));
     }
 }

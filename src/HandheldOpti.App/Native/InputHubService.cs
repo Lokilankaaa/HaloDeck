@@ -53,7 +53,7 @@ public sealed class InputHubService : IDisposable
     public event Action? SendInsertToGameRequested;
     public event Action? CycleOsdRequested;
     public event Action? ToggleMouseModeRequested;
-    public event Action? ToggleOnScreenKeyboardRequested;
+    public event Action<bool>? ToggleOnScreenKeyboardRequested;
     public event Action<string>? UiGamepadAction;
     public event Action<int>? GamepadCountChanged;
     public event Action<List<string>>? GamepadComboRecorded;
@@ -198,10 +198,12 @@ public sealed class InputHubService : IDisposable
                         if (!_ctrlWinOSwallowedDown)
                         {
                             _ctrlWinOSwallowedDown = true;
+                            // Capture pre-chord TabTip state BEFORE Ctrl/Win or synthetic chord break auto-dismisses Gamepad TabTip.
+                            bool shouldClose = HandheldToolboxService.ShouldCloseFromHookSnapshot();
                             // Break LWin solo-tap Start Menu trigger before swallowing VK_O.
                             Win32Interop.SendSyntheticChordBreak();
 
-                            if ((DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 300 &&
+                            if ((DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 420 &&
                                 Interlocked.CompareExchange(ref _oskReleaseDispatchPending, 1, 0) == 0)
                             {
                                 _lastOskTriggerAtUtc = DateTime.UtcNow;
@@ -223,7 +225,7 @@ public sealed class InputHubService : IDisposable
                                             await Task.Delay(15).ConfigureAwait(false);
                                         }
                                         await Task.Delay(50).ConfigureAwait(false);
-                                        ToggleOnScreenKeyboardRequested?.Invoke();
+                                        ToggleOnScreenKeyboardRequested?.Invoke(shouldClose);
                                     }
                                     finally
                                     {

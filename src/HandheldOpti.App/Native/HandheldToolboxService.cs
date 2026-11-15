@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using HandheldOpti.Core.Services;
 
 namespace HandheldOpti.App.Native;
 
@@ -53,7 +55,8 @@ public sealed class HandheldToolboxService : IDisposable
         bool hasAntiCheat = false,
         string preferredOskMode = "tabtip",
         bool fromUiClick = false,
-        bool? forceCloseOsk = null)
+        bool? forceCloseOsk = null,
+        bool fromPhysicalChord = false)
     {
         switch ((action ?? string.Empty).Trim().ToLowerInvariant())
         {
@@ -66,7 +69,7 @@ public sealed class HandheldToolboxService : IDisposable
                 return "已打开多任务视图 (Win + Tab)";
 
             case "osk":
-                return ToggleOnScreenKeyboard(preferredOskMode, fromUiClick, forceCloseOsk);
+                return ToggleOnScreenKeyboard(preferredOskMode, fromUiClick, forceCloseOsk, fromPhysicalChord);
 
             case "screenshot":
                 Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "ms-screenclip:", UseShellExecute = true });
@@ -279,27 +282,15 @@ public sealed class HandheldToolboxService : IDisposable
     }
 
     [ComImport]
-    [Guid("226C537B-1E76-4D9E-A760-33DB29922F18")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IFrameworkInputPaneHandler
-    {
-        [PreserveSig]
-        int Showing(ref NativeRect prcInputPaneScreenLocation, [MarshalAs(UnmanagedType.Bool)] bool fEnsureFocusedElementInView);
-
-        [PreserveSig]
-        int Hiding([MarshalAs(UnmanagedType.Bool)] bool fEnsureFocusedElementInView);
-    }
-
-    [ComImport]
     [Guid("5752238B-24F0-495A-82F1-2FD593056796")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IFrameworkInputPane
     {
         [PreserveSig]
-        int Advise([MarshalAs(UnmanagedType.IUnknown)] object pWindow, IFrameworkInputPaneHandler pHandler, out uint pdwCookie);
+        int Advise([MarshalAs(UnmanagedType.IUnknown)] object pWindow, [MarshalAs(UnmanagedType.IUnknown)] object pHandler, out uint pdwCookie);
 
         [PreserveSig]
-        int AdviseWithHWND(nint hwnd, IFrameworkInputPaneHandler pHandler, out uint pdwCookie);
+        int AdviseWithHWND(nint hwnd, [MarshalAs(UnmanagedType.IUnknown)] object pHandler, out uint pdwCookie);
 
         [PreserveSig]
         int Unadvise(uint dwCookie);
@@ -308,150 +299,223 @@ public sealed class HandheldToolboxService : IDisposable
         int Location(out NativeRect prcInputPaneScreenLocation);
     }
 
-    [ClassInterface(ClassInterfaceType.None)]
-    private sealed class InputPaneSink : IFrameworkInputPaneHandler
-    {
-        public int Showing(ref NativeRect prcInputPaneScreenLocation, bool fEnsureFocusedElementInView)
-        {
-            _autoHideConsumed = false;
-            return 0;
-        }
-
-        public int Hiding(bool fEnsureFocusedElementInView)
-        {
-            Interlocked.Exchange(ref _lastInputPaneHiddenTicks, Environment.TickCount64);
-            return 0;
-        }
-    }
-
-    private static IFrameworkInputPane? _watchedPane;
-    private static uint _watchCookie;
-    private static InputPaneSink? _watchSink;
-    private static long _lastInputPaneHiddenTicks;
-    private static volatile bool _autoHideConsumed = true;
+    private static readonly OskToggleStateGuard OskGuard = new();
+    private static readonly object TabTipStaLock = new();
+    private static readonly ConcurrentQueue<(Action Work, ManualResetEventSlim Done)> TabTipStaQueue = new();
+    private static AutoResetEvent? _tabTipWakeEvent;
+    private static Thread? _tabTipStaThread;
+    private static volatile bool _tabTipMonitorStopRequested;
+    private static int _tabTipStaThreadId;
+    private static IFrameworkInputPane? _staInputPane;
     private static int _oskToggleGate;
 
     public static void AttachInputPaneWatcher(nint hwnd)
     {
-        try
-        {
-            DetachInputPaneWatcher();
-            if (hwnd == 0) return;
-
-            var comType = Type.GetTypeFromCLSID(ClsidFrameworkInputPane, throwOnError: false);
-            if (comType is null) return;
-
-            var obj = Activator.CreateInstance(comType);
-            if (obj is IFrameworkInputPane pane)
-            {
-                var sink = new InputPaneSink();
-                if (pane.AdviseWithHWND(hwnd, sink, out uint cookie) >= 0)
-                {
-                    _watchedPane = pane;
-                    _watchSink = sink;
-                    _watchCookie = cookie;
-                    return;
-                }
-            }
-
-            if (obj is not null && Marshal.IsComObject(obj))
-            {
-                try { Marshal.FinalReleaseComObject(obj); } catch { }
-            }
-        }
-        catch
-        {
-            // Non-fatal: QueryTabTipVisible() still queries IFrameworkInputPane::Location directly
-        }
+        EnsureTabTipMonitorStarted();
     }
 
     public static void DetachInputPaneWatcher()
     {
-        try
+        Thread? thread;
+        lock (TabTipStaLock)
         {
-            if (_watchedPane is not null)
+            thread = _tabTipStaThread;
+            _tabTipMonitorStopRequested = true;
+            try { _tabTipWakeEvent?.Set(); } catch { }
+        }
+
+        if (thread is { IsAlive: true } && Environment.CurrentManagedThreadId != _tabTipStaThreadId)
+        {
+            try { thread.Join(300); } catch { }
+        }
+
+        lock (TabTipStaLock)
+        {
+            if (_tabTipStaThread == thread && thread is { IsAlive: false })
             {
-                if (_watchCookie != 0)
-                {
-                    try { _watchedPane.Unadvise(_watchCookie); } catch { }
-                }
-                if (Marshal.IsComObject(_watchedPane))
-                {
-                    try { Marshal.FinalReleaseComObject(_watchedPane); } catch { }
-                }
+                _tabTipStaThread = null;
             }
         }
-        catch
+    }
+
+    private static void EnsureTabTipMonitorStarted()
+    {
+        if (!_tabTipMonitorStopRequested && _tabTipStaThread is { IsAlive: true })
         {
-            // Ignore shutdown cleanup errors
+            return;
+        }
+
+        lock (TabTipStaLock)
+        {
+            if (!_tabTipMonitorStopRequested && _tabTipStaThread is { IsAlive: true })
+            {
+                return;
+            }
+
+            if (_tabTipStaThread is { IsAlive: true })
+            {
+                try { _tabTipStaThread.Join(300); } catch { }
+            }
+
+            _tabTipMonitorStopRequested = false;
+            _tabTipWakeEvent ??= new AutoResetEvent(false);
+
+            var ready = new ManualResetEventSlim(false);
+            var thread = new Thread(() => TabTipStaWorkerLoop(ready))
+            {
+                Name = "HaloDeck.TabTipStaMonitor",
+                IsBackground = true
+            };
+            thread.SetApartmentState(ApartmentState.STA);
+            _tabTipStaThread = thread;
+            thread.Start();
+            ready.Wait(500);
+        }
+    }
+
+    private static void TabTipStaWorkerLoop(ManualResetEventSlim ready)
+    {
+        _tabTipStaThreadId = Environment.CurrentManagedThreadId;
+        try { ready.Set(); } catch { }
+
+        try
+        {
+            while (!_tabTipMonitorStopRequested)
+            {
+                DrainTabTipStaQueue();
+                SampleTabTipOnStaThread();
+                _tabTipWakeEvent?.WaitOne(100);
+                DrainTabTipStaQueue();
+            }
         }
         finally
         {
-            _watchedPane = null;
-            _watchSink = null;
-            _watchCookie = 0;
+            DrainTabTipStaQueue();
+            ReleaseStaInputPane();
+            _tabTipStaThreadId = 0;
+        }
+    }
+
+    private static void DrainTabTipStaQueue()
+    {
+        while (TabTipStaQueue.TryDequeue(out var item))
+        {
+            try
+            {
+                item.Work();
+            }
+            catch
+            {
+                // Individual STA actions tolerate errors locally
+            }
+            finally
+            {
+                try { item.Done.Set(); } catch { }
+            }
+        }
+    }
+
+    private static bool SampleTabTipOnStaThread()
+    {
+        try
+        {
+            if (_staInputPane is null)
+            {
+                var t = Type.GetTypeFromCLSID(ClsidFrameworkInputPane, throwOnError: false);
+                if (t is null)
+                {
+                    OskGuard.RecordSample(false, Environment.TickCount64);
+                    return false;
+                }
+
+                var obj = Activator.CreateInstance(t);
+                if (obj is IFrameworkInputPane pane)
+                {
+                    _staInputPane = pane;
+                }
+                else
+                {
+                    if (obj is not null && Marshal.IsComObject(obj))
+                    {
+                        try { Marshal.FinalReleaseComObject(obj); } catch { }
+                    }
+                    OskGuard.RecordSample(false, Environment.TickCount64);
+                    return false;
+                }
+            }
+
+            int hr = _staInputPane.Location(out var rc);
+            if (hr < 0)
+            {
+                ReleaseStaInputPane();
+                OskGuard.RecordSample(false, Environment.TickCount64);
+                return false;
+            }
+
+            bool visible = rc.IsVisible;
+            OskGuard.RecordSample(visible, Environment.TickCount64);
+            return visible;
+        }
+        catch
+        {
+            ReleaseStaInputPane();
+            OskGuard.RecordSample(false, Environment.TickCount64);
+            return false;
+        }
+    }
+
+    private static void ReleaseStaInputPane()
+    {
+        var pane = _staInputPane;
+        _staInputPane = null;
+        if (pane is not null && Marshal.IsComObject(pane))
+        {
+            try { Marshal.FinalReleaseComObject(pane); } catch { }
         }
     }
 
     public static bool QueryTabTipVisible()
     {
+        EnsureTabTipMonitorStarted();
         bool visible = false;
-        RunSta(() =>
+        RunOnTabTipSta(() =>
         {
-            object? obj = null;
-            try
-            {
-                var t = Type.GetTypeFromCLSID(ClsidFrameworkInputPane, throwOnError: false);
-                if (t is null) return;
-
-                obj = Activator.CreateInstance(t);
-                if (obj is IFrameworkInputPane pane && pane.Location(out var rc) >= 0)
-                {
-                    visible = rc.IsVisible;
-                }
-            }
-            catch
-            {
-                visible = false;
-            }
-            finally
-            {
-                if (obj is not null && Marshal.IsComObject(obj))
-                {
-                    try { Marshal.FinalReleaseComObject(obj); } catch { }
-                }
-            }
+            visible = SampleTabTipOnStaThread();
         });
         return visible;
     }
 
-    public static bool ShouldCloseOnUiClick()
+    public static bool ShouldCloseFromHookSnapshot()
     {
-        if (QueryTabTipVisible())
+        EnsureTabTipMonitorStarted();
+        if (OskGuard.ShouldCloseFromSnapshot(Environment.TickCount64, autoDismissGraceMs: 550))
         {
             return true;
         }
 
         nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
-        if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
+        return oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd);
+    }
+
+    public static bool ShouldCloseOnUiClick()
+    {
+        EnsureTabTipMonitorStarted();
+        if (OskGuard.ShouldCloseWithLiveQuery(QueryTabTipVisible(), Environment.TickCount64, autoDismissGraceMs: 750))
         {
             return true;
         }
 
-        if (!_autoHideConsumed)
-        {
-            long elapsed = Environment.TickCount64 - Interlocked.Read(ref _lastInputPaneHiddenTicks);
-            if (elapsed is >= 0 and < 650)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
+        return oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd);
     }
 
-    public static string ToggleOnScreenKeyboard(string preferredMode = "tabtip", bool fromUiClick = false, bool? forceClose = null)
+    public static string ToggleOnScreenKeyboard(
+        string preferredMode = "tabtip",
+        bool fromUiClick = false,
+        bool? forceClose = null,
+        bool fromPhysicalChord = false)
     {
+        EnsureTabTipMonitorStarted();
         if (Interlocked.CompareExchange(ref _oskToggleGate, 1, 0) != 0)
         {
             return "屏幕键盘切换中";
@@ -477,33 +541,48 @@ public sealed class HandheldToolboxService : IDisposable
             // Dismiss any legacy osk.exe before driving Windows 11 native TabTip/Gamepad Keyboard.
             TryCloseWindowByClass("OSKMainClass");
 
-            bool shouldClose = forceClose ?? (fromUiClick ? ShouldCloseOnUiClick() : QueryTabTipVisible());
+            bool shouldClose = forceClose ?? (fromUiClick
+                ? ShouldCloseOnUiClick()
+                : OskGuard.ShouldCloseWithLiveQuery(QueryTabTipVisible(), Environment.TickCount64, autoDismissGraceMs: 350));
+
             if (shouldClose)
             {
-                _autoHideConsumed = true;
-                if (QueryTabTipVisible())
+                OskGuard.BeginIntentionalClose(Environment.TickCount64);
+                try
                 {
-                    // Step 1: Standalone Ctrl tap closes Windows 11 Gamepad keyboard layout reliably (matches GPD Tool 1.66)
-                    Win32Interop.SendStandaloneCtrlTap();
-                    if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 175))
+                    if ((fromPhysicalChord || fromUiClick) && QueryTabTipVisible())
                     {
-                        // Step 2: Standard/docked Touch keyboard layout toggles closed via ITipInvocation
-                        TryInvokeTabTipComToggle();
-                        if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 210))
+                        // Physical Ctrl+Win keydown or UI pointer-down often already initiated Gamepad TabTip's slide-down close.
+                        WaitUntilTabTipState(expectedVisible: false, timeoutMs: fromPhysicalChord ? 320 : 220);
+                    }
+
+                    if (QueryTabTipVisible())
+                    {
+                        // Standalone Ctrl tap closes Windows 11 Gamepad keyboard layout cleanly; allow full slide-down animation up to 650ms.
+                        Win32Interop.SendStandaloneCtrlTap();
+                        if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 650))
                         {
-                            TryCloseWindowByClass("IPTip_Main_Window");
+                            // Fallback only if still open after 650ms (e.g., Standard/Docked Touch layout where Ctrl tap does not dismiss it).
+                            TryInvokeTabTipComToggle();
+                            if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 500))
+                            {
+                                TryCloseWindowByClass("IPTip_Main_Window");
+                            }
                         }
                     }
                 }
+                finally
+                {
+                    OskGuard.CompleteIntentionalClose(Environment.TickCount64, postCloseSuppressMs: 350);
+                }
 
-                Interlocked.Exchange(ref _lastInputPaneHiddenTicks, Environment.TickCount64);
                 return "已收起屏幕键盘";
             }
 
-            _autoHideConsumed = false;
+            OskGuard.BeginIntentionalOpen();
             EnsureTabTipProcessStarted();
             TryInvokeTabTipComToggle();
-            if (!WaitUntilTabTipState(expectedVisible: true, timeoutMs: 280))
+            if (!WaitUntilTabTipState(expectedVisible: true, timeoutMs: 420))
             {
                 string tabTipPath = GetTabTipExePath();
                 if (File.Exists(tabTipPath))
@@ -511,7 +590,7 @@ public sealed class HandheldToolboxService : IDisposable
                     try
                     {
                         Process.Start(new ProcessStartInfo { FileName = tabTipPath, UseShellExecute = true });
-                        WaitUntilTabTipState(expectedVisible: true, timeoutMs: 250);
+                        WaitUntilTabTipState(expectedVisible: true, timeoutMs: 350);
                     }
                     catch
                     {
@@ -520,6 +599,7 @@ public sealed class HandheldToolboxService : IDisposable
                 }
             }
 
+            QueryTabTipVisible();
             return "已呼出屏幕键盘";
         }
         finally
@@ -597,7 +677,7 @@ public sealed class HandheldToolboxService : IDisposable
     private static bool TryInvokeTabTipComToggle()
     {
         bool ok = false;
-        RunSta(() =>
+        RunOnTabTipSta(() =>
         {
             object? host = null;
             try
@@ -627,7 +707,28 @@ public sealed class HandheldToolboxService : IDisposable
         return ok;
     }
 
-    private static void RunSta(Action action)
+    private static void RunOnTabTipSta(Action action, int timeoutMs = 1500)
+    {
+        if (Environment.CurrentManagedThreadId == _tabTipStaThreadId)
+        {
+            action();
+            return;
+        }
+
+        EnsureTabTipMonitorStarted();
+        if (_tabTipMonitorStopRequested || _tabTipStaThread is not { IsAlive: true })
+        {
+            RunFallbackSta(action, timeoutMs);
+            return;
+        }
+
+        using var done = new ManualResetEventSlim(false);
+        TabTipStaQueue.Enqueue((action, done));
+        try { _tabTipWakeEvent?.Set(); } catch { }
+        done.Wait(timeoutMs);
+    }
+
+    private static void RunFallbackSta(Action action, int timeoutMs)
     {
         if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
         {
@@ -644,13 +745,13 @@ public sealed class HandheldToolboxService : IDisposable
             }
             finally
             {
-                done.Set();
+                try { done.Set(); } catch { }
             }
         });
         thread.IsBackground = true;
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        done.Wait(1500);
+        done.Wait(timeoutMs);
     }
 
     public void Dispose()
