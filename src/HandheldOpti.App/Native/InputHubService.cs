@@ -34,6 +34,8 @@ public sealed class InputHubService : IDisposable
     private volatile bool _suppressNavigationUntilRelease;
     private bool _recordingGamepadCombo;
     private XInputButtons _recordedMask;
+    private volatile bool _recordingBackButtonGamepad;
+    private readonly HashSet<ushort> _recordedBackButtonCodes = new();
     private volatile string? _activeUiTarget;
     private volatile bool _gamepadMouseModeEnabled;
     private bool _mouseLeftHeld;
@@ -57,6 +59,7 @@ public sealed class InputHubService : IDisposable
     public event Action<string>? UiGamepadAction;
     public event Action<int>? GamepadCountChanged;
     public event Action<List<string>>? GamepadComboRecorded;
+    public event Action<List<ushort>>? BackButtonGamepadRecorded;
 
     public int ConnectedControllerCount { get; private set; }
     public bool GamepadMouseModeEnabled
@@ -128,6 +131,18 @@ public sealed class InputHubService : IDisposable
     {
         _recordingGamepadCombo = false;
         _recordedMask = XInputButtons.None;
+    }
+
+    public void BeginRecordBackButtonGamepad()
+    {
+        _recordedBackButtonCodes.Clear();
+        _recordingBackButtonGamepad = true;
+    }
+
+    public void CancelRecordBackButtonGamepad()
+    {
+        _recordingBackButtonGamepad = false;
+        _recordedBackButtonCodes.Clear();
     }
 
     public void RegisterGlobalHotkeys()
@@ -310,6 +325,34 @@ public sealed class InputHubService : IDisposable
 
                     var buttons = (XInputButtons)gamepad.wButtons;
 
+                    if (_recordingBackButtonGamepad)
+                    {
+                        var curCodes = ExtractV2GamepadCodes(gamepad, buttons);
+                        if (curCodes.Count > 0)
+                        {
+                            foreach (ushort code in curCodes)
+                            {
+                                if (_recordedBackButtonCodes.Count < 4)
+                                {
+                                    _recordedBackButtonCodes.Add(code);
+                                }
+                            }
+                        }
+                        else if (_recordedBackButtonCodes.Count > 0)
+                        {
+                            var captured = _recordedBackButtonCodes.ToList();
+                            _recordingBackButtonGamepad = false;
+                            _recordedBackButtonCodes.Clear();
+                            _suppressNavigationUntilRelease = true;
+                            _directionRepeatAt.Clear();
+                            BackButtonGamepadRecorded?.Invoke(captured);
+                        }
+
+                        _prevButtons = buttons;
+                        await Task.Delay(12, ct).ConfigureAwait(false);
+                        continue;
+                    }
+
                     if (_recordingGamepadCombo)
                     {
                         if (buttons != XInputButtons.None)
@@ -472,6 +515,28 @@ public sealed class InputHubService : IDisposable
                 await Task.Delay(50, ct).ConfigureAwait(false);
             }
         }
+    }
+
+    private static List<ushort> ExtractV2GamepadCodes(XInputGamepad gp, XInputButtons buttons)
+    {
+        var codes = new List<ushort>();
+        if (buttons.HasFlag(XInputButtons.DPadUp)) codes.Add(0x8000);
+        if (buttons.HasFlag(XInputButtons.DPadDown)) codes.Add(0x8001);
+        if (buttons.HasFlag(XInputButtons.DPadLeft)) codes.Add(0x8002);
+        if (buttons.HasFlag(XInputButtons.DPadRight)) codes.Add(0x8003);
+        if (buttons.HasFlag(XInputButtons.Start)) codes.Add(0x8004);
+        if (buttons.HasFlag(XInputButtons.Back)) codes.Add(0x8005);
+        if (buttons.HasFlag(XInputButtons.A)) codes.Add(0x8007);
+        if (buttons.HasFlag(XInputButtons.B)) codes.Add(0x8008);
+        if (buttons.HasFlag(XInputButtons.X)) codes.Add(0x8009);
+        if (buttons.HasFlag(XInputButtons.Y)) codes.Add(0x800A);
+        if (buttons.HasFlag(XInputButtons.LeftShoulder)) codes.Add(0x800B);
+        if (buttons.HasFlag(XInputButtons.RightShoulder)) codes.Add(0x800C);
+        if (gp.bLeftTrigger > 65) codes.Add(0x800D);
+        if (gp.bRightTrigger > 65) codes.Add(0x800E);
+        if (buttons.HasFlag(XInputButtons.LeftThumb)) codes.Add(0x800F);
+        if (buttons.HasFlag(XInputButtons.RightThumb)) codes.Add(0x8010);
+        return codes;
     }
 
     private void DispatchButtonAction(XInputButtons newlyPressed, XInputButtons flag, string actionName)

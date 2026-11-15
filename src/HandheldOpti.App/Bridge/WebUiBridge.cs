@@ -47,6 +47,11 @@ public sealed class WebUiBridge : IDisposable
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
     private SystemControlState? _latestSystemState;
+    private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
+    private readonly SemaphoreSlim _brightFastGate = new(1, 1);
+    private readonly SemaphoreSlim _volFastGate = new(1, 1);
+    private readonly object _saveLock = new();
+    private CancellationTokenSource? _saveCts;
 
     public event Action? RequestHideQam;
     public event Action? RequestToggleQam;
@@ -84,6 +89,9 @@ public sealed class WebUiBridge : IDisposable
 
         _inputHub.GamepadComboRecorded += buttons =>
             BroadcastEvent("gamepadComboRecorded", new { buttons });
+
+        _inputHub.BackButtonGamepadRecorded += codes =>
+            BroadcastEvent("backButtonGamepadRecorded", new { codes });
     }
 
     public AppSettings Settings => _settings;
@@ -95,6 +103,7 @@ public sealed class WebUiBridge : IDisposable
 
     public void Dispose()
     {
+        FlushPendingSettingsSave();
         try
         {
             if (!SuppressHardwareCleanupOnDispose && _settings.FanMode != "auto")
@@ -421,6 +430,8 @@ public sealed class WebUiBridge : IDisposable
                 "saveSettings" => SaveSettings(payload),
                 "beginRecordGamepadCombo" => BeginRecordGamepadCombo(),
                 "cancelRecordGamepadCombo" => CancelRecordGamepadCombo(),
+                "beginRecordBackButton" => InvokeBeginRecordBackButton(),
+                "cancelRecordBackButton" => InvokeCancelRecordBackButton(),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
                 "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
@@ -433,12 +444,12 @@ public sealed class WebUiBridge : IDisposable
                 "getSystemControl" => RefreshAndCacheSystemState(),
                 "setRefreshRate" => ApplyRefreshRate(payload),
                 "setResolution" => ApplyResolution(payload),
-                "setBrightness" => BroadcastSystemState(_systemControl.SetBrightness(payload.GetProperty("percent").GetInt32())),
-                "setVolume" => BroadcastSystemState(_systemControl.SetVolume(payload.GetProperty("percent").GetInt32())),
+                "setBrightness" => await SetBrightnessFastAsync(payload),
+                "setVolume" => await SetVolumeFastAsync(payload),
                 "setMute" => BroadcastSystemState(_systemControl.SetMute(payload.GetProperty("muted").GetBoolean())),
                 "setCpuBoost" => BroadcastSystemState(_systemControl.SetCpuBoostMode(payload.GetProperty("mode").GetString() ?? "aggressive")),
                 "setCpuMaxFreq" => SetCpuMaxFreq(payload),
-                "setTdp" => SetTdp(payload),
+                "setTdp" => await SetTdpAsync(payload),
                 "savePowerConfig" => SavePowerConfig(payload),
                 "setPowerLinkage" => SetPowerLinkage(payload),
                 "setFanMode" => SetFanMode(payload),
@@ -927,6 +938,63 @@ public sealed class WebUiBridge : IDisposable
         return new { recording = false };
     }
 
+    private object InvokeBeginRecordBackButton()
+    {
+        _inputHub.BeginRecordBackButtonGamepad();
+        return new { recording = true };
+    }
+
+    private object InvokeCancelRecordBackButton()
+    {
+        _inputHub.CancelRecordBackButtonGamepad();
+        return new { recording = false };
+    }
+
+    private void ScheduleSaveSettings(int delayMs = 350)
+    {
+        CancellationTokenSource nextCts;
+        lock (_saveLock)
+        {
+            _saveCts?.Cancel();
+            _saveCts?.Dispose();
+            nextCts = new CancellationTokenSource();
+            _saveCts = nextCts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delayMs, nextCts.Token).ConfigureAwait(false);
+                lock (_saveLock)
+                {
+                    if (!ReferenceEquals(_saveCts, nextCts)) return;
+                    _settingsStore.Save(_settings);
+                    _saveCts = null;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
+                // Best-effort debounced persistence
+            }
+        });
+    }
+
+    private void FlushPendingSettingsSave()
+    {
+        lock (_saveLock)
+        {
+            if (_saveCts is null) return;
+            _saveCts.Cancel();
+            _saveCts.Dispose();
+            _saveCts = null;
+            _settingsStore.Save(_settings);
+        }
+    }
+
     private async Task<object> TriggerInsertFromUiAsync()
     {
         await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
@@ -1035,7 +1103,70 @@ public sealed class WebUiBridge : IDisposable
         return updated;
     }
 
-    private object SetTdp(JsonElement payload)
+    private async Task<object> SetBrightnessFastAsync(JsonElement payload)
+    {
+        int percent = Math.Clamp(payload.GetProperty("percent").GetInt32(), 0, 100);
+        await _brightFastGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            int applied = await Task.Run(() => _systemControl.SetBrightnessFast(percent)).ConfigureAwait(false);
+            if (_latestSystemState is { } snap)
+            {
+                snap.BrightnessPercent = applied;
+                _systemControl.RecomputePowerFlow(snap);
+                BroadcastEvent("controlValuePatched", new
+                {
+                    kind = "brightness",
+                    brightnessPercent = applied,
+                    systemDrawWatts = snap.SystemDrawWatts,
+                    estimatedStandbyMinutes = snap.EstimatedStandbyMinutes,
+                    estimatedChargerWatts = snap.EstimatedChargerWatts,
+                    batteryEtaMinutes = snap.BatteryEtaMinutes
+                });
+            }
+            else
+            {
+                BroadcastEvent("controlValuePatched", new
+                {
+                    kind = "brightness",
+                    brightnessPercent = applied
+                });
+            }
+            return new { ok = true, brightnessPercent = applied };
+        }
+        finally
+        {
+            _brightFastGate.Release();
+        }
+    }
+
+    private async Task<object> SetVolumeFastAsync(JsonElement payload)
+    {
+        int percent = Math.Clamp(payload.GetProperty("percent").GetInt32(), 0, 100);
+        await _volFastGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var (vol, muted) = await Task.Run(() => _systemControl.SetVolumeFast(percent)).ConfigureAwait(false);
+            if (_latestSystemState is { } snap)
+            {
+                snap.VolumePercent = vol;
+                snap.IsMuted = muted;
+            }
+            BroadcastEvent("controlValuePatched", new
+            {
+                kind = "volume",
+                volumePercent = vol,
+                isMuted = muted
+            });
+            return new { ok = true, volumePercent = vol, isMuted = muted };
+        }
+        finally
+        {
+            _volFastGate.Release();
+        }
+    }
+
+    private async Task<object> SetTdpAsync(JsonElement payload)
     {
         int watts = Math.Clamp(payload.GetProperty("watts").GetInt32(), 8, 120);
         _settings.CurrentTdpWatts = watts;
@@ -1062,34 +1193,78 @@ public sealed class WebUiBridge : IDisposable
             _settings.FastPptWatts = Math.Min(140, watts + 2);
         }
 
-        _settingsStore.Save(_settings);
+        ScheduleSaveSettings();
 
-        var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
-        bool hardwareApplied = false;
-        string note = $"已记录目标功耗 {watts}W（未启用底层硬件服务，请先点击上方一键启用）";
-
-        if (hw.ServiceRunning)
+        await _tdpFastGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
-            int? fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, watts + 2);
-            var (ok, err, nextHw) = _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg);
-            if (!ok)
-            {
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
-            }
-            hardwareApplied = true;
-            bool v1Clamped = nextHw.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion && (watts < 12 || watts > 85);
-            note = v1Clamped
-                ? $"旧版硬件服务已钳位应用 {nextHw.AppliedTdpWatts}W（点击「升级重启硬件服务」解锁 8–120W 与三段功耗读回）"
-                : (_settings.UnlockThreeStagePower
-                    ? $"已下发 SMU 三段功耗：SPL {nextHw.AppliedTdpWatts}W / sPPT {nextHw.AppliedSlowWatts}W / fPPT {nextHw.AppliedFastWatts}W"
-                    : $"Strix Halo APU 功耗上限已即时调整为 {nextHw.AppliedTdpWatts}W");
-        }
+            var hw = _latestSystemState?.HardwareService ?? _systemControl.HardwareClient.GetStatus(forceRefresh: false);
+            bool hardwareApplied = false;
+            int appliedW = watts;
+            int appliedSlow = _settings.SlowPptWatts;
+            int appliedFast = _settings.FastPptWatts;
+            string note = $"已记录目标功耗 {watts}W（未启用底层硬件服务，请先点击上方一键启用）";
 
-        var updatedSys = _systemControl.GetState(includeHardwareRefresh: true);
-        BroadcastSystemState(updatedSys);
-        BroadcastStateSnapshot();
-        return new { ok = true, hardwareApplied, watts, message = note, systemControl = updatedSys };
+            if (hw.ServiceRunning)
+            {
+                int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
+                int? fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, watts + 2);
+                var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg)).ConfigureAwait(false);
+                if (!ok)
+                {
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
+                }
+                hardwareApplied = true;
+                appliedW = nextHw.AppliedTdpWatts;
+                appliedSlow = nextHw.AppliedSlowWatts;
+                appliedFast = nextHw.AppliedFastWatts;
+
+                if (_latestSystemState is { } snap)
+                {
+                    snap.HardwareService.AppliedTdpWatts = nextHw.AppliedTdpWatts;
+                    snap.HardwareService.AppliedSlowWatts = nextHw.AppliedSlowWatts;
+                    snap.HardwareService.AppliedFastWatts = nextHw.AppliedFastWatts;
+                    snap.HardwareService.HwStapmLimitWatts = nextHw.HwStapmLimitWatts ?? nextHw.AppliedTdpWatts;
+                    snap.HardwareService.HwSlowLimitWatts = nextHw.HwSlowLimitWatts ?? nextHw.AppliedSlowWatts;
+                    snap.HardwareService.HwFastLimitWatts = nextHw.HwFastLimitWatts ?? nextHw.AppliedFastWatts;
+                }
+
+                bool v1Clamped = nextHw.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion && (watts < 12 || watts > 85);
+                note = v1Clamped
+                    ? $"旧版硬件服务已钳位应用 {nextHw.AppliedTdpWatts}W（点击「升级重启硬件服务」解锁 8–120W 与三段功耗读回）"
+                    : (_settings.UnlockThreeStagePower
+                        ? $"已下发 SMU 三段功耗：SPL {nextHw.AppliedTdpWatts}W / sPPT {nextHw.AppliedSlowWatts}W / fPPT {nextHw.AppliedFastWatts}W"
+                        : $"Strix Halo APU 功耗上限已即时调整为 {nextHw.AppliedTdpWatts}W");
+            }
+
+            OverlayHudUpdated?.Invoke();
+            BroadcastEvent("powerSettingsPatched", new
+            {
+                currentTdpWatts = _settings.CurrentTdpWatts,
+                unlockThreeStagePower = _settings.UnlockThreeStagePower,
+                slowPptWatts = _settings.SlowPptWatts,
+                fastPptWatts = _settings.FastPptWatts,
+                hardwareApplied,
+                appliedTdpWatts = appliedW,
+                appliedSlowWatts = appliedSlow,
+                appliedFastWatts = appliedFast,
+                message = note
+            });
+            return new
+            {
+                ok = true,
+                hardwareApplied,
+                watts = appliedW,
+                currentTdpWatts = _settings.CurrentTdpWatts,
+                slowWatts = appliedSlow,
+                fastWatts = appliedFast,
+                message = note
+            };
+        }
+        finally
+        {
+            _tdpFastGate.Release();
+        }
     }
 
     private object SavePowerConfig(JsonElement payload)
@@ -1281,6 +1456,7 @@ public sealed class WebUiBridge : IDisposable
 
     private object OpenSettingsJson()
     {
+        FlushPendingSettingsSave();
         _settingsStore.Save(_settings);
         Process.Start(new ProcessStartInfo
         {
@@ -1500,16 +1676,46 @@ public sealed class WebUiBridge : IDisposable
         int? _frozenFallbackPid() => _toolbox.GetFrozenGames().FirstOrDefault()?.Pid;
     }
 
+    private static List<ushort>? ParseComboCodes(JsonElement payload, string propName)
+    {
+        if (!payload.TryGetProperty(propName, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var list = new List<ushort>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out int v) && v > 0 && v <= ushort.MaxValue)
+            {
+                list.Add((ushort)v);
+            }
+        }
+        return list.Count > 0 ? list : null;
+    }
+
     private async Task<GpdControllerConfig> SaveGpdControllerAsync(JsonElement payload)
     {
         var req = new GpdControllerUpdateRequest
         {
             L4SingleHidCode = payload.TryGetProperty("l4Key", out var l4p) && l4p.ValueKind == JsonValueKind.Number ? l4p.GetInt32() : null,
             R4SingleHidCode = payload.TryGetProperty("r4Key", out var r4p) && r4p.ValueKind == JsonValueKind.Number ? r4p.GetInt32() : null,
+            L4ComboCodes = ParseComboCodes(payload, "l4Combo"),
+            R4ComboCodes = ParseComboCodes(payload, "r4Combo"),
             RumbleLevel = payload.TryGetProperty("rumble", out var rp) ? Math.Clamp(rp.GetInt32(), 0, 2) : 1,
             LeftDeadzone = payload.TryGetProperty("leftDeadzone", out var ldz) ? Math.Clamp(ldz.GetInt32(), -10, 10) : 0,
             RightDeadzone = payload.TryGetProperty("rightDeadzone", out var rdz) ? Math.Clamp(rdz.GetInt32(), -10, 10) : 0
         };
+
+        static bool UsesBackHotkeyHid(int? single, IReadOnlyList<ushort>? combo) =>
+            (single is >= 0x0068 and <= 0x006A) ||
+            (combo is not null && combo.Any(c => c is >= 0x0068 and <= 0x006A));
+
+        if ((UsesBackHotkeyHid(req.L4SingleHidCode, req.L4ComboCodes) ||
+             UsesBackHotkeyHid(req.R4SingleHidCode, req.R4ComboCodes)) &&
+            !_settings.EnableBackButtonHotkeys)
+        {
+            _settings.EnableBackButtonHotkeys = true;
+            ScheduleSaveSettings(50);
+        }
 
         var updated = await Task.Run(() => _gpdController.WriteConfig(req)).ConfigureAwait(false);
         BroadcastStateSnapshot();

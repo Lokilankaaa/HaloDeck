@@ -92,6 +92,9 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private bool _pmTableResolved;
     private bool _pmTableUnavailable;
     private DateTime _lastPmReadUtc = DateTime.MinValue;
+    private DateTime _lastGpdSvcCheckUtc = DateTime.MinValue;
+    private bool _cachedGpdSvcExists;
+    private bool _cachedGpdSvcRunning;
     private readonly ulong[] _pmTableBuf = new ulong[1024];
 
     private string _fanMode = "auto";
@@ -511,6 +514,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 int rc = SetGpdServicePaused(paused);
                 lock (_hwLock)
                 {
+                    _lastGpdSvcCheckUtc = DateTime.MinValue;
                     return new
                     {
                         ok = rc == 0,
@@ -527,7 +531,13 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
     private HardwareDaemonStatus BuildStatusSnapshotLocked(int currentFps = 0, double frameTimeMs = 0.0, int fpsPid = 0)
     {
-        var (gpdExists, gpdRunning) = ProbeWindowsServiceState("GPDToolService");
+        if ((DateTime.UtcNow - _lastGpdSvcCheckUtc) > TimeSpan.FromSeconds(8))
+        {
+            (_cachedGpdSvcExists, _cachedGpdSvcRunning) = ProbeWindowsServiceState("GPDToolService");
+            _lastGpdSvcCheckUtc = DateTime.UtcNow;
+        }
+        bool gpdExists = _cachedGpdSvcExists;
+        bool gpdRunning = _cachedGpdSvcRunning;
         return new HardwareDaemonStatus
         {
             DaemonVersion = CurrentDaemonVersion,
@@ -604,9 +614,11 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             _appliedTdpWatts = watts;
             _appliedSlowWatts = slowWatts;
             _appliedFastWatts = fastWatts;
+            _hwStapmLimitWatts = watts;
+            _hwSlowLimitWatts = slowWatts;
+            _hwFastLimitWatts = fastWatts;
+            _lastPmReadUtc = DateTime.MinValue;
             _lastError = string.Empty;
-            Thread.Sleep(25);
-            TryRefreshPmTableLocked(force: true);
         }
         else
         {

@@ -75,11 +75,14 @@ public partial class OverlayHudWindow : Window
             ApplyClickThroughStyles();
         }
 
+        string etaShort = FormatMinutesShort(sys.EstimatedStandbyMinutes);
         string batStr = !sys.HasBattery
             ? "AC 直连"
             : sys.IsAcOnline
-                ? (sys.IsCharging ? $"充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)" : $"AC {sys.BatteryPercent}%")
-                : $"{sys.BatteryPercent}% (-{sys.BatteryPowerWatts ?? 0:F1}W)";
+                ? (sys.IsCharging
+                    ? $"整机 {sys.SystemDrawWatts:F1}W · {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)"
+                    : $"整机 {sys.SystemDrawWatts:F1}W · AC {sys.BatteryPercent}%{(etaShort != "" ? $" ({etaShort})" : "")}")
+                : $"{sys.BatteryPercent}% (-{sys.SystemDrawWatts:F1}W{(etaShort != "" ? $" · {etaShort}" : "")})";
 
         if (_level == 1)
         {
@@ -141,9 +144,12 @@ public partial class OverlayHudWindow : Window
             FanLineText.Text = sys.HardwareService.ServiceRunning && sys.HardwareService.EcReady
                 ? $"风扇: {sys.HardwareService.FanRpm} RPM ({sys.HardwareService.FanMode})"
                 : $"调度: {sys.CpuBoostMode}";
+            string bypassOrWatts = sys.IsBypassPower
+                ? $"整机 {sys.SystemDrawWatts:F1}W · 旁路直供"
+                : $"整机 {sys.SystemDrawWatts:F1}W / 输入≈{sys.EstimatedChargerWatts ?? 0:F0}W";
             PowerLineText.Text = sys.IsAcOnline
-                ? (sys.IsBypassPower ? $"旁路直供 ({sys.BatteryPercent}%)" : $"供电 ≈{sys.EstimatedChargerWatts ?? 0:F0}W ({batStr})")
-                : $"电池: {batStr} (约{sys.BatteryEtaMinutes}m)";
+                ? $"{bypassOrWatts} ({sys.BatteryPercent}%{(etaShort != "" ? $" · 离电约{etaShort}" : "")})"
+                : $"整机: {sys.SystemDrawWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)";
 
             if (_level >= 4)
             {
@@ -154,6 +160,14 @@ public partial class OverlayHudWindow : Window
 
         UpdateLayout();
         RepositionWindow();
+    }
+
+    private static string FormatMinutesShort(int? minutes)
+    {
+        if (minutes is not > 0) return "";
+        int h = minutes.Value / 60;
+        int m = minutes.Value % 60;
+        return h > 0 ? $"{h}h{m:D2}m" : $"{m}m";
     }
 
     private static PointCollection BuildPolylinePoints(int[] samples, double width, double height, double maxY)

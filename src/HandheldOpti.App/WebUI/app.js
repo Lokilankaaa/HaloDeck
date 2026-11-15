@@ -81,13 +81,130 @@
     halodeck_fn: { l4: 0x0068, r4: 0x0069, shortLabel: "侧栏与帧率窗", label: "侧栏与帧率窗 (L4=侧栏 / R4=帧率窗)", enableHotkeys: true }
   };
 
+  const GPD_COMBO_MODIFIER_OPTIONS = [
+    { value: 0x00E0, label: "Ctrl" },
+    { value: 0x00E1, label: "Shift" },
+    { value: 0x00E2, label: "Alt" },
+    { value: 0x00E3, label: "Win" }
+  ];
+
+  const GPD_COMBO_EXTRA_KEYS = [
+    { value: 0x0012, label: "O" },
+    { value: 0x000C, label: "I" },
+    { value: 0x0010, label: "M" },
+    { value: 0x0007, label: "D" },
+    { value: 0x0016, label: "S" },
+    { value: 0x0014, label: "Q" },
+    { value: 0x0008, label: "E" },
+    { value: 0x0009, label: "F" },
+    { value: 0x0015, label: "R" },
+    { value: 0x002C, label: "Space" },
+    { value: 0x002B, label: "Tab" },
+    { value: 0x0028, label: "Enter" },
+    { value: 0x0029, label: "Esc" },
+    { value: 0x0049, label: "Insert" },
+    { value: 0x003D, label: "F4" },
+    { value: 0x0043, label: "F10" },
+    { value: 0x0044, label: "F11" },
+    { value: 0x0045, label: "F12" },
+    { value: 0x0068, label: "F13 侧栏" },
+    { value: 0x0069, label: "F14 帧率窗" },
+    { value: 0x006A, label: "F15 超分菜单" }
+  ];
+
+  const GPD_BACK_COMBO_PRESETS = [
+    { id: "gp_lbrb", label: "LB + RB 双肩大招", codes: [0x800B, 0x800C] },
+    { id: "gp_ltrt", label: "LT + RT 双扳机", codes: [0x800D, 0x800E] },
+    { id: "gp_l3r3", label: "L3 + R3 觉醒/处决", codes: [0x800F, 0x8010] },
+    { id: "gp_ax", label: "手柄 A + X", codes: [0x8007, 0x8009] },
+    { id: "kb_qam", label: "Ctrl+Alt+O (侧栏)", codes: [0x00E0, 0x00E2, 0x0012] },
+    { id: "kb_osd", label: "Ctrl+Alt+M (帧率窗)", codes: [0x00E0, 0x00E2, 0x0010] },
+    { id: "kb_alttab", label: "Alt + Tab 切窗", codes: [0x00E2, 0x002B] },
+    { id: "kb_wind", label: "Win + D 桌面", codes: [0x00E3, 0x0007] },
+    { id: "kb_snip", label: "Win+Shift+S 截屏", codes: [0x00E3, 0x00E1, 0x0016] }
+  ];
+
+  const CODE_TO_HID_MAP = (() => {
+    const m = {
+      ControlLeft: 0x00E0, ShiftLeft: 0x00E1, AltLeft: 0x00E2, MetaLeft: 0x00E3,
+      ControlRight: 0x00E4, ShiftRight: 0x00E5, AltRight: 0x00E6, MetaRight: 0x00E7,
+      Enter: 0x0028, Escape: 0x0029, Backspace: 0x002A, Tab: 0x002B, Space: 0x002C,
+      Insert: 0x0049, Home: 0x004A, PageUp: 0x004B, Delete: 0x004C, End: 0x004D, PageDown: 0x004E,
+      ArrowRight: 0x004F, ArrowLeft: 0x0050, ArrowDown: 0x0051, ArrowUp: 0x0052
+    };
+    for (let i = 0; i < 26; i++) {
+      m[`Key${String.fromCharCode(65 + i)}`] = 0x0004 + i;
+    }
+    for (let i = 1; i <= 9; i++) {
+      m[`Digit${i}`] = 0x001E + (i - 1);
+    }
+    m.Digit0 = 0x0027;
+    for (let i = 1; i <= 12; i++) {
+      m[`F${i}`] = 0x003A + (i - 1);
+    }
+    m.F13 = 0x0068;
+    m.F14 = 0x0069;
+    m.F15 = 0x006A;
+    return m;
+  })();
+
+  const SHORT_HID_LABELS = (() => {
+    const map = new Map([
+      [0x8000, "↑"], [0x8001, "↓"], [0x8002, "←"], [0x8003, "→"],
+      [0x8004, "Start"], [0x8005, "Select"], [0x8006, "Guide"],
+      [0x8007, "A"], [0x8008, "B"], [0x8009, "X"], [0x800A, "Y"],
+      [0x800B, "LB"], [0x800C, "RB"], [0x800D, "LT"], [0x800E, "RT"],
+      [0x800F, "L3"], [0x8010, "R3"],
+      [0x0028, "Enter"], [0x0029, "Esc"], [0x002A, "Backspace"], [0x002B, "Tab"], [0x002C, "Space"],
+      [0x0049, "Insert"], [0x004A, "Home"], [0x004B, "PgUp"], [0x004C, "Del"], [0x004D, "End"], [0x004E, "PgDn"],
+      [0x004F, "→"], [0x0050, "←"], [0x0051, "↓"], [0x0052, "↑"],
+      [0x00E0, "Ctrl"], [0x00E1, "Shift"], [0x00E2, "Alt"], [0x00E3, "Win"],
+      [0x00E4, "RCtrl"], [0x00E5, "RShift"], [0x00E6, "RAlt"], [0x00E7, "RWin"],
+      [0x0068, "F13"], [0x0069, "F14"], [0x006A, "F15"]
+    ]);
+    for (let i = 0; i < 26; i++) map.set(0x0004 + i, String.fromCharCode(65 + i));
+    for (let i = 1; i <= 9; i++) map.set(0x001E + (i - 1), String(i));
+    map.set(0x0027, "0");
+    for (let i = 1; i <= 12; i++) map.set(0x003A + (i - 1), `F${i}`);
+    return map;
+  })();
+
+  function resolveShortHidLabel(code) {
+    if (SHORT_HID_LABELS.has(code)) return SHORT_HID_LABELS.get(code);
+    return `0x${Number(code || 0).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+
   function resolveBackKeyLabel(code) {
     if (typeof code !== "number" || code < 0) return "保留原厂设置";
     if (code === 0) return "关闭背键";
     const match = GPD_BACK_GAMEPAD_OPTIONS.find((o) => o.value === code) ||
       GPD_BACK_KEYBOARD_OPTIONS.find((o) => o.value === code);
     if (match) return match.label;
+    if (SHORT_HID_LABELS.has(code)) return SHORT_HID_LABELS.get(code);
     return `HID 0x${code.toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+
+  function normalizeComboCodesList(codes) {
+    const list = [];
+    (codes || []).forEach((c) => {
+      const n = Number(c);
+      if (Number.isFinite(n) && n > 0 && !list.includes(n) && list.length < 4) {
+        list.push(n);
+      }
+    });
+    const mods = list.filter((c) => c >= 0x00E0 && c <= 0x00E7);
+    const others = list.filter((c) => c < 0x00E0 || c > 0x00E7);
+    return [...mods, ...others];
+  }
+
+  function resolveBackSlotLabel(singleCode, comboCodes) {
+    if (Array.isArray(comboCodes) && comboCodes.length >= 2) {
+      return comboCodes.map(resolveShortHidLabel).join(" + ");
+    }
+    if (Array.isArray(comboCodes) && comboCodes.length === 1) {
+      return resolveBackKeyLabel(comboCodes[0]);
+    }
+    return resolveBackKeyLabel(singleCode);
   }
 
   const state = {
@@ -108,6 +225,8 @@
     focusIndex: 0,
     lastInputModality: "pointer",
     isDraggingRange: false,
+    activeSliderDrag: null,
+    dragCooldownUntil: 0,
     pendingSnapshot: null,
     scrollPositions: {},
     lastScrollRouteKey: "",
@@ -121,9 +240,19 @@
     gpdDraft: {
       l4Key: -1,
       r4Key: -1,
+      l4Combo: [],
+      r4Combo: [],
       rumble: 1,
       leftDeadzone: 0,
       rightDeadzone: 0
+    },
+    backModal: {
+      open: false,
+      slot: "l4",
+      tab: "single",
+      recordingActive: false,
+      recordedCodes: [],
+      comboCodes: []
     }
   };
 
@@ -161,6 +290,54 @@
   function handleHostEvent(name, data) {
     if (name === "stateChanged") {
       applySnapshot(data);
+    } else if (name === "powerSettingsPatched" && data) {
+      if (state.snapshot?.settings) {
+        if (typeof data.currentTdpWatts === "number") state.snapshot.settings.currentTdpWatts = data.currentTdpWatts;
+        if (typeof data.unlockThreeStagePower === "boolean") state.snapshot.settings.unlockThreeStagePower = data.unlockThreeStagePower;
+        if (typeof data.slowPptWatts === "number") state.snapshot.settings.slowPptWatts = data.slowPptWatts;
+        if (typeof data.fastPptWatts === "number") state.snapshot.settings.fastPptWatts = data.fastPptWatts;
+      }
+      if (state.snapshot?.systemControl?.hardwareService) {
+        const hw = state.snapshot.systemControl.hardwareService;
+        if (typeof data.appliedTdpWatts === "number") {
+          hw.appliedTdpWatts = data.appliedTdpWatts;
+          hw.hwStapmLimitWatts = data.appliedTdpWatts;
+        }
+        if (typeof data.appliedSlowWatts === "number") {
+          hw.appliedSlowWatts = data.appliedSlowWatts;
+          hw.hwSlowLimitWatts = data.appliedSlowWatts;
+        }
+        if (typeof data.appliedFastWatts === "number") {
+          hw.appliedFastWatts = data.appliedFastWatts;
+          hw.hwFastLimitWatts = data.appliedFastWatts;
+        }
+      }
+      if (state.activeSliderDrag !== "tdp" && typeof data.currentTdpWatts === "number") {
+        updateTdpUiImmediate(data.currentTdpWatts);
+      }
+    } else if (name === "controlValuePatched" && data) {
+      if (state.snapshot?.systemControl) {
+        const sys = state.snapshot.systemControl;
+        if (typeof data.brightnessPercent === "number") sys.brightnessPercent = data.brightnessPercent;
+        if (typeof data.volumePercent === "number") sys.volumePercent = data.volumePercent;
+        if (typeof data.isMuted === "boolean") sys.isMuted = data.isMuted;
+        if (typeof data.systemDrawWatts === "number") sys.systemDrawWatts = data.systemDrawWatts;
+        if (data.estimatedStandbyMinutes !== undefined) sys.estimatedStandbyMinutes = data.estimatedStandbyMinutes;
+        if (data.estimatedChargerWatts !== undefined) sys.estimatedChargerWatts = data.estimatedChargerWatts;
+        if (typeof data.batteryEtaMinutes === "number") sys.batteryEtaMinutes = data.batteryEtaMinutes;
+      }
+      if (data.kind === "brightness" && state.activeSliderDrag !== "bright") {
+        updateBrightnessUiImmediate(data.brightnessPercent);
+        if (state.snapshot?.systemControl) patchLiveTelemetryDom(state.snapshot.systemControl);
+      } else if (data.kind === "volume" && state.activeSliderDrag !== "vol") {
+        updateVolumeUiImmediate(data.volumePercent, data.isMuted);
+      }
+    } else if (name === "backButtonGamepadRecorded" && Array.isArray(data?.codes)) {
+      if (state.backModal.open && state.backModal.tab === "record" && data.codes.length > 0) {
+        state.backModal.recordedCodes = normalizeComboCodesList(data.codes);
+        state.backModal.recordingActive = false;
+        if (typeof window.__hoRefreshBackModal === "function") window.__hoRefreshBackModal();
+      }
     } else if (name === "componentProgress" && data?.slot) {
       state.progressBySlot[data.slot] = data.percent;
       if (state.tab === "opti" && state.optiSubTab === "components") render();
@@ -183,16 +360,36 @@
   }
 
   // ---------------- Formatters & Live Telemetry ----------------
+  function formatStandbyEta(sys) {
+    if (!sys?.hasBattery) return "无电池";
+    const mins = (typeof sys.estimatedStandbyMinutes === "number" && sys.estimatedStandbyMinutes > 0)
+      ? sys.estimatedStandbyMinutes
+      : (sys.batteryEtaMinutes > 0 ? sys.batteryEtaMinutes : 0);
+    if (!mins) return "计算中...";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m} 分钟`;
+  }
+
   function formatPowerBadge(sys) {
     if (!sys) return "--%";
     if (!sys.hasBattery) return "AC 直连 (无电池)";
-    const watts = typeof sys.batteryPowerWatts === "number" && sys.batteryPowerWatts > 0
-      ? ` ${sys.batteryPowerWatts.toFixed(1)}W`
-      : "";
+    const sysW = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
+      ? sys.systemDrawWatts
+      : (!sys.isAcOnline && sys.batteryPowerWatts > 0 ? sys.batteryPowerWatts : 0);
+    const eta = formatStandbyEta(sys);
+    const etaPart = eta && eta !== "计算中..." ? ` · 续航${eta}` : "";
     if (sys.isAcOnline) {
-      return sys.isCharging ? `${sys.batteryPercent}% 充电${watts}` : `${sys.batteryPercent}% AC 满电`;
+      if (sys.isCharging) {
+        const chg = typeof sys.batteryPowerWatts === "number" && sys.batteryPowerWatts > 0
+          ? `充+${sys.batteryPowerWatts.toFixed(0)}W`
+          : "充电";
+        return `${sys.batteryPercent}% ${chg}${etaPart}`;
+      }
+      return `${sys.batteryPercent}% 旁路${etaPart}`;
     }
-    return `${sys.batteryPercent}%${watts ? ` · -${watts.trim()}` : " 电池"}`;
+    const wStr = sysW > 0 ? ` -${sysW.toFixed(1)}W` : " 电池";
+    return `${sys.batteryPercent}%${wStr}${etaPart}`;
   }
 
   function formatResShort(resStr) {
@@ -428,6 +625,20 @@
     const pfApuSub = document.getElementById("pfApuSub");
     if (pfApuSub) pfApuSub.textContent = `GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuTempC || "--"}° / GPU ${sys.gpuTempC || "--"}°C`;
 
+    const pfSysVal = document.getElementById("pfSysVal");
+    const sysDraw = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
+      ? sys.systemDrawWatts
+      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
+    if (pfSysVal) pfSysVal.textContent = sysDraw > 0 ? `${sysDraw.toFixed(1)} W` : "-- W";
+
+    const pfSysSub = document.getElementById("pfSysSub");
+    if (pfSysSub) {
+      if (!sys.hasBattery) pfSysSub.textContent = "AC 直供运行功耗";
+      else if (sys.isAcOnline && sys.isCharging) pfSysSub.textContent = `不含充电 · 充电器 ≈${(sys.estimatedChargerWatts ?? (sysDraw + (sys.batteryPowerWatts || 0))).toFixed(1)}W`;
+      else if (sys.isAcOnline) pfSysSub.textContent = "AC 旁路直供整机";
+      else pfSysSub.textContent = "电池实测整机功耗";
+    }
+
     const pfBatVal = document.getElementById("pfBatVal");
     if (pfBatVal) {
       if (!sys.hasBattery) pfBatVal.textContent = "无电池";
@@ -441,21 +652,17 @@
       if (!sys.hasBattery) pfBatSub.textContent = "外接供电直连";
       else if (sys.isCharging) pfBatSub.textContent = `${sys.batteryPercent}% · 充电 ${formatEta(sys.chargeEtaMinutes)}`.trim();
       else if (sys.isAcOnline) pfBatSub.textContent = `${sys.batteryPercent}% · ${sys.batteryRemainingWh?.toFixed(1) || "--"} Wh`;
-      else pfBatSub.textContent = `${sys.batteryPercent}% · ${formatEta(sys.batteryEtaMinutes) || `${sys.batteryRemainingWh?.toFixed(1) || "--"} Wh`}`;
+      else pfBatSub.textContent = `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`;
     }
 
-    const pfAcVal = document.getElementById("pfAcVal");
-    if (pfAcVal) {
-      pfAcVal.textContent = !sys.isAcOnline
-        ? "未接 AC"
-        : (sys.estimatedChargerWatts != null ? `≈ ${sys.estimatedChargerWatts.toFixed(1)} W` : "AC 在线");
-    }
+    const pfEtaVal = document.getElementById("pfEtaVal");
+    if (pfEtaVal) pfEtaVal.textContent = formatStandbyEta(sys);
 
-    const pfAcSub = document.getElementById("pfAcSub");
-    if (pfAcSub) {
-      pfAcSub.textContent = !sys.isAcOnline
-        ? `电池 ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线续航中"}`
-        : (sys.isBypassPower ? "AC 旁路直供模式" : "供电与电池快充中");
+    const pfEtaSub = document.getElementById("pfEtaSub");
+    if (pfEtaSub) {
+      if (!sys.hasBattery) pfEtaSub.textContent = "未安装电池组";
+      else if (sys.isAcOnline) pfEtaSub.textContent = `按整机 ${sysDraw.toFixed(1)}W 离电推算 (${sys.batteryRemainingWh?.toFixed(1) || "--"}Wh)`;
+      else pfEtaSub.textContent = `余电 ${sys.batteryRemainingWh?.toFixed(1) || "--"} / ${sys.batteryFullWh?.toFixed(1) || "--"} Wh`;
     }
 
     const fanRpmBadge = document.getElementById("fanRpmBadge");
@@ -494,12 +701,20 @@
     setEl("kpiGpuTempSub", `GPU ${sys.gpuTempC || "--"}°C · 风扇 ${hw.fanRpm || 0} RPM`);
     setEl("kpiMem", sys.totalRamGb > 0 ? `${sys.usedRamGb} / ${sys.totalRamGb} GB` : "-- GB");
     setEl("kpiBat", formatPowerBadge(sys));
-    setEl("kpiBatSub", sys.estimatedChargerWatts != null ? `充电器输入 ≈ ${sys.estimatedChargerWatts.toFixed(1)}W` : "实时电池供电估算");
+    setEl("kpiBatSub", sys.isAcOnline && sys.estimatedChargerWatts != null
+      ? `整机 ${sysDraw.toFixed(1)}W · 充电器 ≈${sys.estimatedChargerWatts.toFixed(1)}W`
+      : `整机 ${sysDraw.toFixed(1)}W · 预计续航 ${formatStandbyEta(sys)}`);
 
     // QAM live tiles & monitor grid
     setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
     setEl("qamStripBat", formatPowerBadge(sys));
     setEl("qamStripTherm", `C${sys.cpuTempC || "--"}° G${sys.gpuTempC || "--"}° · ${hw.fanRpm || 0}R`);
+    if (state.activeSliderDrag !== "bright" && typeof sys.brightnessPercent === "number" && sys.brightnessSupported) {
+      updateBrightnessUiImmediate(sys.brightnessPercent);
+    }
+    if (state.activeSliderDrag !== "vol" && typeof sys.volumePercent === "number") {
+      updateVolumeUiImmediate(sys.volumePercent, !!sys.isMuted);
+    }
     setEl("qamKpiFps", sys.currentFps > 0 ? `${sys.currentFps} FPS` : "-- FPS");
     setEl("qamKpiApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W");
     setEl("qamKpiGpu", `${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}M`);
@@ -585,9 +800,17 @@
     if (!gpd) return;
     const l4IsMacro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
     const r4IsMacro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
+    const l4Combo = l4IsMacro && Array.isArray(gpd.l4ComboCodes) && gpd.l4ComboCodes.length >= 2
+      ? normalizeComboCodesList(gpd.l4ComboCodes)
+      : [];
+    const r4Combo = r4IsMacro && Array.isArray(gpd.r4ComboCodes) && gpd.r4ComboCodes.length >= 2
+      ? normalizeComboCodesList(gpd.r4ComboCodes)
+      : [];
     state.gpdDraft = {
-      l4Key: !gpd.connected || l4IsMacro ? -1 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0),
-      r4Key: !gpd.connected || r4IsMacro ? -1 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0),
+      l4Key: !gpd.connected || (l4IsMacro && !l4Combo.length) ? -1 : (l4Combo.length ? 0 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0)),
+      r4Key: !gpd.connected || (r4IsMacro && !r4Combo.length) ? -1 : (r4Combo.length ? 0 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0)),
+      l4Combo,
+      r4Combo,
       rumble: typeof gpd.rumbleLevel === "number" ? gpd.rumbleLevel : 1,
       leftDeadzone: typeof gpd.leftDeadzone === "number" ? gpd.leftDeadzone : 0,
       rightDeadzone: typeof gpd.rightDeadzone === "number" ? gpd.rightDeadzone : 0
@@ -606,7 +829,7 @@
       const el = document.getElementById("deviceTag");
       if (el) el.textContent = "GPD WIN 5 · 8060S";
     }
-    if (state.isDraggingRange) {
+    if (state.isDraggingRange || Date.now() < state.dragCooldownUntil) {
       state.pendingSnapshot = snap;
       return;
     }
@@ -768,15 +991,16 @@
     `;
   }
 
-  function renderStepSlider({ idPrefix, value, displayText = null, disabled = false, muted = false, muteBtnId = null }) {
-    const pct = Math.max(0, Math.min(100, Number(value) || 0));
+  function renderStepSlider({ idPrefix, value, min = 0, displayText = null, disabled = false, muted = false, muteBtnId = null }) {
+    const pct = Math.max(min, Math.min(100, Number(value) || 0));
     const text = displayText || (muted ? "静音" : `${pct}%`);
     return `
       <div class="step-slider">
         <button id="${idPrefix}Dec" class="step-btn" data-focusable="true" ${disabled ? "disabled" : ""} aria-label="减小">−</button>
-        <div class="step-track" data-slider-track="${esc(idPrefix)}" role="slider" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
-          <div class="step-fill" style="width:${muted ? 0 : pct}%;"></div>
-          <span class="step-val">${esc(text)}</span>
+        <div class="step-track" data-slider-track="${esc(idPrefix)}">
+          <div id="${idPrefix}Fill" class="step-fill" style="width:${muted ? 0 : pct}%;"></div>
+          <span id="${idPrefix}Val" class="step-val">${esc(text)}</span>
+          <input id="${idPrefix}Range" class="step-range-input" type="range" min="${min}" max="100" step="1" value="${pct}" ${disabled ? "disabled" : ""} aria-label="${esc(idPrefix)}" />
         </div>
         <button id="${idPrefix}Inc" class="step-btn" data-focusable="true" ${disabled ? "disabled" : ""} aria-label="增大">+</button>
         ${muteBtnId ? `<button id="${muteBtnId}" class="step-btn ${muted ? "active" : ""}" data-focusable="true" title="静音切换">${muted ? "静音" : "🔊"}</button>` : ""}
@@ -825,6 +1049,15 @@
     const curTempEval = maxTemp > 0 ? maxTemp : 48;
     const curveEvalPct = evaluateFanCurvePct(curTempEval, activeCurve.points);
     const apuPowerText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${curTdp}W`;
+    const sysDrawNow = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
+      ? sys.systemDrawWatts
+      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
+    const sysDrawText = sysDrawNow > 0 ? `${sysDrawNow.toFixed(1)} W` : "-- W";
+    const sysDrawSubText = !sys.hasBattery
+      ? "AC 直供运行功耗"
+      : (sys.isAcOnline && sys.isCharging
+        ? `不含充电 · 充电器 ≈${(sys.estimatedChargerWatts ?? (sysDrawNow + (sys.batteryPowerWatts || 0))).toFixed(1)}W`
+        : (sys.isAcOnline ? "AC 旁路直供整机" : "电池实测整机功耗"));
     const batMainText = !sys.hasBattery
       ? "无电池"
       : sys.isCharging
@@ -838,13 +1071,13 @@
         ? `${sys.batteryPercent}% · 充电 ${formatEta(sys.chargeEtaMinutes)}`.trim()
         : sys.isAcOnline
           ? `${sys.batteryPercent}% · ${(sys.batteryRemainingWh || 0).toFixed(1)} Wh`
-          : `${sys.batteryPercent}% · ${formatEta(sys.batteryEtaMinutes) || `${(sys.batteryRemainingWh || 0).toFixed(1)} Wh`}`;
-    const acMainText = !sys.isAcOnline
-      ? "未接 AC"
-      : (sys.estimatedChargerWatts != null ? `≈ ${sys.estimatedChargerWatts.toFixed(1)} W` : "AC 在线");
-    const acSubText = !sys.isAcOnline
-      ? `电池 ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "续航中"}`
-      : (sys.isBypassPower ? "AC 旁路直供中" : "整机供电与快充");
+          : `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`;
+    const etaValText = formatStandbyEta(sys);
+    const etaSubText = !sys.hasBattery
+      ? "未安装电池组"
+      : (sys.isAcOnline
+        ? `按整机 ${sysDrawNow.toFixed(1)}W 离电推算 (${(sys.batteryRemainingWh || 0).toFixed(1)}Wh)`
+        : `余电 ${(sys.batteryRemainingWh || 0).toFixed(1)} / ${(sys.batteryFullWh || 0).toFixed(1)} Wh`);
 
     const perGameProfiles = settings.perGameProfiles || {};
     const gamePerf = active ? (perGameProfiles[active.id] || {
@@ -914,7 +1147,12 @@
                 <div class="pf-box">
                   <span class="pf-label">APU 封装功耗</span>
                   <span id="pfApuVal" class="pf-val">${esc(apuPowerText)}</span>
-                  <span id="pfApuSub" class="pf-sub">GPU ${sys.gpuUsagePercent || 0}% · ${maxTemp > 0 ? `${maxTemp}°C` : "ADL2 待命"}</span>
+                  <span id="pfApuSub" class="pf-sub">GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuTempC || "--"}° / GPU ${sys.gpuTempC || "--"}°C</span>
+                </div>
+                <div class="pf-box">
+                  <span class="pf-label">整机运行功耗</span>
+                  <span id="pfSysVal" class="pf-val">${esc(sysDrawText)}</span>
+                  <span id="pfSysSub" class="pf-sub">${esc(sysDrawSubText)}</span>
                 </div>
                 <div class="pf-box">
                   <span class="pf-label">电池充放功率</span>
@@ -922,9 +1160,9 @@
                   <span id="pfBatSub" class="pf-sub">${esc(batSubText)}</span>
                 </div>
                 <div class="pf-box">
-                  <span class="pf-label">充电器输入估算</span>
-                  <span id="pfAcVal" class="pf-val">${esc(acMainText)}</span>
-                  <span id="pfAcSub" class="pf-sub">${esc(acSubText)}</span>
+                  <span class="pf-label">实时剩余待机 / 续航</span>
+                  <span id="pfEtaVal" class="pf-val accent-teal">${esc(etaValText)}</span>
+                  <span id="pfEtaSub" class="pf-sub">${esc(etaSubText)}</span>
                 </div>
               </div>
             </div>
@@ -932,7 +1170,7 @@
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">开放功耗配置 (Strix Halo APU · 8W–120W)</span>
-                <span class="hh-card-badge ${hw.smuReady ? "live" : "warn"}">${hw.hwStapmLimitWatts != null ? `PM ${hw.hwStapmLimitWatts.toFixed(0)}W` : (hw.smuReady ? `SMU ${hw.appliedTdpWatts}W` : `设定 ${curTdp}W`)}</span>
+                <span id="consoleTdpBadge" class="hh-card-badge ${hw.smuReady ? "live" : "warn"}">${hw.hwStapmLimitWatts != null ? `PM ${hw.hwStapmLimitWatts.toFixed(0)}W` : (hw.smuReady ? `SMU ${hw.appliedTdpWatts}W` : `设定 ${curTdp}W`)}</span>
               </div>
 
               <div id="pmReadbackLine" class="gpd-sync-note">${esc(hwReadbackText)}</div>
@@ -981,9 +1219,9 @@
                   <div class="stage-row">
                     <span>sPPT 慢速升压 (8–130W)</span>
                     <div style="display:flex;align-items:center;gap:6px;">
-                      <button class="step-btn" data-stage-step="slow:-2" data-focusable="true">−2</button>
+                      <button class="step-btn" data-stage-step="slow:-1" data-focusable="true">−1</button>
                       <strong id="slowPptVal">${slowPpt} W</strong>
-                      <button class="step-btn" data-stage-step="slow:2" data-focusable="true">+2</button>
+                      <button class="step-btn" data-stage-step="slow:1" data-focusable="true">+1</button>
                     </div>
                   </div>
                   <input id="slowPptRange" class="hh-range" type="range" min="8" max="130" step="1" value="${slowPpt}" />
@@ -991,9 +1229,9 @@
                   <div class="stage-row" style="margin-top:4px;">
                     <span>fPPT 瞬时峰值 (8–140W)</span>
                     <div style="display:flex;align-items:center;gap:6px;">
-                      <button class="step-btn" data-stage-step="fast:-2" data-focusable="true">−2</button>
+                      <button class="step-btn" data-stage-step="fast:-1" data-focusable="true">−1</button>
                       <strong id="fastPptVal">${fastPpt} W</strong>
-                      <button class="step-btn" data-stage-step="fast:2" data-focusable="true">+2</button>
+                      <button class="step-btn" data-stage-step="fast:1" data-focusable="true">+1</button>
                     </div>
                   </div>
                   <input id="fastPptRange" class="hh-range" type="range" min="8" max="140" step="1" value="${fastPpt}" />
@@ -1011,17 +1249,17 @@
                 <div class="pf-box" style="padding:8px 10px;">
                   <span class="pf-label">离电目标 TDP</span>
                   <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-                    <button id="btnBatTdpDec" class="step-btn" data-focusable="true">−2</button>
+                    <button id="btnBatTdpDec" class="step-btn" data-focusable="true">−1</button>
                     <strong style="font-size:14px;">${settings.batteryTdpWatts || 25}W</strong>
-                    <button id="btnBatTdpInc" class="step-btn" data-focusable="true">+2</button>
+                    <button id="btnBatTdpInc" class="step-btn" data-focusable="true">+1</button>
                   </div>
                 </div>
                 <div class="pf-box" style="padding:8px 10px;">
                   <span class="pf-label">插电目标 TDP</span>
                   <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-                    <button id="btnAcTdpDec" class="step-btn" data-focusable="true">−2</button>
+                    <button id="btnAcTdpDec" class="step-btn" data-focusable="true">−1</button>
                     <strong style="font-size:14px;">${settings.acTdpWatts || 55}W</strong>
-                    <button id="btnAcTdpInc" class="step-btn" data-focusable="true">+2</button>
+                    <button id="btnAcTdpInc" class="step-btn" data-focusable="true">+1</button>
                   </div>
                 </div>
               </div>
@@ -1139,12 +1377,14 @@
                     ${renderStepSlider({
                       idPrefix: "bright",
                       value: sys.brightnessPercent ?? 70,
+                      min: 5,
                       displayText: sys.brightnessSupported ? `亮度 ${sys.brightnessPercent}%` : "外接屏不支持",
                       disabled: !sys.brightnessSupported
                     })}
                     ${renderStepSlider({
                       idPrefix: "vol",
                       value: sys.volumePercent ?? 50,
+                      min: 0,
                       muted: !!sys.isMuted,
                       muteBtnId: "btnToggleMute"
                     })}
@@ -1240,8 +1480,8 @@
                 </div>
                 <div class="per-game-perf-row">
                   <span style="font-size:12px;color:var(--text-secondary);">专属 TDP：<strong>${gamePerf.tdpWatts || curTdp}W</strong></span>
-                  <button id="btnGamePerfTdpDec" class="step-btn" data-focusable="true">−5W</button>
-                  <button id="btnGamePerfTdpInc" class="step-btn" data-focusable="true">+5W</button>
+                  <button id="btnGamePerfTdpDec" class="step-btn" data-focusable="true">−1W</button>
+                  <button id="btnGamePerfTdpInc" class="step-btn" data-focusable="true">+1W</button>
                   ${renderSegmented("data-game-perf-hz", [
                     { value: "0", label: "不改Hz" },
                     { value: "60", label: "60Hz" },
@@ -1438,11 +1678,20 @@
     if (!gpd?.connected) return false;
     const l4Macro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
     const r4Macro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
-    const origL4 = l4Macro ? -1 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0);
-    const origR4 = r4Macro ? -1 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0);
+    const origL4Combo = l4Macro && Array.isArray(gpd.l4ComboCodes) && gpd.l4ComboCodes.length >= 2
+      ? normalizeComboCodesList(gpd.l4ComboCodes)
+      : [];
+    const origR4Combo = r4Macro && Array.isArray(gpd.r4ComboCodes) && gpd.r4ComboCodes.length >= 2
+      ? normalizeComboCodesList(gpd.r4ComboCodes)
+      : [];
+    const origL4 = l4Macro && !origL4Combo.length ? -1 : (origL4Combo.length ? 0 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0));
+    const origR4 = r4Macro && !origR4Combo.length ? -1 : (origR4Combo.length ? 0 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0));
+    const comboEq = (a, b) => JSON.stringify(normalizeComboCodesList(a || [])) === JSON.stringify(b || []);
     return (
       draft.l4Key !== origL4 ||
       draft.r4Key !== origR4 ||
+      !comboEq(draft.l4Combo, origL4Combo) ||
+      !comboEq(draft.r4Combo, origR4Combo) ||
       draft.rumble !== (gpd.rumbleLevel ?? 1) ||
       draft.leftDeadzone !== (gpd.leftDeadzone ?? 0) ||
       draft.rightDeadzone !== (gpd.rightDeadzone ?? 0)
@@ -1482,7 +1731,7 @@
                 <label>快速场景预设（选定后点击右下角「应用到手柄」写入 Flash）</label>
                 <div class="gpd-preset-grid">
                   ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
-                    const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
+                    const activePreset = !draft.l4Combo?.length && !draft.r4Combo?.length && draft.l4Key === p.l4 && draft.r4Key === p.r4;
                     return `<button class="pill-btn small ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
                   }).join("")}
                 </div>
@@ -1492,20 +1741,20 @@
                 <div class="backkey-slot-row">
                   <div class="backkey-slot-meta">
                     <strong>L4 左背键</strong>
-                    <span>手柄模式下直接作为游戏按键或快捷触发</span>
+                    <span>单键映射、实时按键录制或组合键（手柄/键盘）</span>
                   </div>
                   <div class="comp-actions">
-                    <span class="pill-badge">${esc(resolveBackKeyLabel(draft.l4Key))}</span>
+                    <span id="l4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.l4Key, draft.l4Combo))}</span>
                     <button id="btnPickL4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
                   </div>
                 </div>
                 <div class="backkey-slot-row">
                   <div class="backkey-slot-meta">
                     <strong>R4 右背键</strong>
-                    <span>手柄模式下直接作为游戏按键或快捷触发</span>
+                    <span>单键映射、实时按键录制或组合键（手柄/键盘）</span>
                   </div>
                   <div class="comp-actions">
-                    <span class="pill-badge">${esc(resolveBackKeyLabel(draft.r4Key))}</span>
+                    <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))}</span>
                     <button id="btnPickR4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
                   </div>
                 </div>
@@ -2212,7 +2461,7 @@
           <div class="qam-section">
             <div class="qam-section-title">
               <span>开放 APU 功耗 (8–120W)</span>
-              <strong>${curTdp}W${hw.hwStapmLimitWatts != null ? ` (实读 ${hw.hwStapmLimitWatts.toFixed(0)}W)` : ""}</strong>
+              <strong id="qamTdpReadout">${curTdp}W${hw.hwStapmLimitWatts != null ? ` (实读 ${hw.hwStapmLimitWatts.toFixed(0)}W)` : ""}</strong>
             </div>
             <div class="qam-preset-row">
               ${customPresets.slice(0, 6).map((w) => `
@@ -2220,9 +2469,9 @@
               `).join("")}
             </div>
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-              <button id="btnTdpDec" class="step-btn qam-step" data-focusable="true">−2W</button>
+              <button id="btnTdpDec" class="step-btn qam-step" data-focusable="true">−1W</button>
               <input id="tdpRangeInput" class="hh-range" type="range" min="8" max="120" step="1" value="${curTdp}" style="flex:1;" />
-              <button id="btnTdpInc" class="step-btn qam-step" data-focusable="true">+2W</button>
+              <button id="btnTdpInc" class="step-btn qam-step" data-focusable="true">+1W</button>
             </div>
             <div class="cw-row qam-compact-row">
               <div class="cw-row-copy">
@@ -2292,8 +2541,8 @@
               ], sys.cpuBoostMode || "aggressive", "compact")}
             </div>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              ${renderStepSlider({ idPrefix: "bright", value: sys.brightnessPercent ?? 70, displayText: sys.brightnessSupported ? `亮度 ${sys.brightnessPercent}%` : "不支持亮度", disabled: !sys.brightnessSupported })}
-              ${renderStepSlider({ idPrefix: "vol", value: sys.volumePercent ?? 50, muted: !!sys.isMuted, muteBtnId: "btnToggleMute" })}
+              ${renderStepSlider({ idPrefix: "bright", value: sys.brightnessPercent ?? 70, min: 5, displayText: sys.brightnessSupported ? `亮度 ${sys.brightnessPercent}%` : "不支持亮度", disabled: !sys.brightnessSupported })}
+              ${renderStepSlider({ idPrefix: "vol", value: sys.volumePercent ?? 50, min: 0, muted: !!sys.isMuted, muteBtnId: "btnToggleMute" })}
             </div>
           </div>
 
@@ -2409,18 +2658,18 @@
             </div>
             <div class="qam-toolbox-mini" style="margin-bottom:8px;">
               ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
-                const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
+                const activePreset = !draft.l4Combo?.length && !draft.r4Combo?.length && draft.l4Key === p.l4 && draft.r4Key === p.r4;
                 return `<button class="pill-btn qam-pill ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
               }).join("")}
             </div>
             <div class="backkey-slot-list compact" style="margin-bottom:8px;">
               <button id="btnPickL4" class="backkey-slot-row btn-like" data-focusable="true">
                 <strong>L4 左背键</strong>
-                <span class="pill-badge">${esc(resolveBackKeyLabel(draft.l4Key))} ▸</span>
+                <span id="l4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.l4Key, draft.l4Combo))} ▸</span>
               </button>
               <button id="btnPickR4" class="backkey-slot-row btn-like" data-focusable="true">
                 <strong>R4 右背键</strong>
-                <span class="pill-badge">${esc(resolveBackKeyLabel(draft.r4Key))} ▸</span>
+                <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))} ▸</span>
               </button>
             </div>
             <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="width:100%;" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>${dirtyGpd ? "应用修改到手柄" : "应用到手柄"}</button>
@@ -2713,6 +2962,125 @@
     return false;
   }
 
+  const controlCoalescers = new Map();
+
+  function scheduleCoalescedControl(key, rpcFactory, minIntervalMs = 45, immediate = false) {
+    let entry = controlCoalescers.get(key);
+    if (!entry) {
+      entry = { inFlight: false, hasPending: false, pendingFactory: null, timer: null, lastSentAt: 0 };
+      controlCoalescers.set(key, entry);
+    }
+    entry.pendingFactory = rpcFactory;
+    entry.hasPending = true;
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+
+    const pump = () => {
+      if (entry.inFlight || !entry.hasPending) return;
+      const elapsed = Date.now() - entry.lastSentAt;
+      if (!immediate && elapsed < minIntervalMs) {
+        entry.timer = setTimeout(() => {
+          entry.timer = null;
+          pump();
+        }, minIntervalMs - elapsed);
+        return;
+      }
+      const fn = entry.pendingFactory;
+      entry.hasPending = false;
+      entry.pendingFactory = null;
+      entry.inFlight = true;
+      entry.lastSentAt = Date.now();
+      Promise.resolve()
+        .then(() => fn())
+        .catch((err) => {
+          if (err?.message) showToast(err.message, "error");
+        })
+        .finally(() => {
+          entry.inFlight = false;
+          if (entry.hasPending) {
+            immediate = false;
+            pump();
+          }
+        });
+    };
+
+    pump();
+  }
+
+  function updateTdpUiImmediate(watts) {
+    const w = Math.max(8, Math.min(120, Math.round(Number(watts) || 40)));
+    if (state.snapshot?.settings) {
+      state.snapshot.settings.currentTdpWatts = w;
+    }
+    const rangeEl = document.getElementById("tdpRangeInput");
+    if (rangeEl && document.activeElement !== rangeEl) rangeEl.value = String(w);
+    const numEl = document.getElementById("tdpNumberInput");
+    if (numEl && document.activeElement !== numEl) numEl.value = String(w);
+
+    const hw = state.snapshot?.systemControl?.hardwareService || {};
+    const consoleBadge = document.getElementById("consoleTdpBadge");
+    if (consoleBadge) {
+      consoleBadge.textContent = hw.smuReady ? `SMU ${w}W` : `设定 ${w}W`;
+    }
+    const qamReadout = document.getElementById("qamTdpReadout");
+    if (qamReadout) {
+      qamReadout.textContent = hw.hwStapmLimitWatts != null ? `${w}W (目标 ${w}W)` : `${w}W`;
+    }
+    const apuNow = state.snapshot?.systemControl?.apuPowerWatts;
+    const qamStripApu = document.getElementById("qamStripApu");
+    if (qamStripApu && apuNow != null) {
+      qamStripApu.textContent = `${apuNow.toFixed(1)}W / ${w}W`;
+    }
+    const kpiApuSub = document.getElementById("kpiApuSub");
+    if (kpiApuSub) {
+      kpiApuSub.textContent = `设定 ${w}W · ${state.snapshot?.systemControl?.adlAvailable ? "ADL2 采样" : "待命"}`;
+    }
+    const pmLine = document.getElementById("pmReadbackLine");
+    if (pmLine && !state.snapshot?.settings?.unlockThreeStagePower) {
+      pmLine.textContent = `SMU 目标：SPL ${w}W · sPPT ${w}W · fPPT ${Math.min(140, w + 2)}W`;
+    }
+    document.querySelectorAll("[data-tdp-watt]").forEach((btn) => {
+      btn.classList.toggle("active", Number(btn.dataset.tdpWatt) === w);
+    });
+  }
+
+  function updateBrightnessUiImmediate(pct) {
+    const p = Math.max(5, Math.min(100, Math.round(Number(pct) || 70)));
+    if (state.snapshot?.systemControl) {
+      state.snapshot.systemControl.brightnessPercent = p;
+    }
+    const fill = document.getElementById("brightFill");
+    if (fill) fill.style.width = `${p}%`;
+    const valEl = document.getElementById("brightVal");
+    if (valEl) {
+      const supported = state.snapshot?.systemControl?.brightnessSupported !== false;
+      valEl.textContent = supported ? `亮度 ${p}%` : "外接屏不支持";
+    }
+    const rangeEl = document.getElementById("brightRange");
+    if (rangeEl && state.activeSliderDrag !== "bright") rangeEl.value = String(p);
+  }
+
+  function updateVolumeUiImmediate(pct, isMuted = false) {
+    const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    if (state.snapshot?.systemControl) {
+      state.snapshot.systemControl.volumePercent = p;
+      state.snapshot.systemControl.isMuted = !!isMuted;
+    }
+    const fill = document.getElementById("volFill");
+    if (fill) fill.style.width = `${isMuted ? 0 : p}%`;
+    const valEl = document.getElementById("volVal");
+    if (valEl) valEl.textContent = isMuted ? "静音" : `${p}%`;
+    const rangeEl = document.getElementById("volRange");
+    if (rangeEl && state.activeSliderDrag !== "vol") rangeEl.value = String(p);
+    const muteBtn = document.getElementById("btnToggleMute");
+    if (muteBtn) {
+      muteBtn.classList.toggle("active", !!isMuted);
+      muteBtn.textContent = isMuted ? "静音" : "🔊";
+    }
+  }
+
   function bindViewEvents() {
     const applySys = async (method, payload, okMsg = null) => {
       try {
@@ -2725,24 +3093,22 @@
       }
     };
 
-    const setTdpWatts = async (watts) => {
+    const setTdpWatts = (watts, showFeedback = false) => {
       const clamped = Math.max(8, Math.min(120, Math.round(watts)));
-      try {
+      updateTdpUiImmediate(clamped);
+      scheduleCoalescedControl("tdp", async () => {
         const res = await rpc("setTdp", { watts: clamped });
-        if (res?.systemControl && state.snapshot) {
-          state.snapshot.systemControl = res.systemControl;
+        if (showFeedback) {
+          showToast(res?.message || `目标 TDP 已设为 ${clamped}W`, res?.hardwareApplied ? "success" : "info");
         }
-        showToast(res?.message || `目标 TDP 已设为 ${clamped}W`, res?.hardwareApplied ? "success" : "info");
-      } catch (err) {
-        showToast(err.message, "error");
-      }
+      }, 0, true);
     };
 
     // Handheld Open Power, 3-Stage PPT, Fan Direct % & Curves, Toolbox
     document.querySelectorAll("[data-tdp-watt]").forEach((el) => {
       el.addEventListener("click", () => {
         const watts = Number(el.dataset.tdpWatt);
-        if (watts > 0) setTdpWatts(watts);
+        if (watts > 0) setTdpWatts(watts, true);
       });
     });
 
@@ -2787,18 +3153,18 @@
     const tdpRange = document.getElementById("tdpRangeInput");
     const tdpNum = document.getElementById("tdpNumberInput");
     tdpRange?.addEventListener("input", () => {
-      if (tdpNum) tdpNum.value = tdpRange.value;
+      const val = Number(tdpRange.value);
+      updateTdpUiImmediate(val);
+      scheduleCoalescedControl("tdp", () => rpc("setTdp", { watts: val, silent: true }), 45);
     });
-    tdpRange?.addEventListener("change", () => setTdpWatts(Number(tdpRange.value)));
-    tdpNum?.addEventListener("change", () => setTdpWatts(Number(tdpNum.value)));
+    tdpRange?.addEventListener("change", () => setTdpWatts(Number(tdpRange.value), false));
+    tdpNum?.addEventListener("change", () => setTdpWatts(Number(tdpNum.value), true));
 
     document.getElementById("btnTdpDec")?.addEventListener("click", () => {
-      const step = IS_QAM ? 2 : 1;
-      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) - step);
+      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) - 1, false);
     });
     document.getElementById("btnTdpInc")?.addEventListener("click", () => {
-      const step = IS_QAM ? 2 : 1;
-      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) + step);
+      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) + 1, false);
     });
 
     document.getElementById("swUnlockThreeStage")?.addEventListener("click", async () => {
@@ -2851,10 +3217,10 @@
       const ac = isAc ? Math.max(8, Math.min(120, (s.acTdpWatts || 55) + delta)) : (s.acTdpWatts || 55);
       await rpc("setPowerLinkage", { enabled: !!s.powerLinkageEnabled, batteryWatts: bat, acWatts: ac });
     };
-    document.getElementById("btnBatTdpDec")?.addEventListener("click", () => stepLinkage(false, -2));
-    document.getElementById("btnBatTdpInc")?.addEventListener("click", () => stepLinkage(false, 2));
-    document.getElementById("btnAcTdpDec")?.addEventListener("click", () => stepLinkage(true, -2));
-    document.getElementById("btnAcTdpInc")?.addEventListener("click", () => stepLinkage(true, 2));
+    document.getElementById("btnBatTdpDec")?.addEventListener("click", () => stepLinkage(false, -1));
+    document.getElementById("btnBatTdpInc")?.addEventListener("click", () => stepLinkage(false, 1));
+    document.getElementById("btnAcTdpDec")?.addEventListener("click", () => stepLinkage(true, -1));
+    document.getElementById("btnAcTdpInc")?.addEventListener("click", () => stepLinkage(true, 1));
 
     document.querySelectorAll("[data-fan-mode]").forEach((el) => {
       el.addEventListener("click", async () => {
@@ -3045,12 +3411,12 @@
     document.getElementById("btnGamePerfTdpDec")?.addEventListener("click", () => {
       const active = getActiveGame();
       const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
-      saveGamePerf({ tdpWatts: Math.max(8, curW - 5) });
+      saveGamePerf({ tdpWatts: Math.max(8, curW - 1) });
     });
     document.getElementById("btnGamePerfTdpInc")?.addEventListener("click", () => {
       const active = getActiveGame();
       const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
-      saveGamePerf({ tdpWatts: Math.min(120, curW + 5) });
+      saveGamePerf({ tdpWatts: Math.min(120, curW + 1) });
     });
     document.querySelectorAll("[data-game-perf-hz]").forEach((el) => {
       el.addEventListener("click", () => saveGamePerf({ refreshRateHz: Number(el.dataset.gamePerfHz) }));
@@ -3122,6 +3488,8 @@
         if (!preset) return;
         state.gpdDraft.l4Key = preset.l4;
         state.gpdDraft.r4Key = preset.r4;
+        state.gpdDraft.l4Combo = [];
+        state.gpdDraft.r4Combo = [];
         if (preset.enableHotkeys && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
           await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
         }
@@ -3149,14 +3517,22 @@
     });
     document.getElementById("btnSaveGpd")?.addEventListener("click", async () => {
       try {
-        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A].includes(state.gpdDraft.l4Key) ||
-          [0x0068, 0x0069, 0x006A].includes(state.gpdDraft.r4Key);
+        const l4Combo = Array.isArray(state.gpdDraft.l4Combo) ? normalizeComboCodesList(state.gpdDraft.l4Combo) : [];
+        const r4Combo = Array.isArray(state.gpdDraft.r4Combo) ? normalizeComboCodesList(state.gpdDraft.r4Combo) : [];
+        const l4Single = l4Combo.length === 1 ? l4Combo[0] : (l4Combo.length >= 2 ? null : (state.gpdDraft.l4Key >= 0 ? state.gpdDraft.l4Key : null));
+        const r4Single = r4Combo.length === 1 ? r4Combo[0] : (r4Combo.length >= 2 ? null : (state.gpdDraft.r4Key >= 0 ? state.gpdDraft.r4Key : null));
+        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A].includes(l4Single) ||
+          [0x0068, 0x0069, 0x006A].includes(r4Single) ||
+          l4Combo.some((c) => c >= 0x0068 && c <= 0x006A) ||
+          r4Combo.some((c) => c >= 0x0068 && c <= 0x006A);
         if (usesHaloDeckFn && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
           await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
         }
         const res = await rpc("saveGpdController", {
-          l4Key: state.gpdDraft.l4Key >= 0 ? state.gpdDraft.l4Key : null,
-          r4Key: state.gpdDraft.r4Key >= 0 ? state.gpdDraft.r4Key : null,
+          l4Key: l4Single,
+          r4Key: r4Single,
+          l4Combo: l4Combo.length >= 2 ? l4Combo : null,
+          r4Combo: r4Combo.length >= 2 ? r4Combo : null,
           rumble: state.gpdDraft.rumble,
           leftDeadzone: state.gpdDraft.leftDeadzone,
           rightDeadzone: state.gpdDraft.rightDeadzone
@@ -3253,32 +3629,39 @@
         applySys("setCpuBoost", { mode }, `CPU 睿频已切换为 ${label}`);
       });
     });
+    const setBrightnessSmooth = (pct, immediateFlush = false) => {
+      const clamped = Math.max(5, Math.min(100, Math.round(pct)));
+      updateBrightnessUiImmediate(clamped);
+      scheduleCoalescedControl("bright", () => rpc("setBrightness", { percent: clamped }), immediateFlush ? 0 : 35, immediateFlush);
+    };
+    const setVolumeSmooth = (pct, immediateFlush = false) => {
+      const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+      updateVolumeUiImmediate(clamped, false);
+      scheduleCoalescedControl("vol", () => rpc("setVolume", { percent: clamped }), immediateFlush ? 0 : 35, immediateFlush);
+    };
+
+    const brightRange = document.getElementById("brightRange");
+    brightRange?.addEventListener("input", () => setBrightnessSmooth(Number(brightRange.value), false));
+    brightRange?.addEventListener("change", () => setBrightnessSmooth(Number(brightRange.value), true));
     document.getElementById("brightDec")?.addEventListener("click", () => {
       const cur = state.snapshot?.systemControl?.brightnessPercent ?? 70;
-      applySys("setBrightness", { percent: Math.max(5, cur - 10) });
+      setBrightnessSmooth(cur - 5, true);
     });
     document.getElementById("brightInc")?.addEventListener("click", () => {
       const cur = state.snapshot?.systemControl?.brightnessPercent ?? 70;
-      applySys("setBrightness", { percent: Math.min(100, cur + 10) });
+      setBrightnessSmooth(cur + 5, true);
     });
-    document.querySelector('[data-slider-track="bright"]')?.addEventListener("click", (e) => {
-      if (!state.snapshot?.systemControl?.brightnessSupported) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const pct = Math.max(5, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
-      applySys("setBrightness", { percent: pct });
-    });
+
+    const volRange = document.getElementById("volRange");
+    volRange?.addEventListener("input", () => setVolumeSmooth(Number(volRange.value), false));
+    volRange?.addEventListener("change", () => setVolumeSmooth(Number(volRange.value), true));
     document.getElementById("volDec")?.addEventListener("click", () => {
       const cur = state.snapshot?.systemControl?.volumePercent ?? 50;
-      applySys("setVolume", { percent: Math.max(0, cur - 10) });
+      setVolumeSmooth(cur - 5, true);
     });
     document.getElementById("volInc")?.addEventListener("click", () => {
       const cur = state.snapshot?.systemControl?.volumePercent ?? 50;
-      applySys("setVolume", { percent: Math.min(100, cur + 10) });
-    });
-    document.querySelector('[data-slider-track="vol"]')?.addEventListener("click", (e) => {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
-      applySys("setVolume", { percent: pct });
+      setVolumeSmooth(cur + 5, true);
     });
     document.getElementById("btnToggleMute")?.addEventListener("click", () => {
       const muted = !!state.snapshot?.systemControl?.isMuted;
@@ -3658,43 +4041,269 @@
     }
   }
 
+  const activeRecordKeySet = new Set();
+  let burstRecordKeySet = new Set();
+
+  function cleanupBackModal() {
+    const wasRecording = state.backModal.recordingActive || state.backModal.tab === "record";
+    state.backModal.open = false;
+    state.backModal.recordingActive = false;
+    activeRecordKeySet.clear();
+    burstRecordKeySet.clear();
+    window.__hoRefreshBackModal = null;
+    if (wasRecording) {
+      rpc("cancelRecordBackButton").catch(() => {});
+    }
+    document.getElementById("modalBackdrop")?.classList.add("hidden");
+  }
+
+  function applyBackSlotSingle(slot, singleCode) {
+    if (slot === "l4") {
+      state.gpdDraft.l4Key = singleCode;
+      state.gpdDraft.l4Combo = [];
+    } else {
+      state.gpdDraft.r4Key = singleCode;
+      state.gpdDraft.r4Combo = [];
+    }
+    cleanupBackModal();
+    render();
+    applySpatialFocus();
+  }
+
+  function applyBackSlotCombo(slot, codes) {
+    const norm = normalizeComboCodesList(codes);
+    if (norm.length === 1) {
+      applyBackSlotSingle(slot, norm[0]);
+      return;
+    }
+    if (norm.length >= 2) {
+      if (slot === "l4") {
+        state.gpdDraft.l4Key = 0;
+        state.gpdDraft.l4Combo = norm;
+      } else {
+        state.gpdDraft.r4Key = 0;
+        state.gpdDraft.r4Combo = norm;
+      }
+      cleanupBackModal();
+      render();
+      applySpatialFocus();
+    }
+  }
+
   function openBackKeyPickerModal(slot) {
     const slotTitle = slot === "l4" ? "L4 左背键" : "R4 右背键";
-    const selectedVal = slot === "l4" ? state.gpdDraft.l4Key : state.gpdDraft.r4Key;
-    document.getElementById("modalTitle").textContent = `选择${slotTitle}映射功能`;
-    document.getElementById("modalSubtitle").textContent = "选中后请点击「应用到手柄」写入手柄 Flash，手柄模式下立即生效";
+    const curSingle = slot === "l4" ? state.gpdDraft.l4Key : state.gpdDraft.r4Key;
+    const curCombo = slot === "l4" ? [...(state.gpdDraft.l4Combo || [])] : [...(state.gpdDraft.r4Combo || [])];
+    const curDesc = resolveBackSlotLabel(curSingle, curCombo);
+
+    activeRecordKeySet.clear();
+    burstRecordKeySet.clear();
+    state.backModal = {
+      open: true,
+      slot,
+      tab: "single",
+      recordingActive: false,
+      recordedCodes: curCombo.length ? [...curCombo] : [],
+      comboCodes: curCombo.length ? [...curCombo] : (curSingle > 0 ? [curSingle] : [])
+    };
+
+    document.getElementById("modalTitle").textContent = `配置${slotTitle}映射`;
+    document.getElementById("modalSubtitle").textContent = `当前草稿：${curDesc}（选中后请点击「应用到手柄」写入 Flash）`;
     const body = document.getElementById("modalBody");
-    body.innerHTML = `
-      <div class="backkey-picker-section">
-        <div class="gpd-key-group-label">手柄按键（手柄模式下直接参与游戏）</div>
-        <div class="backkey-picker-grid">
-          ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
-            <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
-          `).join("")}
+
+    const startLiveRecording = () => {
+      activeRecordKeySet.clear();
+      burstRecordKeySet.clear();
+      state.backModal.recordingActive = true;
+      state.backModal.recordedCodes = [];
+      rpc("beginRecordBackButton").catch(() => {});
+      renderModalContent();
+    };
+
+    const stopLiveRecording = () => {
+      state.backModal.recordingActive = false;
+      activeRecordKeySet.clear();
+      rpc("cancelRecordBackButton").catch(() => {});
+      renderModalContent();
+    };
+
+    const renderModalContent = () => {
+      const bm = state.backModal;
+      const singleSelectedVal = curCombo.length >= 2 ? -999 : curSingle;
+      const tabsHtml = `
+        <div class="backkey-modal-tabs">
+          <button class="pill-btn small ${bm.tab === "single" ? "active" : ""}" data-back-modal-tab="single" data-focusable="true">单键点选</button>
+          <button class="pill-btn small ${bm.tab === "record" ? "active" : ""}" data-back-modal-tab="record" data-focusable="true">录制按键 / 组合键</button>
+          <button class="pill-btn small ${bm.tab === "combo" ? "active" : ""}" data-back-modal-tab="combo" data-focusable="true">手动组合键</button>
         </div>
-      </div>
-      <div class="backkey-picker-section">
-        <div class="gpd-key-group-label">快捷功能与常用键盘键</div>
-        <div class="backkey-picker-grid">
-          ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
-            <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
-          `).join("")}
-        </div>
-      </div>
-    `;
-    body.querySelectorAll("[data-pick-back-key]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const val = Number(btn.dataset.pickBackKey);
-        if (btn.dataset.pickSlot === "l4") state.gpdDraft.l4Key = val;
-        else state.gpdDraft.r4Key = val;
-        document.getElementById("modalBackdrop").classList.add("hidden");
-        render();
-        applySpatialFocus();
+      `;
+
+      let tabBody = "";
+      if (bm.tab === "single") {
+        tabBody = `
+          <div class="backkey-picker-section">
+            <div class="gpd-key-group-label">手柄按键（手柄模式下直接参与游戏）</div>
+            <div class="backkey-picker-grid">
+              ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
+                <button class="pill-btn small ${singleSelectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
+              `).join("")}
+            </div>
+          </div>
+          <div class="backkey-picker-section">
+            <div class="gpd-key-group-label">快捷功能与常用键盘键</div>
+            <div class="backkey-picker-grid">
+              ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
+                <button class="pill-btn small ${singleSelectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      } else if (bm.tab === "record") {
+        const recChips = bm.recordedCodes.length
+          ? bm.recordedCodes.map((c) => `<span class="combo-chip-pill">${esc(resolveShortHidLabel(c))}</span>`).join(`<span class="keycap-plus">+</span>`)
+          : `<span style="font-size:12px;color:var(--text-muted);">${bm.recordingActive ? "等待按键中：可直接同时按下手柄键（如 LB+RB / LT+RT）或键盘组合键（如 Ctrl+Shift+O）..." : "点击下方「开始录制」，按下单键或最多 4 个组合键后松开"}</span>`;
+        tabBody = `
+          <div class="backkey-picker-section">
+            <div class="gpd-key-group-label">实时录制手柄组合或键盘快捷键（最多 4 键）</div>
+            <div id="recordStageBox" class="record-stage-box ${bm.recordingActive ? "recording" : ""}">
+              <div class="combo-preview-bar">${recChips}</div>
+              <div style="font-size:11px;color:${bm.recordingActive ? "#8dc7ff" : "var(--text-muted)"};">
+                ${bm.recordingActive ? "● 正在监听物理手柄与键盘输入（按下全部目标键后松开即可自动完成）" : (bm.recordedCodes.length ? `已捕获 ${bm.recordedCodes.length} 键，点击右侧按钮确认使用` : "支持手柄按键/扳机与键盘修饰键混搭录制")}
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px;">
+              <button id="btnToggleBackRecord" class="btn btn-sm ${bm.recordingActive ? "btn-armed-danger" : ""}" data-focusable="true">${bm.recordingActive ? "停止录制" : (bm.recordedCodes.length ? "重新录制" : "开始录制")}</button>
+              <button id="btnApplyRecordedBack" class="btn btn-sm btn-primary" data-focusable="true" ${bm.recordedCodes.length ? "" : "disabled"}>确认录制结果 (${bm.recordedCodes.length} 键)</button>
+            </div>
+          </div>
+        `;
+      } else {
+        const cList = bm.comboCodes || [];
+        const comboChips = cList.length
+          ? cList.map((c, idx) => `<button class="combo-chip-pill interactive" data-combo-remove-idx="${idx}" title="点击移除" data-focusable="true">${esc(resolveShortHidLabel(c))} ×</button>`).join(`<span class="keycap-plus">+</span>`)
+          : `<span style="font-size:11.5px;color:var(--text-muted);">请从下方预设直接选取，或依次点选最多 4 个手柄/键盘按键自由组合</span>`;
+        tabBody = `
+          <div class="backkey-picker-section">
+            <div class="gpd-key-group-label">常用组合键预设（点选立即生效到草稿）</div>
+            <div class="backkey-picker-grid">
+              ${GPD_BACK_COMBO_PRESETS.map((p) => `
+                <button class="pill-btn small" data-combo-preset="${p.id}" data-focusable="true">${esc(p.label)}</button>
+              `).join("")}
+            </div>
+          </div>
+          <div class="backkey-picker-section">
+            <div class="gpd-key-group-label">自由组合构建器（已选 ${cList.length}/4 键，支持手柄组合与键鼠组合）</div>
+            <div id="comboPreviewBar" class="combo-preview-bar">${comboChips}</div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:4px;">
+              <button id="btnClearManualCombo" class="btn btn-sm" data-focusable="true" ${cList.length ? "" : "disabled"}>清空已选</button>
+              <button id="btnApplyManualCombo" class="btn btn-sm btn-primary" data-focusable="true" ${cList.length ? "" : "disabled"}>确认组合 (${cList.length} 键)</button>
+            </div>
+            <div class="gpd-key-group-label">手柄按键</div>
+            <div class="backkey-picker-grid">
+              ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
+                <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
+              `).join("")}
+            </div>
+            <div class="gpd-key-group-label" style="margin-top:4px;">键盘修饰键</div>
+            <div class="backkey-picker-grid">
+              ${GPD_COMBO_MODIFIER_OPTIONS.map((opt) => `
+                <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
+              `).join("")}
+            </div>
+            <div class="gpd-key-group-label" style="margin-top:4px;">常用功能 / 字母键</div>
+            <div class="backkey-picker-grid">
+              ${GPD_COMBO_EXTRA_KEYS.map((opt) => `
+                <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }
+
+      body.innerHTML = tabsHtml + tabBody;
+
+      body.querySelectorAll("[data-back-modal-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const nextTab = btn.dataset.backModalTab;
+          if (!nextTab || nextTab === bm.tab) return;
+          if (bm.recordingActive) {
+            bm.recordingActive = false;
+            rpc("cancelRecordBackButton").catch(() => {});
+          }
+          bm.tab = nextTab;
+          if (nextTab === "record") {
+            startLiveRecording();
+          } else {
+            renderModalContent();
+          }
+        });
       });
-    });
+
+      body.querySelectorAll("[data-pick-back-key]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          applyBackSlotSingle(slot, Number(btn.dataset.pickBackKey));
+        });
+      });
+
+      document.getElementById("btnToggleBackRecord")?.addEventListener("click", () => {
+        if (state.backModal.recordingActive) stopLiveRecording();
+        else startLiveRecording();
+      });
+      document.getElementById("btnApplyRecordedBack")?.addEventListener("click", () => {
+        if (state.backModal.recordedCodes.length) {
+          applyBackSlotCombo(slot, state.backModal.recordedCodes);
+        }
+      });
+
+      body.querySelectorAll("[data-combo-preset]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const preset = GPD_BACK_COMBO_PRESETS.find((p) => p.id === btn.dataset.comboPreset);
+          if (preset) applyBackSlotCombo(slot, preset.codes);
+        });
+      });
+
+      body.querySelectorAll("[data-combo-remove-idx]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = Number(btn.dataset.comboRemoveIdx);
+          if (idx >= 0 && idx < bm.comboCodes.length) {
+            bm.comboCodes.splice(idx, 1);
+            renderModalContent();
+          }
+        });
+      });
+
+      body.querySelectorAll("[data-combo-toggle-code]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const code = Number(btn.dataset.comboToggleCode);
+          const pos = bm.comboCodes.indexOf(code);
+          if (pos >= 0) {
+            bm.comboCodes.splice(pos, 1);
+          } else if (bm.comboCodes.length < 4) {
+            bm.comboCodes = normalizeComboCodesList([...bm.comboCodes, code]);
+          } else {
+            showToast("单个背键最多支持 4 键同时触发", "warn");
+          }
+          renderModalContent();
+        });
+      });
+
+      document.getElementById("btnClearManualCombo")?.addEventListener("click", () => {
+        bm.comboCodes = [];
+        renderModalContent();
+      });
+      document.getElementById("btnApplyManualCombo")?.addEventListener("click", () => {
+        if (bm.comboCodes.length) {
+          applyBackSlotCombo(slot, bm.comboCodes);
+        }
+      });
+
+      applySpatialFocus();
+    };
+
+    window.__hoRefreshBackModal = renderModalContent;
     document.getElementById("modalBackdrop").classList.remove("hidden");
     state.focusIndex = 0;
-    applySpatialFocus();
+    renderModalContent();
   }
 
   async function startRecordCombo(target) {
@@ -3836,7 +4445,11 @@
       }
       case "B":
         if (modalOpen) {
-          modal.classList.add("hidden");
+          if (state.backModal.open) {
+            cleanupBackModal();
+          } else {
+            modal.classList.add("hidden");
+          }
           applySpatialFocus();
         } else if (!IS_QAM && state.tab === "opti" && state.optiSubTab === "library") {
           state.optiSubTab = "tune";
@@ -3917,7 +4530,11 @@
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));
   document.getElementById("btnCloseApp")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnCloseModal")?.addEventListener("click", () => {
-    document.getElementById("modalBackdrop").classList.add("hidden");
+    if (state.backModal.open) {
+      cleanupBackModal();
+    } else {
+      document.getElementById("modalBackdrop").classList.add("hidden");
+    }
     applySpatialFocus();
   });
 
@@ -3926,6 +4543,10 @@
     const t = e.target;
     if (t && t.tagName === "INPUT" && t.type === "range") {
       state.isDraggingRange = true;
+      if (t.id === "tdpRangeInput") state.activeSliderDrag = "tdp";
+      else if (t.id === "brightRange") state.activeSliderDrag = "bright";
+      else if (t.id === "volRange") state.activeSliderDrag = "vol";
+      else state.activeSliderDrag = t.id || "range";
     }
     const focusEl = t?.closest?.('[data-focusable="true"]');
     if (focusEl) {
@@ -3942,14 +4563,52 @@
   const endRangeDrag = () => {
     if (!state.isDraggingRange) return;
     state.isDraggingRange = false;
-    if (state.pendingSnapshot) {
-      const pending = state.pendingSnapshot;
-      state.pendingSnapshot = null;
-      applySnapshot(pending);
-    }
+    state.activeSliderDrag = null;
+    state.dragCooldownUntil = Date.now() + 280;
+    setTimeout(() => {
+      if (!state.isDraggingRange && Date.now() >= state.dragCooldownUntil && state.pendingSnapshot) {
+        const pending = state.pendingSnapshot;
+        state.pendingSnapshot = null;
+        applySnapshot(pending);
+      }
+    }, 300);
   };
   window.addEventListener("pointerup", endRangeDrag, true);
   window.addEventListener("pointercancel", endRangeDrag, true);
+
+  window.addEventListener("keydown", (e) => {
+    if (state.backModal.open && state.backModal.tab === "record" && state.backModal.recordingActive) {
+      const hid = CODE_TO_HID_MAP[e.code];
+      if (hid) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        activeRecordKeySet.add(hid);
+        if (burstRecordKeySet.size < 4) burstRecordKeySet.add(hid);
+        state.backModal.recordedCodes = normalizeComboCodesList(Array.from(burstRecordKeySet));
+        if (typeof window.__hoRefreshBackModal === "function") window.__hoRefreshBackModal();
+        return;
+      }
+    }
+  }, true);
+
+  window.addEventListener("keyup", (e) => {
+    if (state.backModal.open && state.backModal.tab === "record" && state.backModal.recordingActive) {
+      const hid = CODE_TO_HID_MAP[e.code];
+      if (hid) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        activeRecordKeySet.delete(hid);
+        if (activeRecordKeySet.size === 0 && burstRecordKeySet.size > 0) {
+          state.backModal.recordedCodes = normalizeComboCodesList(Array.from(burstRecordKeySet));
+          state.backModal.recordingActive = false;
+          rpc("cancelRecordBackButton").catch(() => {});
+          if (typeof window.__hoRefreshBackModal === "function") window.__hoRefreshBackModal();
+        }
+      }
+    }
+  }, true);
 
   window.addEventListener("keydown", (e) => {
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;

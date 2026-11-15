@@ -491,6 +491,13 @@ public partial class App : System.Windows.Application
                   fanModes: document.querySelectorAll('[data-fan-mode]').length,
                   fanCurveSvg: document.querySelectorAll('svg.fan-curve-svg').length,
                   hasFanSlider: Boolean(document.getElementById('fanManualRange')),
+                  hasPfSys: Boolean(document.getElementById('pfSysVal')?.textContent?.trim()),
+                  hasPfEta: Boolean(document.getElementById('pfEtaVal')?.textContent?.trim()),
+                  hasBrightRange: Boolean(document.getElementById('brightRange')),
+                  hasVolRange: Boolean(document.getElementById('volRange')),
+                  tdpRangeStep: document.getElementById('tdpRangeInput')?.getAttribute('step') || '',
+                  tdpDecText: document.getElementById('btnTdpDec')?.textContent?.trim() || '',
+                  tdpIncText: document.getElementById('btnTdpInc')?.textContent?.trim() || '',
                   toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
                   selectCount: document.querySelectorAll('select').length,
                   legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
@@ -506,6 +513,13 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("fanModes").GetInt32() == 3 &&
                           homeRoot.GetProperty("fanCurveSvg").GetInt32() == 1 &&
                           homeRoot.GetProperty("hasFanSlider").GetBoolean() &&
+                          homeRoot.GetProperty("hasPfSys").GetBoolean() &&
+                          homeRoot.GetProperty("hasPfEta").GetBoolean() &&
+                          homeRoot.GetProperty("hasBrightRange").GetBoolean() &&
+                          homeRoot.GetProperty("hasVolRange").GetBoolean() &&
+                          homeRoot.GetProperty("tdpRangeStep").GetString() == "1" &&
+                          homeRoot.GetProperty("tdpDecText").GetString() == "−1W" &&
+                          homeRoot.GetProperty("tdpIncText").GetString() == "+1W" &&
                           homeRoot.GetProperty("toolboxTiles").GetInt32() >= 8 &&
                           homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           homeRoot.GetProperty("legendFits").GetBoolean() &&
@@ -550,18 +564,21 @@ public partial class App : System.Windows.Application
             await Task.Delay(120);
             var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
 
-            // Test back-key picker modal: open L4 picker, select 手柄 L3 (32783), close automatically, then restore 保留原厂设置 (-1)
+            // Test back-key picker modal: verify 3 tabs (single/record/combo), select combo preset gp_lbrb ("LB + RB"), then restore 保留原厂设置 (-1)
             await mainCore.ExecuteScriptAsync("document.getElementById('btnPickL4')?.click()");
             bool pickerOpened = await WaitUntilAsync(
                 mainCore,
-                "!document.getElementById('modalBackdrop').classList.contains('hidden') && Boolean(document.querySelector('[data-pick-back-key=\"32783\"]'))");
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-pick-back-key=\"32783\"]')?.click()");
+                "!document.getElementById('modalBackdrop').classList.contains('hidden') && Boolean(document.querySelector('[data-back-modal-tab=\"single\"]')) && Boolean(document.querySelector('[data-back-modal-tab=\"record\"]')) && Boolean(document.querySelector('[data-back-modal-tab=\"combo\"]')) && Boolean(document.querySelector('[data-pick-back-key=\"32783\"]'))");
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-back-modal-tab=\"combo\"]')?.click()");
+            bool comboTabReady = await WaitUntilAsync(mainCore, "Boolean(document.querySelector('[data-combo-preset=\"gp_lbrb\"]'))");
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-combo-preset=\"gp_lbrb\"]')?.click()");
             bool pickerClosed = await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
+            bool comboBadgeOk = await WaitUntilAsync(mainCore, "document.getElementById('l4SlotBadge')?.textContent?.trim() === 'LB + RB'");
             await mainCore.ExecuteScriptAsync("document.getElementById('btnPickL4')?.click()");
             await WaitUntilAsync(mainCore, "!document.getElementById('modalBackdrop').classList.contains('hidden') && Boolean(document.querySelector('[data-pick-back-key=\"-1\"]'))");
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-pick-back-key=\"-1\"]')?.click()");
             await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
-            bool modalPickerOk = pickerOpened && pickerClosed;
+            bool modalPickerOk = pickerOpened && comboTabReady && pickerClosed && comboBadgeOk;
 
             // Expand advanced section so .page-scroll has vertical scroll headroom, test scroll preservation across swInterceptOsk toggles, then collapse for clean screenshot
             await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleControlsAdv')?.click()");
@@ -749,7 +766,25 @@ public partial class App : System.Windows.Application
             {
                 qamHandheldReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange'))");
+
+                var qamLiveSlideOkStr = await qamCore.ExecuteScriptAsync("""
+                    (() => {
+                      const r = document.getElementById('tdpRangeInput');
+                      const ro = document.getElementById('qamTdpReadout');
+                      if (!r || !ro) return false;
+                      const orig = r.value;
+                      const probe = orig === '47' ? '48' : '47';
+                      r.value = probe;
+                      r.dispatchEvent(new Event('input', { bubbles: true }));
+                      const updated = ro.textContent.includes(probe + 'W');
+                      r.value = orig;
+                      r.dispatchEvent(new Event('input', { bubbles: true }));
+                      return updated;
+                    })()
+                    """);
+                qamHandheldReady = qamHandheldReady && string.Equals(qamLiveSlideOkStr.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
                 await Task.Delay(250);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
                 await CapturePngAsync(qamCore, outputDir, "v3_07_qam_handheld.png");

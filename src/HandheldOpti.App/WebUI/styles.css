@@ -1567,7 +1567,7 @@ body.mode-qam .bottom-legend {
   bottom: 0;
   background: linear-gradient(90deg, rgba(26, 140, 255, 0.45), rgba(26, 140, 255, 0.78));
   pointer-events: none;
-  transition: width 0.12s ease;
+  transition: none;
 }
 
 .step-val {
@@ -1577,6 +1577,22 @@ body.mode-qam .bottom-legend {
   font-weight: 700;
   color: #ffffff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+}
+
+.step-range-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.step-range-input:disabled {
+  cursor: not-allowed;
 }
 
 .qam-quick-sys-chip {
@@ -1707,7 +1723,7 @@ body.mode-qam .bottom-legend {
 /* Power Flow */
 .power-flow-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1735,6 +1751,11 @@ body.mode-qam .bottom-legend {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pf-val.accent-teal,
+.accent-teal {
+  color: #2dd4bf;
 }
 
 .pf-sub {
@@ -2764,4 +2785,61 @@ body.mode-qam .qam-section-title {
 
 body.mode-qam .modal-backdrop {
   padding: 12px;
+}
+
+.backkey-modal-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.record-stage-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(10, 15, 25, 0.58);
+}
+
+.record-stage-box.recording {
+  border-color: rgba(56, 189, 248, 0.72);
+  background: rgba(14, 34, 62, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.22);
+}
+
+.combo-preview-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.combo-chip-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #e2e8f0;
+  background: rgba(26, 140, 255, 0.24);
+  border: 1px solid rgba(26, 140, 255, 0.55);
+}
+
+.combo-chip-pill.interactive {
+  cursor: pointer;
+}
+
+.combo-chip-pill.interactive:hover {
+  background: rgba(255, 93, 108, 0.28);
+  border-color: rgba(255, 93, 108, 0.65);
 }

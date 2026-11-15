@@ -1,6 +1,7 @@
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using HandheldOpti.Core.Services;
 using Microsoft.Win32;
 
 namespace HandheldOpti.App.Native;
@@ -33,6 +34,8 @@ public sealed class SystemControlState
     public double BatteryFullWh { get; set; }
     public double VoltageVolts { get; set; }
     public double? EstimatedChargerWatts { get; set; }
+    public double SystemDrawWatts { get; set; }
+    public int? EstimatedStandbyMinutes { get; set; }
     public bool IsBypassPower { get; set; }
     public int BatteryEtaMinutes { get; set; }
     public int ChargeEtaMinutes { get; set; }
@@ -113,6 +116,24 @@ public sealed class SystemControlService : IDisposable
     private double _cachedRemainingWh;
     private double _cachedFullWh;
     private double _cachedVoltageVolts;
+    private double _emaSystemDrawWatts;
+
+    private readonly object _displayCacheLock = new();
+    private DateTime _lastDisplayEnumUtc = DateTime.MinValue;
+    private int _cachedScreenW;
+    private int _cachedScreenH;
+    private int _cachedRefreshHz;
+    private List<int> _cachedSupportedRates = new();
+    private List<string> _cachedSupportedResolutions = new();
+
+    private DateTime _lastAudioQueryUtc = DateTime.MinValue;
+    private int _cachedVolPct = 50;
+    private bool _cachedIsMuted;
+
+    private DateTime _lastCpuSchemeQueryUtc = DateTime.MinValue;
+    private bool _cachedCpuIsAc;
+    private string _cachedCpuBoostMode = "aggressive";
+    private int _cachedCpuMaxFreqMhz;
 
     public HardwareServiceClient HardwareClient => _hwClient;
 
@@ -204,6 +225,7 @@ public sealed class SystemControlService : IDisposable
         dm.dmDisplayFrequency = (uint)targetHz;
         dm.dmFields = DmDisplayFrequency;
         ApplyDisplayMode(devName, ref dm);
+        InvalidateDisplayCache();
 
         return GetState();
     }
@@ -238,11 +260,18 @@ public sealed class SystemControlService : IDisposable
         current.dmDisplayFrequency = (uint)chosenHz;
         current.dmFields = DmPelsWidth | DmPelsHeight | DmDisplayFrequency;
         ApplyDisplayMode(devName, ref current);
+        InvalidateDisplayCache();
 
         return GetState();
     }
 
     public SystemControlState SetBrightness(int percent)
+    {
+        SetBrightnessFast(percent);
+        return GetState();
+    }
+
+    public int SetBrightnessFast(int percent)
     {
         int clamped = Math.Clamp(percent, 5, 100);
         try
@@ -279,12 +308,19 @@ public sealed class SystemControlService : IDisposable
             _wmiCachedAtUtc = DateTime.UtcNow;
         }
 
-        return GetState();
+        return clamped;
     }
 
     public SystemControlState SetVolume(int percent)
     {
+        SetVolumeFast(percent);
+        return GetState();
+    }
+
+    public (int VolumePercent, bool IsMuted) SetVolumeFast(int percent)
+    {
         int clamped = Math.Clamp(percent, 0, 100);
+        bool finalMuted = false;
         WithAudioEndpoint(vol =>
         {
             var ctx = Guid.Empty;
@@ -294,10 +330,18 @@ public sealed class SystemControlService : IDisposable
             {
                 vol.SetMute(false, ref ctx);
             }
+            vol.GetMute(out finalMuted);
             return true;
         });
 
-        return GetState();
+        lock (_audioLock)
+        {
+            _cachedVolPct = clamped;
+            _cachedIsMuted = finalMuted;
+            _lastAudioQueryUtc = DateTime.UtcNow;
+        }
+
+        return (clamped, finalMuted);
     }
 
     public SystemControlState SetMute(bool muted)
@@ -309,6 +353,12 @@ public sealed class SystemControlService : IDisposable
             Marshal.ThrowExceptionForHR(hr);
             return true;
         });
+
+        lock (_audioLock)
+        {
+            _cachedIsMuted = muted;
+            _lastAudioQueryUtc = DateTime.UtcNow;
+        }
 
         return GetState();
     }
@@ -341,6 +391,7 @@ public sealed class SystemControlService : IDisposable
             throw new InvalidOperationException($"应用 CPU 睿频设置失败（错误码 {rcApply}）。");
         }
 
+        _lastCpuSchemeQueryUtc = DateTime.MinValue;
         return GetState();
     }
 
@@ -368,25 +419,14 @@ public sealed class SystemControlService : IDisposable
             throw new InvalidOperationException($"应用 CPU 最高频率设置失败（错误码 {rcApply}）。");
         }
 
+        _lastCpuSchemeQueryUtc = DateTime.MinValue;
         return GetState();
     }
 
-    private static int ReadCpuMaxFreqMhz(bool isAcOnline)
+    private int ReadCpuMaxFreqMhz(bool isAcOnline)
     {
-        try
-        {
-            Guid scheme = GetActivePowerSchemeGuid();
-            var sub = SubProcessor;
-            var p0 = ProcFreqMax;
-            uint rc = isAcOnline
-                ? PowerReadACValueIndex(0, ref scheme, ref sub, ref p0, out uint val)
-                : PowerReadDCValueIndex(0, ref scheme, ref sub, ref p0, out val);
-            return rc == 0 ? (int)val : 0;
-        }
-        catch
-        {
-            return 0;
-        }
+        RefreshCpuSchemeCacheIfNeeded(isAcOnline);
+        return _cachedCpuMaxFreqMhz;
     }
 
     private static string ReadCpuNameFromRegistry()
@@ -457,8 +497,29 @@ public sealed class SystemControlService : IDisposable
         state.UsedRamGb = Math.Round(Math.Max(0, total - avail), 1);
     }
 
-    private static void PopulateDisplayInfo(SystemControlState state)
+    private void InvalidateDisplayCache()
     {
+        lock (_displayCacheLock)
+        {
+            _lastDisplayEnumUtc = DateTime.MinValue;
+        }
+    }
+
+    private void PopulateDisplayInfo(SystemControlState state)
+    {
+        lock (_displayCacheLock)
+        {
+            if (_cachedScreenW > 0 && (DateTime.UtcNow - _lastDisplayEnumUtc) < TimeSpan.FromSeconds(30))
+            {
+                state.ScreenWidth = _cachedScreenW;
+                state.ScreenHeight = _cachedScreenH;
+                state.RefreshRateHz = _cachedRefreshHz;
+                state.SupportedRefreshRates = _cachedSupportedRates.ToList();
+                state.SupportedResolutions = _cachedSupportedResolutions.ToList();
+                return;
+            }
+        }
+
         try
         {
             var devName = ResolvePrimaryDisplayDevice();
@@ -504,6 +565,16 @@ public sealed class SystemControlService : IDisposable
                 supportedRes.Insert(0, currentTag);
             }
             state.SupportedResolutions = supportedRes;
+
+            lock (_displayCacheLock)
+            {
+                _cachedScreenW = state.ScreenWidth;
+                _cachedScreenH = state.ScreenHeight;
+                _cachedRefreshHz = state.RefreshRateHz;
+                _cachedSupportedRates = rates.ToList();
+                _cachedSupportedResolutions = supportedRes.ToList();
+                _lastDisplayEnumUtc = DateTime.UtcNow;
+            }
         }
         catch
         {
@@ -595,33 +666,40 @@ public sealed class SystemControlService : IDisposable
         }
     }
 
-    private static void PopulatePowerFlowEstimates(SystemControlState state)
+    private void PopulatePowerFlowEstimates(SystemControlState state)
     {
-        if (!state.HasBattery)
+        var flow = PowerRuntimeEstimator.Compute(
+            state.IsAcOnline,
+            state.HasBattery,
+            state.IsCharging,
+            state.BatteryPercent,
+            state.BatteryPowerWatts,
+            state.BatteryRemainingWh,
+            state.ApuPowerWatts,
+            state.BrightnessPercent,
+            state.HardwareService.FanRpm,
+            _emaSystemDrawWatts);
+
+        _emaSystemDrawWatts = flow.NextEmaSystemDrawWatts;
+        state.SystemDrawWatts = flow.SystemDrawWatts;
+        state.EstimatedChargerWatts = flow.ChargerInputWatts;
+        state.EstimatedStandbyMinutes = flow.EstimatedStandbyMinutes;
+        state.IsBypassPower = flow.IsBypassPower;
+
+        if (!state.IsAcOnline && flow.EstimatedStandbyMinutes is > 0)
         {
-            state.IsBypassPower = state.IsAcOnline;
-            return;
+            state.BatteryEtaMinutes = flow.EstimatedStandbyMinutes.Value;
         }
 
-        double batW = state.BatteryPowerWatts ?? 0;
-        if (!state.IsAcOnline && !state.IsCharging && batW > 1.2 && state.BatteryRemainingWh > 0.5)
+        if (state.IsAcOnline && state.IsCharging && flow.ChargeWatts > 1.5 && state.BatteryFullWh > state.BatteryRemainingWh)
         {
-            state.BatteryEtaMinutes = Math.Clamp((int)Math.Round(state.BatteryRemainingWh / batW * 60.0), 1, 999);
+            state.ChargeEtaMinutes = Math.Clamp((int)Math.Round((state.BatteryFullWh - state.BatteryRemainingWh) / flow.ChargeWatts * 60.0), 1, 600);
         }
+    }
 
-        if (state.IsAcOnline)
-        {
-            double chargeW = state.IsCharging ? batW : 0;
-            bool bypass = state.BatteryPercent >= 94 && chargeW < 0.5;
-            state.IsBypassPower = bypass;
-            double screenAndBoardLoss = 3.5 + (2.5 * Math.Clamp(state.BrightnessPercent, 5, 100) / 100.0);
-            state.EstimatedChargerWatts = Math.Round(Math.Max(0, state.ApuPowerWatts) + chargeW + screenAndBoardLoss, 1);
-
-            if (state.IsCharging && chargeW > 1.5 && state.BatteryFullWh > state.BatteryRemainingWh)
-            {
-                state.ChargeEtaMinutes = Math.Clamp((int)Math.Round((state.BatteryFullWh - state.BatteryRemainingWh) / chargeW * 60.0), 1, 600);
-            }
-        }
+    public void RecomputePowerFlow(SystemControlState state)
+    {
+        PopulatePowerFlowEstimates(state);
     }
 
     private void RefreshWmiCacheLocked()
@@ -761,6 +839,16 @@ public sealed class SystemControlService : IDisposable
 
     private void PopulateAudioInfo(SystemControlState state)
     {
+        lock (_audioLock)
+        {
+            if ((DateTime.UtcNow - _lastAudioQueryUtc) < TimeSpan.FromSeconds(3))
+            {
+                state.VolumePercent = _cachedVolPct;
+                state.IsMuted = _cachedIsMuted;
+                return;
+            }
+        }
+
         try
         {
             var (vol, muted) = WithAudioEndpoint(ep =>
@@ -771,6 +859,12 @@ public sealed class SystemControlService : IDisposable
                 ep.GetMute(out isMuted);
                 return (Math.Clamp((int)Math.Round(scalar * 100f), 0, 100), isMuted);
             });
+            lock (_audioLock)
+            {
+                _cachedVolPct = vol;
+                _cachedIsMuted = muted;
+                _lastAudioQueryUtc = DateTime.UtcNow;
+            }
             state.VolumePercent = vol;
             state.IsMuted = muted;
         }
@@ -805,31 +899,50 @@ public sealed class SystemControlService : IDisposable
         }
     }
 
-    private static string ReadCpuBoostMode(bool isAcOnline)
+    private string ReadCpuBoostMode(bool isAcOnline)
     {
+        RefreshCpuSchemeCacheIfNeeded(isAcOnline);
+        return _cachedCpuBoostMode;
+    }
+
+    private void RefreshCpuSchemeCacheIfNeeded(bool isAcOnline)
+    {
+        if (isAcOnline == _cachedCpuIsAc && (DateTime.UtcNow - _lastCpuSchemeQueryUtc) < TimeSpan.FromSeconds(10))
+        {
+            return;
+        }
+
         try
         {
             Guid scheme = GetActivePowerSchemeGuid();
             var sub = SubProcessor;
-            var setting = PerfBoostMode;
-            uint rc = isAcOnline
-                ? PowerReadACValueIndex(0, ref scheme, ref sub, ref setting, out uint idx)
-                : PowerReadDCValueIndex(0, ref scheme, ref sub, ref setting, out idx);
-            if (rc != 0)
-            {
-                return "aggressive";
-            }
 
-            return idx switch
-            {
-                0 => "off",
-                3 or 4 or 5 or 6 => "efficient",
-                _ => "aggressive"
-            };
+            var boostSetting = PerfBoostMode;
+            uint rcBoost = isAcOnline
+                ? PowerReadACValueIndex(0, ref scheme, ref sub, ref boostSetting, out uint idx)
+                : PowerReadDCValueIndex(0, ref scheme, ref sub, ref boostSetting, out idx);
+            _cachedCpuBoostMode = rcBoost != 0
+                ? "aggressive"
+                : idx switch
+                {
+                    0 => "off",
+                    3 or 4 or 5 or 6 => "efficient",
+                    _ => "aggressive"
+                };
+
+            var freqSetting = ProcFreqMax;
+            uint rcFreq = isAcOnline
+                ? PowerReadACValueIndex(0, ref scheme, ref sub, ref freqSetting, out uint freqVal)
+                : PowerReadDCValueIndex(0, ref scheme, ref sub, ref freqSetting, out freqVal);
+            _cachedCpuMaxFreqMhz = rcFreq == 0 ? (int)freqVal : 0;
+
+            _cachedCpuIsAc = isAcOnline;
+            _lastCpuSchemeQueryUtc = DateTime.UtcNow;
         }
         catch
         {
-            return "aggressive";
+            _cachedCpuBoostMode = "aggressive";
+            _cachedCpuMaxFreqMhz = 0;
         }
     }
 
