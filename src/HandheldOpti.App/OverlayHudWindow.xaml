@@ -1,0 +1,78 @@
+<Window x:Class="HandheldOpti.App.OverlayHudWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HaloDeck OSD"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Focusable="False"
+        IsHitTestVisible="False"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight">
+    <Border x:Name="RootCard"
+            CornerRadius="10"
+            Padding="10,6"
+            Background="#DC0B111B"
+            BorderBrush="#404DA6FF"
+            BorderThickness="1">
+        <StackPanel Orientation="Vertical">
+            <!-- Level 1 & 2 Compact Line -->
+            <TextBlock x:Name="CompactLineText"
+                       Foreground="#F2F6FC"
+                       FontFamily="Cascadia Code, Segoe UI, Microsoft YaHei UI"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       Visibility="Visible"/>
+
+            <!-- Level 3 & 4 Rich Handheld HUD Card -->
+            <StackPanel x:Name="RichPanel" Visibility="Collapsed" Margin="0,2,0,0">
+                <DockPanel Margin="0,0,0,4">
+                    <TextBlock x:Name="HeaderTitleText"
+                               Text="HaloDeck HUD"
+                               Foreground="#79C0FF"
+                               FontSize="11.5"
+                               FontWeight="Bold"/>
+                    <TextBlock x:Name="HeaderRightText"
+                               HorizontalAlignment="Right"
+                               Foreground="#94A3B8"
+                               FontSize="11"
+                               FontWeight="SemiBold"/>
+                </DockPanel>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="16"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock x:Name="ApuLineText" Foreground="#F8FAFC" FontSize="11.5" FontWeight="SemiBold" Margin="0,1"/>
+                        <TextBlock x:Name="GpuLineText" Foreground="#93C5FD" FontSize="11.5" Margin="0,1"/>
+                        <TextBlock x:Name="CpuLineText" Foreground="#86EFAC" FontSize="11.5" Margin="0,1"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                        <TextBlock x:Name="RamLineText" Foreground="#E2E8F0" FontSize="11.5" Margin="0,1"/>
+                        <TextBlock x:Name="FanLineText" Foreground="#CBD5E1" FontSize="11.5" Margin="0,1"/>
+                        <TextBlock x:Name="PowerLineText" Foreground="#FCD34D" FontSize="11.5" Margin="0,1"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Level 4 Sparkline Strip -->
+                <Grid x:Name="SparklinePanel" Visibility="Collapsed" Margin="0,6,0,0" Width="280" Height="34">
+                    <Border Background="#7706090F" CornerRadius="5" BorderBrush="#24FFFFFF" BorderThickness="1"/>
+                    <Polyline x:Name="ApuWattsLine"
+                              Stroke="#38BDF8"
+                              StrokeThickness="1.6"
+                              StrokeLineJoin="Round"/>
+                    <Polyline x:Name="GpuUsageLine"
+                              Stroke="#4ADE80"
+                              StrokeThickness="1.3"
+                              StrokeLineJoin="Round"/>
+                </Grid>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

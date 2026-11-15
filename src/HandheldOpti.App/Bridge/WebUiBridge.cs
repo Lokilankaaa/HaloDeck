@@ -17,7 +17,7 @@ using Microsoft.Win32;
 
 namespace HandheldOpti.App.Bridge;
 
-public sealed class WebUiBridge
+public sealed class WebUiBridge : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,6 +34,8 @@ public sealed class WebUiBridge
     private readonly InputHubService _inputHub;
     private readonly Dispatcher _dispatcher;
     private readonly SystemControlService _systemControl = new();
+    private readonly GpdControllerService _gpdController = new();
+    private readonly HandheldToolboxService _toolbox = new();
 
     private readonly List<WebView2> _registeredViews = new();
     private Task<CoreWebView2Environment>? _sharedEnvTask;
@@ -41,12 +43,18 @@ public sealed class WebUiBridge
     private IReadOnlyList<GameEntry> _cachedGames = Array.Empty<GameEntry>();
     private GameEntry? _runningGame;
 
+    private bool? _lastObservedAcOnline;
+    private string? _appliedProfileGameId;
+    private int? _preProfileRefreshRateHz;
+    private SystemControlState? _latestSystemState;
+
     public event Action? RequestHideQam;
     public event Action? RequestToggleQam;
     public event Action? RequestShowConsole;
     public event Action? RequestToggleFullscreen;
     public event Action? RequestMinimizeToTray;
     public event Action? RequestRepositionQam;
+    public event Action? OverlayHudUpdated;
 
     public WebUiBridge(
         SettingsStore settingsStore,
@@ -81,6 +89,14 @@ public sealed class WebUiBridge
     public AppSettings Settings => _settings;
     public IReadOnlyList<GameEntry> CachedGames => _cachedGames;
     public GameEntry? RunningGame => _runningGame;
+    public SystemControlState LatestSystemState => _latestSystemState ?? (_latestSystemState = _systemControl.GetState());
+    public int ResumeAllFrozenGames() => _toolbox.ResumeAllFrozenProcesses();
+
+    public void Dispose()
+    {
+        _toolbox.Dispose();
+        _systemControl.Dispose();
+    }
 
     public async Task InitializeAsync()
     {
@@ -162,6 +178,24 @@ public sealed class WebUiBridge
                        updatedRunning?.Injection.IsInjected != _runningGame?.Injection.IsInjected;
         _runningGame = updatedRunning;
 
+        var sys = _systemControl.GetState();
+        _latestSystemState = sys;
+
+        // Fan curve temperature heartbeat when daemon is online & using active curve mode
+        if (sys.HardwareService.ServiceRunning &&
+            sys.HardwareService.EcReady &&
+            _settings.FanMode is "silent" or "balanced")
+        {
+            int peakTemp = Math.Max(sys.GpuTempC, sys.CpuTempC);
+            if (peakTemp > 0)
+            {
+                _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, peakTemp);
+            }
+        }
+
+        // Handle per-game performance profile & AC/Battery power linkage transitions
+        ApplyDynamicPowerAutomation(sys, updatedRunning);
+
         if (changed)
         {
             BroadcastStateSnapshot();
@@ -173,9 +207,124 @@ public sealed class WebUiBridge
         }
     }
 
-    public void PushSystemTelemetryTick()
+    public SystemControlState PushSystemTelemetryTick()
     {
-        BroadcastEvent("systemTelemetry", _systemControl.GetState());
+        var sys = _systemControl.GetState();
+        _latestSystemState = sys;
+        BroadcastEvent("systemTelemetry", sys);
+        return sys;
+    }
+
+    public void CycleOverlayHud()
+    {
+        _settings.OverlayLevel = (_settings.OverlayLevel + 1) % 5;
+        _settingsStore.Save(_settings);
+        OverlayHudUpdated?.Invoke();
+        BroadcastStateSnapshot();
+        BroadcastEvent("toast", new
+        {
+            kind = "info",
+            message = _settings.OverlayLevel == 0
+                ? "已关闭游戏内性能悬浮窗 (OSD)"
+                : $"性能悬浮窗已切换至 Lv.{_settings.OverlayLevel}"
+        });
+    }
+
+    public void ToggleGamepadMouseMode()
+    {
+        _settings.GamepadMouseModeEnabled = !_settings.GamepadMouseModeEnabled;
+        _settingsStore.Save(_settings);
+        _inputHub.GamepadMouseModeEnabled = _settings.GamepadMouseModeEnabled;
+        BroadcastStateSnapshot();
+        BroadcastEvent("toast", new
+        {
+            kind = "info",
+            message = _settings.GamepadMouseModeEnabled
+                ? "已开启手柄桌面鼠标模式（左摇杆移动 · A左键 · B右键 · 右摇杆滚轮）"
+                : "已关闭手柄桌面鼠标模式"
+        });
+    }
+
+    private void ApplyDynamicPowerAutomation(SystemControlState sys, GameEntry? running)
+    {
+        string? runningId = running is { IsCurrentlyRunning: true } ? running.Id : null;
+
+        // 1. Per-Game Profile switch
+        if (!string.Equals(runningId, _appliedProfileGameId, StringComparison.OrdinalIgnoreCase))
+        {
+            if (_appliedProfileGameId is not null && runningId is null)
+            {
+                // Exiting game: restore pre-game Hz and global/power-linked TDP
+                if (_preProfileRefreshRateHz is { } restoreHz && sys.RefreshRateHz != restoreHz)
+                {
+                    try { _systemControl.SetRefreshRate(restoreHz); } catch { }
+                }
+                _preProfileRefreshRateHz = null;
+                _appliedProfileGameId = null;
+
+                int fallbackWatts = _settings.PowerLinkageEnabled
+                    ? (sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts)
+                    : _settings.CurrentTdpWatts;
+                if (sys.HardwareService.ServiceRunning)
+                {
+                    _systemControl.HardwareClient.SetTdp(fallbackWatts);
+                }
+            }
+            else if (runningId is not null &&
+                     _settings.PerGameProfiles.TryGetValue(runningId, out var prof) &&
+                     prof.Enabled)
+            {
+                _preProfileRefreshRateHz ??= sys.RefreshRateHz;
+                _appliedProfileGameId = runningId;
+                if (prof.RefreshRateHz > 0 && sys.RefreshRateHz != prof.RefreshRateHz)
+                {
+                    try { _systemControl.SetRefreshRate(prof.RefreshRateHz); } catch { }
+                }
+                if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 12 and <= 85)
+                {
+                    _systemControl.HardwareClient.SetTdp(prof.TdpWatts);
+                }
+                BroadcastEvent("toast", new
+                {
+                    kind = "info",
+                    message = $"已应用《{running!.Title}》专属性能档：{prof.TdpWatts}W{(prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "")}"
+                });
+            }
+            else
+            {
+                _appliedProfileGameId = runningId;
+            }
+        }
+
+        // 2. AC/Battery Power Linkage when not overridden by an active per-game TDP profile
+        if (_lastObservedAcOnline != sys.IsAcOnline)
+        {
+            bool isInitial = _lastObservedAcOnline is null;
+            _lastObservedAcOnline = sys.IsAcOnline;
+
+            bool hasActiveGameTdp = _appliedProfileGameId is not null &&
+                                    _settings.PerGameProfiles.TryGetValue(_appliedProfileGameId, out var gp) &&
+                                    gp.Enabled;
+
+            if (!isInitial && _settings.PowerLinkageEnabled && !hasActiveGameTdp)
+            {
+                int targetWatts = sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts;
+                _settings.CurrentTdpWatts = targetWatts;
+                _settingsStore.Save(_settings);
+                if (sys.HardwareService.ServiceRunning)
+                {
+                    _systemControl.HardwareClient.SetTdp(targetWatts);
+                }
+                BroadcastEvent("toast", new
+                {
+                    kind = "info",
+                    message = sys.IsAcOnline
+                        ? $"已切换至外接电源模式 · TDP 自动调至 {targetWatts}W"
+                        : $"已切换至电池续航模式 · TDP 自动调至 {targetWatts}W"
+                });
+                BroadcastStateSnapshot();
+            }
+        }
     }
 
     public async Task SendInsertKeyToGameAsync()
@@ -255,13 +404,25 @@ public sealed class WebUiBridge
                 "runAutoInjectNow" => await RunBackgroundAutoInjectAsync(),
                 "expandPagefile" => await ExpandPagefileAsync(),
                 "enableWindowedVrr" => EnableWindowedVrr(),
-                "getSystemControl" => _systemControl.GetState(),
+                "getSystemControl" => RefreshAndCacheSystemState(),
                 "setRefreshRate" => ApplyRefreshRate(payload),
                 "setResolution" => ApplyResolution(payload),
                 "setBrightness" => BroadcastSystemState(_systemControl.SetBrightness(payload.GetProperty("percent").GetInt32())),
                 "setVolume" => BroadcastSystemState(_systemControl.SetVolume(payload.GetProperty("percent").GetInt32())),
                 "setMute" => BroadcastSystemState(_systemControl.SetMute(payload.GetProperty("muted").GetBoolean())),
                 "setCpuBoost" => BroadcastSystemState(_systemControl.SetCpuBoostMode(payload.GetProperty("mode").GetString() ?? "aggressive")),
+                "setCpuMaxFreq" => SetCpuMaxFreq(payload),
+                "setTdp" => SetTdp(payload),
+                "setPowerLinkage" => SetPowerLinkage(payload),
+                "setFanMode" => SetFanMode(payload),
+                "setOverlayHud" => SetOverlayHud(payload),
+                "setGamepadMouseMode" => SetGamepadMouseMode(payload),
+                "installHardwareService" => await InstallHardwareServiceAsync(),
+                "toggleGpdService" => await ToggleGpdServiceAsync(payload),
+                "runToolboxAction" => RunToolboxAction(payload),
+                "getGpdController" => await Task.Run(() => _gpdController.ReadConfig(payload.TryGetProperty("forceRefresh", out var fr) && fr.GetBoolean())),
+                "saveGpdController" => await SaveGpdControllerAsync(payload),
+                "saveGamePerfProfile" => SaveGamePerfProfile(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -282,6 +443,8 @@ public sealed class WebUiBridge
     private object BuildSnapshot()
     {
         var activeGame = _runningGame ?? _cachedGames.FirstOrDefault();
+        var sysState = _systemControl.GetState();
+        _latestSystemState = sysState;
         return new
         {
             runningGame = _runningGame,
@@ -293,14 +456,16 @@ public sealed class WebUiBridge
             settings = _settings,
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
-            memoryHealth = HandheldOpti.App.Native.Win32Interop.GetSystemMemoryHealth(),
+            memoryHealth = Win32Interop.GetSystemMemoryHealth(),
             vrrWindowedEnabled = IsWindowedVrrEnabled(),
-            systemControl = _systemControl.GetState(),
+            systemControl = sysState,
+            frozenGames = _toolbox.GetFrozenGames(),
+            gpdController = _gpdController.CachedConfig,
             hardwareProfile = new
             {
                 deviceName = "HaloDeck · GPD Win 5",
                 recommendedArch = "AMD Strix Halo · RDNA 3.5",
-                menuKeyHint = "L4/R4 推荐绑定 Ctrl+Alt+O / Ctrl+Alt+I"
+                menuKeyHint = "L4/R4 可写 F13(侧栏) / F14(OSD) / Insert(插件)"
             }
         };
     }
@@ -815,8 +980,339 @@ public sealed class WebUiBridge
 
     private SystemControlState BroadcastSystemState(SystemControlState updated)
     {
+        _latestSystemState = updated;
         BroadcastEvent("systemTelemetry", updated);
         return updated;
+    }
+
+    private SystemControlState RefreshAndCacheSystemState()
+    {
+        var st = _systemControl.GetState(includeHardwareRefresh: true);
+        _latestSystemState = st;
+        return st;
+    }
+
+    private object SetCpuMaxFreq(JsonElement payload)
+    {
+        int mhz = payload.GetProperty("mhz").GetInt32();
+        int normalized = mhz <= 0 ? 0 : Math.Clamp(mhz, 1600, 5500);
+        var updated = _systemControl.SetCpuMaxFreqMhz(normalized);
+        _settings.CpuMaxFreqMhz = normalized;
+        _settingsStore.Save(_settings);
+        BroadcastSystemState(updated);
+        BroadcastStateSnapshot();
+        return updated;
+    }
+
+    private object SetTdp(JsonElement payload)
+    {
+        int watts = Math.Clamp(payload.GetProperty("watts").GetInt32(), 12, 85);
+        _settings.CurrentTdpWatts = watts;
+
+        if (payload.TryGetProperty("savePreset", out var presetProp) && presetProp.GetString() is { } slot)
+        {
+            switch (slot.Trim().ToLowerInvariant())
+            {
+                case "silent": _settings.TdpPresetSilent = watts; break;
+                case "balanced": _settings.TdpPresetBalanced = watts; break;
+                case "turbo": _settings.TdpPresetTurbo = watts; break;
+            }
+        }
+        _settingsStore.Save(_settings);
+
+        var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
+        bool hardwareApplied = false;
+        string note = $"已记录目标功耗 {watts}W（未启用底层硬件服务，请先点击上方一键启用）";
+
+        if (hw.ServiceRunning)
+        {
+            var (ok, err, nextHw) = _systemControl.HardwareClient.SetTdp(watts);
+            if (!ok)
+            {
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
+            }
+            hardwareApplied = true;
+            note = $"Strix Halo APU 功耗上限已即时调整为 {nextHw.AppliedTdpWatts}W";
+        }
+
+        var updatedSys = _systemControl.GetState(includeHardwareRefresh: true);
+        BroadcastSystemState(updatedSys);
+        BroadcastStateSnapshot();
+        return new { ok = true, hardwareApplied, watts, message = note, systemControl = updatedSys };
+    }
+
+    private object SetPowerLinkage(JsonElement payload)
+    {
+        bool enabled = payload.TryGetProperty("enabled", out var enProp) ? enProp.GetBoolean() : _settings.PowerLinkageEnabled;
+        int batteryW = payload.TryGetProperty("batteryWatts", out var bwProp) ? Math.Clamp(bwProp.GetInt32(), 12, 85) : _settings.BatteryTdpWatts;
+        int acW = payload.TryGetProperty("acWatts", out var awProp) ? Math.Clamp(awProp.GetInt32(), 12, 85) : _settings.AcTdpWatts;
+
+        _settings.PowerLinkageEnabled = enabled;
+        _settings.BatteryTdpWatts = batteryW;
+        _settings.AcTdpWatts = acW;
+
+        var curSys = _systemControl.GetState();
+        if (enabled)
+        {
+            int target = curSys.IsAcOnline ? acW : batteryW;
+            _settings.CurrentTdpWatts = target;
+            if (curSys.HardwareService.ServiceRunning)
+            {
+                _systemControl.HardwareClient.SetTdp(target);
+            }
+        }
+
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new { ok = true, settings = _settings };
+    }
+
+    private object SetFanMode(JsonElement payload)
+    {
+        string mode = (payload.TryGetProperty("mode", out var mp) ? mp.GetString() : "auto") ?? "auto";
+        int manualPct = payload.TryGetProperty("manualPercent", out var pp)
+            ? Math.Clamp(pp.GetInt32(), 20, 100)
+            : _settings.ManualFanPercent;
+
+        mode = mode.Trim().ToLowerInvariant();
+        if (mode is not ("auto" or "silent" or "balanced" or "turbo" or "manual"))
+        {
+            mode = "auto";
+        }
+
+        _settings.FanMode = mode;
+        _settings.ManualFanPercent = manualPct;
+        _settingsStore.Save(_settings);
+
+        var curSys = _systemControl.GetState(forceRefreshSafe());
+        bool hardwareApplied = false;
+        if (curSys.HardwareService.ServiceRunning)
+        {
+            int tempC = Math.Max(curSys.GpuTempC, curSys.CpuTempC);
+            var (ok, err, _) = _systemControl.HardwareClient.SetFan(mode, manualPct, tempC);
+            if (!ok)
+            {
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 EC 风扇策略失败" : err);
+            }
+            hardwareApplied = true;
+        }
+
+        var nextSys = _systemControl.GetState(includeHardwareRefresh: true);
+        BroadcastSystemState(nextSys);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            hardwareApplied,
+            message = hardwareApplied ? $"风扇模式已切换为 {mode}" : "已保存风扇策略（启用底层硬件服务后生效）",
+            systemControl = nextSys
+        };
+
+        static bool forceRefreshSafe() => true;
+    }
+
+    private object SetOverlayHud(JsonElement payload)
+    {
+        if (payload.TryGetProperty("level", out var lvlProp))
+        {
+            _settings.OverlayLevel = Math.Clamp(lvlProp.GetInt32(), 0, 4);
+        }
+        if (payload.TryGetProperty("position", out var posProp) && posProp.GetString() is { Length: > 0 } pos)
+        {
+            _settings.OverlayPosition = pos is "top-left" or "top-center" or "top-right" ? pos : "top-center";
+        }
+        if (payload.TryGetProperty("opacity", out var opProp))
+        {
+            _settings.OverlayOpacity = Math.Clamp(opProp.GetDouble(), 0.35, 1.0);
+        }
+
+        _settingsStore.Save(_settings);
+        OverlayHudUpdated?.Invoke();
+        BroadcastStateSnapshot();
+        return new { ok = true, settings = _settings };
+    }
+
+    private object SetGamepadMouseMode(JsonElement payload)
+    {
+        bool enabled = payload.GetProperty("enabled").GetBoolean();
+        _settings.GamepadMouseModeEnabled = enabled;
+        _settingsStore.Save(_settings);
+        _inputHub.GamepadMouseModeEnabled = enabled;
+        BroadcastStateSnapshot();
+        return new { ok = true, enabled };
+    }
+
+    private async Task<object> InstallHardwareServiceAsync()
+    {
+        string exePath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("无法确定当前 HaloDeck.exe 路径。");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = exePath,
+            Arguments = "--install-hw-service",
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+
+        try
+        {
+            using var proc = Process.Start(psi)
+                ?? throw new InvalidOperationException("无法拉起管理员安装进程。");
+            await proc.WaitForExitAsync().ConfigureAwait(false);
+            if (proc.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"注册 HaloDeckHardwareSvc 失败（退出码 {proc.ExitCode}）。请确认已安装 PawnIO 驱动或杀毒软件未拦截服务注册。");
+            }
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new InvalidOperationException("已取消管理员授权，将继续以普通用户态模式运行。");
+        }
+
+        await Task.Delay(350).ConfigureAwait(false);
+        var sys = _systemControl.GetState(includeHardwareRefresh: true);
+        if (sys.HardwareService.ServiceRunning)
+        {
+            _systemControl.HardwareClient.SetTdp(Math.Clamp(_settings.CurrentTdpWatts, 12, 85));
+            _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC));
+            sys = _systemControl.GetState(includeHardwareRefresh: true);
+        }
+
+        BroadcastSystemState(sys);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            systemControl = sys,
+            message = sys.HardwareService.SmuReady
+                ? "已成功启用 HaloDeck 底层硬件服务（后续免 UAC 直控 TDP 与风扇）"
+                : $"服务已启动但部分硬件模块未就绪：{sys.HardwareService.LastError}"
+        };
+    }
+
+    private async Task<object> ToggleGpdServiceAsync(JsonElement payload)
+    {
+        bool paused = payload.GetProperty("paused").GetBoolean();
+        var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
+
+        if (hw.ServiceRunning)
+        {
+            var (ok, err, nextHw) = _systemControl.HardwareClient.SetGpdServicePaused(paused);
+            if (!ok) throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "切换 GPDToolService 失败" : err);
+            var sys = _systemControl.GetState(includeHardwareRefresh: true);
+            BroadcastSystemState(sys);
+            BroadcastStateSnapshot();
+            return new { ok = true, paused, hardwareService = nextHw, message = paused ? "已暂停 GPDToolService（避免冲突）" : "已恢复运行 GPDToolService" };
+        }
+
+        string exePath = Environment.ProcessPath ?? throw new InvalidOperationException("找不到主程序路径");
+        var psi = new ProcessStartInfo
+        {
+            FileName = exePath,
+            Arguments = paused ? "--pause-gpd-service" : "--resume-gpd-service",
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+        try
+        {
+            using var proc = Process.Start(psi) ?? throw new InvalidOperationException("无法请求管理员权限。");
+            await proc.WaitForExitAsync().ConfigureAwait(false);
+            if (proc.ExitCode != 0) throw new InvalidOperationException($"切换 GPDToolService 失败 (退出码 {proc.ExitCode})");
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new InvalidOperationException("用户已取消管理员授权。");
+        }
+
+        var nextSys = _systemControl.GetState(includeHardwareRefresh: true);
+        BroadcastSystemState(nextSys);
+        BroadcastStateSnapshot();
+        return new { ok = true, paused, systemControl = nextSys, message = paused ? "已暂停 GPDToolService" : "已恢复运行 GPDToolService" };
+    }
+
+    private object RunToolboxAction(JsonElement payload)
+    {
+        string action = payload.GetProperty("action").GetString() ?? "";
+        int pid = payload.TryGetProperty("pid", out var pidProp) ? pidProp.GetInt32() : 0;
+
+        if (pid <= 0 && _runningGame is { IsCurrentlyRunning: true })
+        {
+            pid = _runningGame.RunningPid ?? 0;
+        }
+
+        string? gameName = _runningGame?.Title;
+        bool hasAntiCheat = _runningGame?.AntiCheat?.RiskLevel == AntiCheatRiskLevel.HighRisk;
+
+        if (action == "toggle_fridge" && pid <= 0 && _frozenFallbackPid() is int frozenPid)
+        {
+            pid = frozenPid;
+            gameName = _toolbox.GetFrozenGames().FirstOrDefault(f => f.Pid == frozenPid)?.GameName;
+            hasAntiCheat = false;
+        }
+
+        string msg = _toolbox.ExecuteAction(action, pid, gameName, hasAntiCheat);
+        BroadcastStateSnapshot();
+        return new { ok = true, message = msg, frozenGames = _toolbox.GetFrozenGames() };
+
+        int? _frozenFallbackPid() => _toolbox.GetFrozenGames().FirstOrDefault()?.Pid;
+    }
+
+    private async Task<GpdControllerConfig> SaveGpdControllerAsync(JsonElement payload)
+    {
+        var req = new GpdControllerUpdateRequest
+        {
+            L4SingleHidCode = payload.TryGetProperty("l4Key", out var l4p) && l4p.ValueKind == JsonValueKind.Number ? l4p.GetInt32() : null,
+            R4SingleHidCode = payload.TryGetProperty("r4Key", out var r4p) && r4p.ValueKind == JsonValueKind.Number ? r4p.GetInt32() : null,
+            RumbleLevel = payload.TryGetProperty("rumble", out var rp) ? Math.Clamp(rp.GetInt32(), 0, 2) : 1,
+            LeftDeadzone = payload.TryGetProperty("leftDeadzone", out var ldz) ? Math.Clamp(ldz.GetInt32(), -10, 10) : 0,
+            RightDeadzone = payload.TryGetProperty("rightDeadzone", out var rdz) ? Math.Clamp(rdz.GetInt32(), -10, 10) : 0
+        };
+
+        var updated = await Task.Run(() => _gpdController.WriteConfig(req)).ConfigureAwait(false);
+        BroadcastStateSnapshot();
+        return updated;
+    }
+
+    private object SaveGamePerfProfile(JsonElement payload)
+    {
+        string gameId = payload.GetProperty("gameId").GetString() ?? "";
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            throw new ArgumentException("缺少游戏 ID");
+        }
+
+        var profile = new GamePerformanceProfile
+        {
+            GameId = gameId,
+            GameName = payload.TryGetProperty("gameName", out var np) ? (np.GetString() ?? gameId) : gameId,
+            Enabled = payload.TryGetProperty("enabled", out var ep) && ep.GetBoolean(),
+            TdpWatts = payload.TryGetProperty("tdpWatts", out var tp) ? Math.Clamp(tp.GetInt32(), 12, 85) : 40,
+            RefreshRateHz = payload.TryGetProperty("refreshRateHz", out var hp) ? hp.GetInt32() : 0
+        };
+
+        _settings.PerGameProfiles[gameId] = profile;
+        _settingsStore.Save(_settings);
+
+        if (_runningGame is { IsCurrentlyRunning: true } &&
+            string.Equals(_runningGame.Id, gameId, StringComparison.OrdinalIgnoreCase) &&
+            profile.Enabled)
+        {
+            if (profile.RefreshRateHz > 0)
+            {
+                try { _systemControl.SetRefreshRate(profile.RefreshRateHz); } catch { }
+            }
+            var hw = _systemControl.HardwareClient.GetStatus();
+            if (hw.ServiceRunning)
+            {
+                _systemControl.HardwareClient.SetTdp(profile.TdpWatts);
+            }
+        }
+
+        BroadcastStateSnapshot();
+        return new { ok = true, profile };
     }
 
     private static void ApplyWindowsStartup(bool enabled)

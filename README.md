@@ -1,57 +1,56 @@
 # HaloDeck
 
-**专为 GPD Win 5 (AMD Ryzen AI Max+ 388/395/385, Radeon 8060S / 8050S RDNA 3.5) 及 Windows 掌机打造的现代化 OptiScaler 注入管理与全能系统控制前端（前身为 HandheldOpti）。**
+**专为 GPD Win 5 (AMD Ryzen AI Max+ 388/395/385, Radeon 8060S / 8050S RDNA 3.5) 及 Windows 掌机打造的以掌机中控为核心的全功能前端（前身为 HandheldOpti，现版本 v0.3.0）。**
 
-HaloDeck 融合了 **ClawTweaks 式「当前运行游戏」即时注入重启**、**OptiScaler Client 式多平台自动游戏库管理** 与 **第一阶段掌机系统控制中心**（通过原生 Windows API 实现，无需安装内核驱动、零反作弊冲突）：
-- 显示模式控制：屏幕刷新率一键切换（如 `48 / 60 / 75 / 100 / 120 Hz`）与分辨率切换（`1920x1080` / `1600x900` / `1280x720`）
-- 硬件与电源调度：内置屏幕 WMI 亮度调节、CoreAudio 系统主音量与静音控制、Zen 5 CPU Boost 模式切换（关闭 / 节能 / 激进，同时写入 AC/DC 电源方案）
-- 实时状态遥测：电池电量与充放电功率、CPU 型号与实时利用率、统一内存占用，以及 XInput 手柄导航、右侧滑出快捷菜单（QAM）、无键盘 `Insert` 扫描码直通和事务级 SHA256 原文件备份还原。
+HaloDeck 以「掌机中控优先，超分插帧为专业子系统」的现代双形态架构（主控制台 + `440px` 右侧滑出 QAM 快捷侧栏）取代臃肿厂商工具与命令行调参，将以下四大核心模块整合为一体：
 
 ---
 
-## 核心特性
+## 核心功能架构
 
-### 1. 双模智能自动注入引擎
-- **正在运行游戏实时锁定 + 一键注入并重启**：参考 ClawTweaks「Running Game」交互理念，后台实时追踪当前前台运行游戏，精准锁定渲染二进制目录，点击 **「一键注入并重启游戏」** 即可自动优雅关闭进程 -> 写入代理 DLL 与优化配置 -> 通过 Steam URI 或原路径无缝重启游戏。
-- **全平台游戏库自动扫描 + 可选后台自动预注入**：
-  - 自动发现 **Steam** (`libraryfolders.vdf` / `appmanifest_*.acf`)、**Epic Games**、**GOG**、**Xbox PC** 及手动导入游戏。
-  - 智能定位 **Unreal Engine 4/5 (`*\Binaries\Win64\*-Shipping.exe`)**、**REDengine (`bin\x64`)**、**Unity** 等真实渲染目录，识别原生 DLSS / XeSS / FSR / Streamline DLL 与 64 位 PE 头。
-  - **多代理 DLL 冲突自动避让**：`auto` 模式下若检测到 ReShade / Special K 等第三方 `dxgi.dll`，自动顺延选用 `winmm.dll` / `version.dll` / `dbghelp.dll` / `winhttp.dll`。
-  - **事务级备份与一键还原**：完整记录新增文件与原文件 SHA256 清单至 `.handheldopti_backup/manifest.json`，一键无损卸载并恢复纯净目录。
-- **反作弊安全熔断**：自动识别 EAC、BattlEye、Vanguard、Tencent ACE、Ricochet 等反作弊组件，后台自动注入模式硬性跳过，手动操作弹出明确风险确认。
+### 1. 掌机总控（默认首页 `handheld`）
+- **实时整机电源流**：借助 AMD ADL2 (`atiadlxx.dll`) 与 Windows 电池状态接口实时显示 **APU 封装功耗 (W)**、**电池充放电功率 (±W · 剩余容量 Wh · 电压 · 估算续航/充满时间)** 以及 **充电器输入功率估算 / AC 旁路直供状态**。
+- **12W–85W Strix Halo TDP 总控与电源联动**：提供 **静音 / 均衡 / 狂暴** 三档可自定义功率预设、1W 精细步进滑动条以及 **插拔电自动切换 TDP**（分别设定离电/插电目标功耗并在 AC 变化时自动下发）。
+- **双风扇智能曲线温控**：支持 `EC 自动 / 静音 / 均衡 / 狂暴 / 手动固定%`，实时读取风扇转速 (RPM) 与 PWM 占空比；内建 `≥ 82°C` 热安全保护底线，服务停止/15 秒曲线看门狗超时/程序退出时自动还原 EC 默认温控。
+- **可选一次性免 UAC 底层硬件服务 (`HaloDeckHardwareSvc`)**：基于开源签名驱动 **PawnIO** (`RyzenSMU.bin` & `LpcIO.bin`，带 GPD DMI 主板白名单校验与 ISA Mutex 同步)。日常显示/音频/监控/工具箱/超分全功能均可在普通用户态无弹窗运行；仅当需要启用 TDP 与风扇直控时点击一次授权注册。
+- **显示 · 音频 · CPU 调度与工具箱**：
+  - 一键切换刷新率（`48 / 60 / 100 / 120 Hz`）、分辨率、Win11 窗口化 VRR、内置屏亮度、CoreAudio 音量与静音、`PowrProf` CPU 睿频策略及 **CPU 最大频率上限 (MHz)**。
+  - **掌机快捷工具箱**：`游戏冰箱`（`NtSuspendProcess`/`NtResumeProcess` 挂起当前游戏省电并在应用退出时自动唤醒防丢档）、`手柄鼠标`、`返回桌面`、`切换窗口`、`屏幕键盘`、`区域截屏`、`任务管理器` 及 **二次确认防误触 `强关游戏`**。
+  - **分游戏独立性能档案**：按游戏保存专属 TDP 与刷新率配置。
 
-### 2. GPD Win 5 / AMD Strix Halo (RDNA 3.5) 专属优化
-- **GPD Win 5 无物理键盘 `Insert` 键痛点解决**：
-  - 手柄组合键 `Select + Start` 或全局热键 `Ctrl + Alt + I` 向游戏发送带扩展键标志（`KEYEVENTF_EXTENDEDKEY`）与 65ms 脉冲保持的 `VK_INSERT (0x2D)` 扫描码，稳定呼出游戏内 OptiScaler ImGui 菜单。
-  - 推荐在 **GPD WinControls** 中将掌机物理背键映射为：
-    - **L4** → `Ctrl + Alt + O`（呼出/收起右侧 QAM 快捷菜单）
-    - **R4** → `Ctrl + Alt + I`（向游戏注入 `Insert` 呼出 OptiScaler 菜单）
-- **4 套 RDNA 3.5 专属预设**：均衡画质帧生 (`OptiPatcher + Fakenvapi + OptiFG`)、XeSS 稳定抗闪烁、低延迟纯超分 (`nofg`)、强力显卡伪装兼容 (`RTX 4090`)。
-- **完整周边组件生态中心**：支持在线拉取与 `.7z` 固实包 / `.zip` 离线导入 **OptiScaler (Stable & Nightly)**、**OptiPatcher (`plugins/OptiPatcher.asi`)**、**Fakenvapi (`Reflex -> AMD Anti-Lag 2`)** 以及自定义扩展 DLL（如 FSR 4 / `dlssg-to-fsr3`）。
+### 2. 性能监控与无钩子穿透 OSD（`monitor`）
+- **5 档 Steam Deck 风格穿透式性能悬浮窗 (`0–4`)**：纯原生 WPF `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE` 透明置顶窗口，不 Hook 游戏 DirectX 管线（零反作弊风险、不抢游戏焦点、鼠标点击完全穿透），支持停靠位置与透明度调节及实时样式预览。
+- **6 项硬件 KPI 与 60 秒原生 SVG 趋势曲线**：实时采样 APU 功耗、GPU/CPU 利用率与频率、核心温度、VRAM/RAM 及电源状态，并绘制最近 60 秒双曲线趋势图。
 
-### 3. 双形态现代化掌机 UI
-- **右侧滑出快捷菜单 (QAM Overlay)**：`Select + RB` 或 `Ctrl + Alt + O` 随时在游戏上方滑出（440px 宽），关闭后自动将焦点归还游戏窗口。
-- **全屏/大屏控制台**：支持 2D 空间 XInput 手柄焦点导航（`LB/RB` 切换模块、十字键/左摇杆移动、`A` 确认、`X` 一键注入、`Y` 注入并重启、`B` 返回）及 7 英寸 1080p 触控屏直接点按。
+### 3. 按键与手柄中心（`controls`）
+- **GPD 手柄硬件 V2 (`VID_2F24&PID_0137`) 直通 Flash 读写**：直接通过 Win32 HID 读写 **L4 / R4 背键映射**（推荐 `F13` 呼出 QAM 侧栏、`F14` 切换 OSD、`Insert`/`F15` 呼出插件菜单，同时兼容保留出厂多步组合宏）、马达震动强度 (`0/1/2`) 与左右摇杆死区 (`-10..10`)。
+- **XInput 手柄桌面鼠标模式**：左摇杆控光标、右摇杆滚轮、`A` 左键、`B` 右键、`X` 中键、`LB/RB` 加减速。
+- **全局后台手柄组合键与键盘热键**：独立配置侧栏、OSD、手柄鼠标与 `Insert` 菜单热键，并支持开机自启、默认全屏启动与后台静默自动注入设置。
+
+### 4. OptiScaler 超分插帧子系统（`opti`：`调优与注入` / `游戏库` / `组件与扩展`）
+- 支持 **FSR 4.1.2 INT8 / Lite**、**XeSS 2.0**、**FSR 3.1**，以及 **XeFG**（原生 DLSS-G 游戏可随游戏开关热启停）与 **OptiFG** 帧生成。
+- 集成 **Fakenvapi (`Reflex -> AMD Anti-Lag 2`)**、**OptiPatcher**、10GB DXGI 伪装显存防爆优化、翻页防撕裂 V-Sync 控制、全平台游戏库海报墙、GitHub 组件在线/离线管理，以及 `.handheldopti_backup/manifest.json` 事务级备份还原。
+- 内建 **EAC / BattlEye / Vanguard / ACE / Ricochet** 反作弊安全拦截。
+- **QAM 超分切游戏实时同步**：在 `440px` 右侧栏中直接内嵌游戏切换胶囊与 `#qamStatusBanner` 实时状态横幅，切换游戏即刻反映其真实注入与配置状态。
 
 ---
 
-## 快速编译与运行
+## 环境要求与快速部署
 
 ### 环境要求
 - Windows 10 / 11 (x64)
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- Microsoft Edge WebView2 Runtime（Windows 11 已自带）
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)（编译与打包需要；发布后的自包含包可直接运行）
+- Microsoft Edge WebView2 Runtime（Windows 11 已内置）
+- **可选（仅直控 TDP 与双风扇需要）**：[PawnIO](https://pawnio.eu/) 签名驱动
 
-### 一键本地安装（Windows 掌机自包含部署）
-Release 发布的便携包及本机安装脚本均采用 `win-x64 --self-contained true` 自包含发布，无需在系统目录额外安装 .NET Desktop Runtime：
+### 一键本地安装
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
 ```
-安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HaloDeck`（保留既有 `%LOCALAPPDATA%\HandheldOpti` 组件缓存、配置与备份），自动迁移旧版快捷方式/自启动并注册当前用户卸载项（`uninstall.ps1`）。
+安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HaloDeck`（保留既有 `%LOCALAPPDATA%\HandheldOpti` 缓存、配置与游戏备份），并生成桌/开始菜单快捷方式及 `uninstall.ps1`。
 
-### 本地编译与测试
+### 编译、测试与 GUI 自检
 ```powershell
-dotnet restore HandheldOpti.sln
 dotnet build HandheldOpti.sln -c Release
 dotnet test HandheldOpti.sln -c Release --no-build
 dotnet run --project src/HandheldOpti.App -c Release
@@ -60,12 +59,13 @@ dotnet run --project src/HandheldOpti.App -c Release
 ### 命令行参数
 - `--minimized`：静默启动到系统托盘
 - `--qam`：启动并直接展开右侧 QAM 快捷菜单
-- `--verify-startup`：执行基础启动自检（验证 WebView2 初始化、游戏库扫描与输入总线状态）并退出
-- `--verify-gui [输出目录]`：执行完整端到端真实 GUI 自检（遍历控制台与掌机中控 Tab、弹窗、空间焦点、全屏切换、QAM 侧栏与中控视图并抓取 PNG 截图与 JSON 报告）
+- `--verify-startup`：执行基础启动自检并退出
+- `--verify-gui [输出目录]`：执行完整端到端 GUI 自检（验证掌机首页、性能监控与穿透 OSD 窗口样式、手柄与控制分页、OptiScaler 三子标签、弹窗、全屏切换及 440px QAM 四分页并输出报告与 PNG 截图）
+- `--install-hw-service` / `--uninstall-hw-service`：注册或卸载可选底层硬件服务 `HaloDeckHardwareSvc`
 
 ---
 
 ## 目录结构
-- `src/HandheldOpti.Core`：多平台扫描、UE5/PE/反作弊分析、INI 无损编辑、`.7z`/`.zip` 解压与组件管理、事务注入与进程追踪引擎
-- `src/HandheldOpti.App`：WPF + WebView2 双窗口宿主、Win32 热键与 `SendInput`、XInput 轮询器与现代化掌机前端
-- `tests/HandheldOpti.Tests`：覆盖 VDF 解析、UE5 定位、反作弊拦截、冲突避让注入与 SHA256 还原闭环的 xUnit 测试套件
+- `src/HandheldOpti.Core`：核心模型（`AppSettings`、`GpdV2PacketCodec`）、多平台游戏扫描、UE5/PE/反作弊识别、INI 编辑、组件管理与注入/还原引擎
+- `src/HandheldOpti.App`：WPF + WebView2 双窗口宿主、穿透式 `OverlayHudWindow`、`PawnIoHardwareDaemon`、GPD V2 HID 服务、工具箱服务与 `HaloDeck` 前端界面
+- `tests/HandheldOpti.Tests`：覆盖 INI/预设、扫描、注入还原以及 v0.3.0 设置兼容与 GPD V2 报文编解码的 xUnit 单元测试

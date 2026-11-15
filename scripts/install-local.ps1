@@ -29,6 +29,14 @@ function Resolve-DotnetPath {
 
 Write-Host "[1/5] 停止正在运行的 HaloDeck / 旧版 HandheldOpti 实例并清理旧安装..."
 Get-Process -Name "HaloDeck", "HandheldOpti" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$hwSvc = Get-Service -Name "HaloDeckHardwareSvc" -ErrorAction SilentlyContinue
+if ($null -ne $hwSvc -and $hwSvc.Status -eq 'Running') {
+    try {
+        Stop-Service -Name "HaloDeckHardwareSvc" -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "HaloDeckHardwareSvc 正在以 SYSTEM 权限运行，若覆盖文件失败请以管理员身份运行安装脚本或先执行 sc stop HaloDeckHardwareSvc。"
+    }
+}
 Start-Sleep -Milliseconds 300
 
 $runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -68,6 +76,8 @@ Write-Host "[3/5] 写入卸载脚本与创建桌面/开始菜单快捷方式..."
 $uninstallContent = @'
 $ErrorActionPreference = 'SilentlyContinue'
 Get-Process -Name "HaloDeck", "HandheldOpti" | Stop-Process -Force
+sc.exe stop HaloDeckHardwareSvc | Out-Null
+sc.exe delete HaloDeckHardwareSvc | Out-Null
 
 $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "HaloDeck.lnk"
 $programsLnk = Join-Path ([Environment]::GetFolderPath('Programs')) "HaloDeck.lnk"
@@ -100,7 +110,7 @@ Write-Host "[4/5] 注册当前用户已安装应用信息..."
 $uninstallRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HaloDeck"
 New-Item -Path $uninstallRegPath -Force | Out-Null
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayName" -Value "HaloDeck"
-Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.2.0"
+Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.0"
 Set-ItemProperty -Path $uninstallRegPath -Name "Publisher" -Value "HaloDeck"
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayIcon" -Value $AppExe
 Set-ItemProperty -Path $uninstallRegPath -Name "InstallLocation" -Value $InstallDir

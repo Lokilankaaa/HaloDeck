@@ -21,19 +21,47 @@ public sealed class SystemControlState
     public int VolumePercent { get; set; } = 50;
     public bool IsMuted { get; set; }
     public string CpuBoostMode { get; set; } = "aggressive"; // "off" | "efficient" | "aggressive"
+    public int CpuMaxFreqMhz { get; set; } // 0 = unlimited
+
+    // Battery + Charger Power Flow
     public bool IsAcOnline { get; set; }
     public bool HasBattery { get; set; } = true;
     public bool IsCharging { get; set; }
     public int BatteryPercent { get; set; } = 100;
     public double? BatteryPowerWatts { get; set; }
     public double BatteryRemainingWh { get; set; }
+    public double BatteryFullWh { get; set; }
+    public double VoltageVolts { get; set; }
+    public double? EstimatedChargerWatts { get; set; }
+    public bool IsBypassPower { get; set; }
+    public int BatteryEtaMinutes { get; set; }
+    public int ChargeEtaMinutes { get; set; }
+
+    // Real-time AMD ADL2 GPU/APU Telemetry + 60s Sparkline Arrays
+    public bool AdlAvailable { get; set; }
+    public int ApuPowerWatts { get; set; }
+    public int GpuUsagePercent { get; set; }
+    public int GfxClockMhz { get; set; }
+    public int MemClockMhz { get; set; }
+    public int CpuClockMhz { get; set; }
+    public int GpuTempC { get; set; }
+    public int CpuTempC { get; set; }
+    public int VramUsedMb { get; set; }
+    public int[] ApuWattsHistory { get; set; } = Array.Empty<int>();
+    public int[] GpuUsageHistory { get; set; } = Array.Empty<int>();
+    public int[] CpuUsageHistory { get; set; } = Array.Empty<int>();
+    public int[] TempHistory { get; set; } = Array.Empty<int>();
+
+    // PawnIO Hardware Daemon Status (Strix Halo TDP + GPD Dual-Fan EC)
+    public HardwareDaemonStatus HardwareService { get; set; } = new();
 }
 
 /// <summary>
-/// Provides native Windows / WMI / CoreAudio / PowrProf handheld controls (display Hz/res,
-/// brightness, volume, Zen 5 CPU boost policy, and battery/power telemetry).
+/// Provides native Windows / WMI / CoreAudio / PowrProf / AMD ADL2 / PawnIO service controls
+/// for Strix Halo handhelds (display Hz/res, brightness, volume, CPU boost &amp; max MHz,
+/// power flow, APU/GPU telemetry, TDP &amp; EC dual fan).
 /// </summary>
-public sealed class SystemControlService
+public sealed class SystemControlService : IDisposable
 {
     private const int EnumCurrentSettings = -1;
     private const int DispChangeSuccessful = 0;
@@ -44,6 +72,8 @@ public sealed class SystemControlService
 
     private static readonly Guid SubProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
     private static readonly Guid PerfBoostMode = new("be337238-0d82-4146-a960-4f3749d470c7");
+    private static readonly Guid ProcFreqMax = new("75b0ae3f-bce0-45a7-8c89-c9611c25e100");
+    private static readonly Guid ProcFreqMax1 = new("75b0ae3f-bce0-45a7-8c89-c9611c25e101");
 
     private static readonly (int Width, int Height)[] StandardResolutions =
     {
@@ -53,6 +83,8 @@ public sealed class SystemControlService
     };
 
     private readonly string _cpuName;
+    private readonly AmdGpuTelemetryService _telemetry = new();
+    private readonly HardwareServiceClient _hwClient = new();
     private readonly object _cpuLock = new();
     private readonly object _audioLock = new();
     private readonly object _wmiCacheLock = new();
@@ -64,11 +96,16 @@ public sealed class SystemControlService
     private int _lastCpuPercent;
 
     private DateTime _wmiCachedAtUtc = DateTime.MinValue;
+    private DateTime _fullCapCachedAtUtc = DateTime.MinValue;
     private bool _cachedBrightnessSupported;
     private int _cachedBrightnessPercent = 70;
     private bool _cachedIsCharging;
     private double? _cachedBatteryWatts;
     private double _cachedRemainingWh;
+    private double _cachedFullWh;
+    private double _cachedVoltageVolts;
+
+    public HardwareServiceClient HardwareClient => _hwClient;
 
     public SystemControlService()
     {
@@ -77,7 +114,7 @@ public sealed class SystemControlService
         SampleCpuUsagePercent();
     }
 
-    public SystemControlState GetState()
+    public SystemControlState GetState(bool includeHardwareRefresh = false)
     {
         var state = new SystemControlState
         {
@@ -91,8 +128,35 @@ public sealed class SystemControlService
         PopulateWmiCachedInfo(state);
         PopulateAudioInfo(state);
         state.CpuBoostMode = ReadCpuBoostMode(state.IsAcOnline);
+        state.CpuMaxFreqMhz = ReadCpuMaxFreqMhz(state.IsAcOnline);
+
+        var amd = _telemetry.Sample();
+        _telemetry.RecordHistoryPoint(amd, state.CpuUsagePercent);
+        state.AdlAvailable = amd.Available;
+        state.ApuPowerWatts = amd.ApuPowerWatts;
+        state.GpuUsagePercent = amd.GpuUsagePercent;
+        state.GfxClockMhz = amd.GfxClockMhz;
+        state.MemClockMhz = amd.MemClockMhz;
+        state.CpuClockMhz = amd.CpuClockMhz;
+        state.GpuTempC = amd.GpuTempC;
+        state.CpuTempC = amd.CpuTempC;
+        state.VramUsedMb = amd.VramUsedMb;
+
+        var (apuHist, gpuHist, cpuHist, tempHist) = _telemetry.GetHistoryArrays();
+        state.ApuWattsHistory = apuHist;
+        state.GpuUsageHistory = gpuHist;
+        state.CpuUsageHistory = cpuHist;
+        state.TempHistory = tempHist;
+
+        PopulatePowerFlowEstimates(state);
+        state.HardwareService = _hwClient.GetStatus(includeHardwareRefresh);
 
         return state;
+    }
+
+    public void Dispose()
+    {
+        _telemetry.Dispose();
     }
 
     public SystemControlState SetRefreshRate(int targetHz)
@@ -256,6 +320,51 @@ public sealed class SystemControlService
         }
 
         return GetState();
+    }
+
+    public SystemControlState SetCpuMaxFreqMhz(int mhz)
+    {
+        uint clamped = mhz <= 0 ? 0u : (uint)Math.Clamp(mhz, 1600, 5500);
+        Guid scheme = GetActivePowerSchemeGuid();
+        var sub = SubProcessor;
+        var p0 = ProcFreqMax;
+        var p1 = ProcFreqMax1;
+
+        uint rcAc0 = PowerWriteACValueIndex(0, ref scheme, ref sub, ref p0, clamped);
+        uint rcDc0 = PowerWriteDCValueIndex(0, ref scheme, ref sub, ref p0, clamped);
+        PowerWriteACValueIndex(0, ref scheme, ref sub, ref p1, clamped);
+        PowerWriteDCValueIndex(0, ref scheme, ref sub, ref p1, clamped);
+
+        if (rcAc0 != 0 && rcDc0 != 0)
+        {
+            throw new InvalidOperationException($"写入 CPU 最高频率限制失败（AC={rcAc0}, DC={rcDc0}）。");
+        }
+
+        uint rcApply = PowerSetActiveScheme(0, ref scheme);
+        if (rcApply != 0)
+        {
+            throw new InvalidOperationException($"应用 CPU 最高频率设置失败（错误码 {rcApply}）。");
+        }
+
+        return GetState();
+    }
+
+    private static int ReadCpuMaxFreqMhz(bool isAcOnline)
+    {
+        try
+        {
+            Guid scheme = GetActivePowerSchemeGuid();
+            var sub = SubProcessor;
+            var p0 = ProcFreqMax;
+            uint rc = isAcOnline
+                ? PowerReadACValueIndex(0, ref scheme, ref sub, ref p0, out uint val)
+                : PowerReadDCValueIndex(0, ref scheme, ref sub, ref p0, out val);
+            return rc == 0 ? (int)val : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private static string ReadCpuNameFromRegistry()
@@ -459,6 +568,37 @@ public sealed class SystemControlService
             }
             state.BatteryPowerWatts = _cachedBatteryWatts;
             state.BatteryRemainingWh = _cachedRemainingWh;
+            state.BatteryFullWh = _cachedFullWh;
+            state.VoltageVolts = _cachedVoltageVolts;
+        }
+    }
+
+    private static void PopulatePowerFlowEstimates(SystemControlState state)
+    {
+        if (!state.HasBattery)
+        {
+            state.IsBypassPower = state.IsAcOnline;
+            return;
+        }
+
+        double batW = state.BatteryPowerWatts ?? 0;
+        if (!state.IsAcOnline && !state.IsCharging && batW > 1.2 && state.BatteryRemainingWh > 0.5)
+        {
+            state.BatteryEtaMinutes = Math.Clamp((int)Math.Round(state.BatteryRemainingWh / batW * 60.0), 1, 999);
+        }
+
+        if (state.IsAcOnline)
+        {
+            double chargeW = state.IsCharging ? batW : 0;
+            bool bypass = state.BatteryPercent >= 94 && chargeW < 0.5;
+            state.IsBypassPower = bypass;
+            double screenAndBoardLoss = 3.5 + (2.5 * Math.Clamp(state.BrightnessPercent, 5, 100) / 100.0);
+            state.EstimatedChargerWatts = Math.Round(Math.Max(0, state.ApuPowerWatts) + chargeW + screenAndBoardLoss, 1);
+
+            if (state.IsCharging && chargeW > 1.5 && state.BatteryFullWh > state.BatteryRemainingWh)
+            {
+                state.ChargeEtaMinutes = Math.Clamp((int)Math.Round((state.BatteryFullWh - state.BatteryRemainingWh) / chargeW * 60.0), 1, 600);
+            }
         }
     }
 
@@ -490,12 +630,13 @@ public sealed class SystemControlService
         _cachedIsCharging = false;
         _cachedBatteryWatts = null;
         _cachedRemainingWh = 0;
+        _cachedVoltageVolts = 0;
 
         try
         {
             using var searcher = new ManagementObjectSearcher(
                 @"root\wmi",
-                "SELECT Discharging, Charging, DischargeRate, ChargeRate, RemainingCapacity FROM BatteryStatus");
+                "SELECT Discharging, Charging, DischargeRate, ChargeRate, RemainingCapacity, Voltage FROM BatteryStatus");
             using var results = searcher.Get();
             double totalWh = 0;
             foreach (ManagementBaseObject obj in results)
@@ -507,8 +648,13 @@ public sealed class SystemControlService
                     uint chargeMw = obj["ChargeRate"] is null ? 0u : Convert.ToUInt32(obj["ChargeRate"]);
                     uint dischargeMw = obj["DischargeRate"] is null ? 0u : Convert.ToUInt32(obj["DischargeRate"]);
                     uint capMwh = obj["RemainingCapacity"] is null ? 0u : Convert.ToUInt32(obj["RemainingCapacity"]);
+                    uint voltageMv = obj["Voltage"] is null ? 0u : Convert.ToUInt32(obj["Voltage"]);
 
                     totalWh += capMwh / 1000.0;
+                    if (voltageMv is > 3000 and < 35000)
+                    {
+                        _cachedVoltageVolts = Math.Round(voltageMv / 1000.0, 2);
+                    }
                     if (discharging && dischargeMw is > 0 and < 250000)
                     {
                         _cachedIsCharging = false;
@@ -530,6 +676,35 @@ public sealed class SystemControlService
         catch
         {
             // Ignore WMI battery telemetry errors on systems without Smart Battery WMI
+        }
+
+        if ((DateTime.UtcNow - _fullCapCachedAtUtc) > TimeSpan.FromSeconds(30) || _cachedFullWh <= 0)
+        {
+            try
+            {
+                using var fullSearcher = new ManagementObjectSearcher(
+                    @"root\wmi",
+                    "SELECT FullChargedCapacity FROM BatteryFullChargedCapacity");
+                using var fullResults = fullSearcher.Get();
+                double fullWh = 0;
+                foreach (ManagementBaseObject obj in fullResults)
+                {
+                    using (obj)
+                    {
+                        uint mwh = obj["FullChargedCapacity"] is null ? 0u : Convert.ToUInt32(obj["FullChargedCapacity"]);
+                        fullWh += mwh / 1000.0;
+                    }
+                }
+                if (fullWh > 0)
+                {
+                    _cachedFullWh = Math.Round(fullWh, 1);
+                }
+                _fullCapCachedAtUtc = DateTime.UtcNow;
+            }
+            catch
+            {
+                // Ignore full capacity WMI fallback
+            }
         }
 
         _wmiCachedAtUtc = DateTime.UtcNow;

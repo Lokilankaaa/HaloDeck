@@ -26,6 +26,7 @@ public partial class App : System.Windows.Application
     private WebUiBridge? _bridge;
     private MainWindow? _mainWindow;
     private QamWindow? _qamWindow;
+    private OverlayHudWindow? _overlayHudWindow;
     private HwndSource? _hiddenHotkeyHost;
     private int _pollCounter;
 
@@ -33,15 +34,16 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        bool verifyStartup = e.Args.Any(a => string.Equals(a, "--verify-startup", StringComparison.OrdinalIgnoreCase));
-        bool verifyComponents = e.Args.Any(a => string.Equals(a, "--verify-components", StringComparison.OrdinalIgnoreCase));
-        int verifyGuiIdx = Array.FindIndex(e.Args, a => string.Equals(a, "--verify-gui", StringComparison.OrdinalIgnoreCase));
+        var cliArgs = e.Args.Length > 0 ? e.Args : Environment.GetCommandLineArgs().Skip(1).ToArray();
+        bool verifyStartup = cliArgs.Any(a => string.Equals(a, "--verify-startup", StringComparison.OrdinalIgnoreCase));
+        bool verifyComponents = cliArgs.Any(a => string.Equals(a, "--verify-components", StringComparison.OrdinalIgnoreCase));
+        int verifyGuiIdx = Array.FindIndex(cliArgs, a => string.Equals(a, "--verify-gui", StringComparison.OrdinalIgnoreCase));
         bool verifyGui = verifyGuiIdx >= 0;
-        string verifyGuiOutDir = (verifyGui && verifyGuiIdx + 1 < e.Args.Length && !e.Args[verifyGuiIdx + 1].StartsWith("--", StringComparison.Ordinal))
-            ? e.Args[verifyGuiIdx + 1]
+        string verifyGuiOutDir = (verifyGui && verifyGuiIdx + 1 < cliArgs.Length && !cliArgs[verifyGuiIdx + 1].StartsWith("--", StringComparison.Ordinal))
+            ? cliArgs[verifyGuiIdx + 1]
             : Path.Combine(Path.GetTempPath(), "HaloDeckGuiVerify");
-        bool startMinimized = e.Args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
-        bool startQam = e.Args.Any(a => string.Equals(a, "--qam", StringComparison.OrdinalIgnoreCase));
+        bool startMinimized = cliArgs.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
+        bool startQam = cliArgs.Any(a => string.Equals(a, "--qam", StringComparison.OrdinalIgnoreCase));
 
         if (!verifyStartup && !verifyComponents && !verifyGui)
         {
@@ -93,6 +95,7 @@ public partial class App : System.Windows.Application
         _mainWindow = new MainWindow(_bridge);
         MainWindow = _mainWindow;
         _qamWindow = new QamWindow(_bridge);
+        _overlayHudWindow = new OverlayHudWindow();
 
         // Hidden HWND host ensures global RegisterHotKey works even while both windows are hidden in tray
         var hostParams = new HwndSourceParameters("HaloDeckHotkeyHost")
@@ -116,11 +119,12 @@ public partial class App : System.Windows.Application
 
         if (verifyGui)
         {
-            int exitCode = await RunGuiSelfVerifyAsync(verifyGuiOutDir, _mainWindow, _qamWindow, _bridge);
+            int exitCode = await RunGuiSelfVerifyAsync(verifyGuiOutDir, _mainWindow, _qamWindow, _overlayHudWindow, _bridge);
             ShutdownApplicationWithCode(exitCode);
             return;
         }
 
+        ApplyOverlayHudFromSettings();
         _inputHub.StartPolling();
 
         _pollTimer = new DispatcherTimer
@@ -132,7 +136,14 @@ public partial class App : System.Windows.Application
             _pollCounter++;
             bool runAutoInject = _pollCounter % 15 == 0;
             _bridge.PollRunningAndAutoInjectTick(runAutoInject);
-            if (_pollCounter % 3 == 0 && ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true)))
+
+            var latestSys = _bridge.LatestSystemState;
+            if (_bridge.Settings.OverlayLevel > 0 && _overlayHudWindow is not null)
+            {
+                _overlayHudWindow.UpdateMetrics(latestSys, _bridge.RunningGame, _bridge.Settings.CurrentTdpWatts);
+            }
+
+            if (_pollCounter % 2 == 0 && ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true)))
             {
                 _bridge.PushSystemTelemetryTick();
             }
@@ -231,6 +242,21 @@ public partial class App : System.Windows.Application
             });
         };
 
+        _inputHub.CycleOsdRequested += () =>
+        {
+            Dispatcher.InvokeAsync(() => _bridge.CycleOverlayHud());
+        };
+
+        _inputHub.ToggleMouseModeRequested += () =>
+        {
+            Dispatcher.InvokeAsync(() => _bridge.ToggleGamepadMouseMode());
+        };
+
+        _bridge.OverlayHudUpdated += () =>
+        {
+            Dispatcher.Invoke(ApplyOverlayHudFromSettings);
+        };
+
         _bridge.RequestHideQam += () =>
         {
             _qamWindow.HideAndRestoreGameFocus();
@@ -302,6 +328,17 @@ public partial class App : System.Windows.Application
         _inputHub.ActiveUiTarget = null;
     }
 
+    private void ApplyOverlayHudFromSettings()
+    {
+        if (_bridge is null || _overlayHudWindow is null) return;
+        var s = _bridge.Settings;
+        _overlayHudWindow.ApplySettings(s.OverlayLevel, s.OverlayPosition, s.OverlayOpacity);
+        if (s.OverlayLevel > 0)
+        {
+            _overlayHudWindow.UpdateMetrics(_bridge.LatestSystemState, _bridge.RunningGame, s.CurrentTdpWatts);
+        }
+    }
+
     private void SetupTrayIcon()
     {
         var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -311,6 +348,9 @@ public partial class App : System.Windows.Application
             if (_qamWindow is not null) await _qamWindow.ToggleOverlayAsync();
             UpdateUiActiveFlag();
         }));
+        menu.Items.Add("切换性能悬浮窗 (OSD)", null, (_, _) => Dispatcher.Invoke(() => _bridge?.CycleOverlayHud()));
+        menu.Items.Add("切换手柄桌面鼠标模式", null, (_, _) => Dispatcher.Invoke(() => _bridge?.ToggleGamepadMouseMode()));
+        menu.Items.Add("解冻恢复游戏冰箱进程", null, (_, _) => Dispatcher.Invoke(() => _bridge?.ResumeAllFrozenGames()));
         menu.Items.Add("向当前游戏发送 Insert 键", null, (_, _) =>
         {
             if (_bridge is not null) _ = _bridge.SendInsertKeyToGameAsync();
@@ -339,6 +379,8 @@ public partial class App : System.Windows.Application
         _pollTimer?.Stop();
         _inputHub?.Dispose();
         _hiddenHotkeyHost?.Dispose();
+        _overlayHudWindow?.Close();
+        _bridge?.Dispose();
 
         if (_trayIcon is not null)
         {
@@ -386,6 +428,7 @@ public partial class App : System.Windows.Application
         string outputDir,
         MainWindow mainWindow,
         QamWindow qamWindow,
+        OverlayHudWindow overlayHudWindow,
         WebUiBridge bridge)
     {
         Directory.CreateDirectory(outputDir);
@@ -407,9 +450,9 @@ public partial class App : System.Windows.Application
             var mainCore = mainWindow.ConsoleWebView.CoreWebView2
                            ?? throw new InvalidOperationException("Main CoreWebView2 未初始化");
 
-            bool runningReady = await WaitUntilAsync(
+            bool handheldReady = await WaitUntilAsync(
                 mainCore,
-                "document.readyState === 'complete' && document.querySelectorAll('.preset-card').length === 4");
+                "document.readyState === 'complete' && Boolean(document.querySelector('.tab-btn[data-nav=\"handheld\"].active')) && document.querySelectorAll('[data-tdp-preset]').length === 3 && document.querySelectorAll('[data-fan-mode]').length === 5");
             await Task.Delay(350);
 
             var workArea = SystemParameters.WorkArea;
@@ -422,6 +465,75 @@ public partial class App : System.Windows.Application
                 workAreaWidth = Math.Round(workArea.Width, 1),
                 workAreaHeight = Math.Round(workArea.Height, 1)
             });
+
+            var homeInfoJson = await mainCore.ExecuteScriptAsync("""
+                (() => ({
+                  tdpPresets: document.querySelectorAll('[data-tdp-preset]').length,
+                  fanModes: document.querySelectorAll('[data-fan-mode]').length,
+                  toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
+                  selectCount: document.querySelectorAll('select').length,
+                  legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
+                  noHorizOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2,
+                  focusCount: document.querySelectorAll('.gp-focused').length
+                }))()
+                """);
+            using var homeDoc = JsonDocument.Parse(homeInfoJson);
+            var homeRoot = homeDoc.RootElement;
+            bool homeOk = handheldReady &&
+                          homeRoot.GetProperty("tdpPresets").GetInt32() == 3 &&
+                          homeRoot.GetProperty("fanModes").GetInt32() == 5 &&
+                          homeRoot.GetProperty("toolboxTiles").GetInt32() >= 8 &&
+                          homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
+                          homeRoot.GetProperty("legendFits").GetBoolean() &&
+                          homeRoot.GetProperty("noHorizOverflow").GetBoolean();
+            Record("handheldHomeDefault", homeOk, homeRoot.Clone());
+            await CapturePngAsync(mainCore, outputDir, "v3_01_console_handheld.png");
+
+            // Tab 2: Monitor & Click-Through Overlay HUD Verification
+            await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"monitor\"]').click()");
+            bool monitorDomOk = await WaitUntilAsync(
+                mainCore,
+                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('svg.sparkline-svg').length === 2");
+            await Task.Delay(250);
+
+            int prevLevel = bridge.Settings.OverlayLevel;
+            string prevPos = bridge.Settings.OverlayPosition;
+            double prevOpacity = bridge.Settings.OverlayOpacity;
+            overlayHudWindow.ApplySettings(3, prevPos, prevOpacity);
+            overlayHudWindow.UpdateMetrics(bridge.LatestSystemState, bridge.RunningGame, bridge.Settings.CurrentTdpWatts);
+            await Task.Delay(120);
+            var hudHwnd = new WindowInteropHelper(overlayHudWindow).Handle;
+            int hudExStyle = hudHwnd != 0 ? Win32Interop.GetWindowLong(hudHwnd, Win32Interop.GWL_EXSTYLE) : 0;
+            int requiredHudStyles = Win32Interop.WS_EX_TRANSPARENT | Win32Interop.WS_EX_NOACTIVATE;
+            bool hudClickThroughOk = overlayHudWindow.IsVisible && (hudExStyle & requiredHudStyles) == requiredHudStyles;
+            overlayHudWindow.ApplySettings(prevLevel, prevPos, prevOpacity);
+
+            Record("monitorAndOverlayClickThrough", monitorDomOk && hudClickThroughOk, new
+            {
+                monitorDomOk,
+                hudClickThroughOk,
+                hudExStyle = $"0x{hudExStyle:X}"
+            });
+            await CapturePngAsync(mainCore, outputDir, "v3_02_console_monitor.png");
+
+            // Tab 3: Controls, GPD V2 & Spatial Focus
+            await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"controls\"]').click()");
+            bool controlsReady = await WaitUntilAsync(
+                mainCore,
+                "document.querySelector('.tab-btn[data-nav=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('btnReadGpd') && document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
+            await Task.Delay(200);
+            await mainCore.ExecuteScriptAsync("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
+            await Task.Delay(120);
+            var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
+            Record("controlsAndSpatialFocus", controlsReady && focusCountStr == "1", new { controlsReady, focusCount = focusCountStr });
+            await CapturePngAsync(mainCore, outputDir, "v3_03_console_controls.png");
+
+            // Tab 4: OptiScaler Suite (Tune, Library, Components)
+            await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"opti\"]').click()");
+            bool optiTuneReady = await WaitUntilAsync(
+                mainCore,
+                "document.querySelector('.sub-tab-btn[data-opti-sub=\"tune\"]')?.classList.contains('active') && document.querySelectorAll('.preset-card').length === 4");
+            await Task.Delay(250);
 
             var tuneInfoJson = await mainCore.ExecuteScriptAsync("""
                 (() => ({
@@ -442,7 +554,7 @@ public partial class App : System.Windows.Application
                 ? activeSnap.Injection.AppliedConfig
                 : PresetCatalog.GetById("strix-halo-quality").Config;
 
-            bool tuneOk = runningReady &&
+            bool tuneOk = optiTuneReady &&
                           tuneRoot.GetProperty("presetCount").GetInt32() == 4 &&
                           tuneRoot.GetProperty("srPills").GetInt32() == 4 &&
                           tuneRoot.GetProperty("fgPills").GetInt32() == 3 &&
@@ -451,23 +563,19 @@ public partial class App : System.Windows.Application
                           tuneRoot.GetProperty("fgActive").GetString() == expectedCfg.FgType &&
                           tuneRoot.GetProperty("legendFits").GetBoolean();
             bool hasInspectBtn = tuneRoot.GetProperty("hasInspectBtn").GetBoolean();
-            Record("tuneTabAndControlsFit", tuneOk, new
+            Record("optiTuneTab", tuneOk, new
             {
                 presetCount = tuneRoot.GetProperty("presetCount").GetInt32(),
                 srPills = tuneRoot.GetProperty("srPills").GetInt32(),
                 fgPills = tuneRoot.GetProperty("fgPills").GetInt32(),
-                selectCount = tuneRoot.GetProperty("selectCount").GetInt32(),
                 srActive = tuneRoot.GetProperty("srActive").GetString(),
                 fgActive = tuneRoot.GetProperty("fgActive").GetString(),
                 expectedSr = expectedCfg.SrMode,
                 expectedFg = expectedCfg.FgType,
-                legendFits = tuneRoot.GetProperty("legendFits").GetBoolean(),
                 hasInspectBtn
             });
+            await CapturePngAsync(mainCore, outputDir, "v3_04_opti_tune.png");
 
-            await CapturePngAsync(mainCore, outputDir, "v2_01_console_tune.png");
-
-            // Verify preset switching + collapsible advanced disclosure + back to flagship preset
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-preset=\"xess-antishimmer\"]').click()");
             bool switchedToXess = await WaitUntilAsync(mainCore, "document.querySelector('[data-sr-mode].active')?.dataset.srMode === 'xess'");
             await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleAdvanced')?.click()");
@@ -482,7 +590,7 @@ public partial class App : System.Windows.Application
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnInspectLog').click()");
                 bool modalOpened = await WaitUntilAsync(mainCore, "!document.getElementById('modalBackdrop').classList.contains('hidden')");
                 await Task.Delay(200);
-                await CapturePngAsync(mainCore, outputDir, "v2_01b_ini_modal.png");
+                await CapturePngAsync(mainCore, outputDir, "v3_04b_opti_ini_modal.png");
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnCloseModal')?.click()");
                 bool modalClosed = await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
                 Record("diagnosticModal", modalOpened && modalClosed, new { modalOpened, modalClosed });
@@ -492,20 +600,11 @@ public partial class App : System.Windows.Application
                 Record("diagnosticModal", true, "skipped (no games discovered)");
             }
 
-            // Tab 1b: System Control Center
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"system\"]').click()");
-            bool sysReady = await WaitUntilAsync(
-                mainCore,
-                "document.querySelector('.tab-btn[data-tab=\"system\"]')?.classList.contains('active') && document.querySelectorAll('[data-refresh-hz]').length >= 1 && document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2");
-            await Task.Delay(250);
-            Record("consoleSystemTab", sysReady, new { sysReady });
-            await CapturePngAsync(mainCore, outputDir, "v2_01c_console_system.png");
-
-            // Tab 2: Library 2:3 poster shelf + Steam artwork verification
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"library\"]').click()");
+            // Opti Sub-tab: Library Posters
+            await mainCore.ExecuteScriptAsync("document.querySelector('.sub-tab-btn[data-opti-sub=\"library\"]').click()");
             bool libReady = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-tab=\"library\"]')?.classList.contains('active') && document.querySelectorAll('.poster-grid').length === 1");
+                "document.querySelector('.sub-tab-btn[data-opti-sub=\"library\"]')?.classList.contains('active') && document.querySelectorAll('.poster-grid').length === 1");
             await Task.Delay(500);
             var libStatsJson = await mainCore.ExecuteScriptAsync("""
                 (() => {
@@ -518,36 +617,25 @@ public partial class App : System.Windows.Application
             int renderedGames = libDoc.RootElement.GetProperty("cards").GetInt32();
             int loadedCovers = libDoc.RootElement.GetProperty("loadedCovers").GetInt32();
             bool coversOk = bridge.CachedGames.Count == 0 || loadedCovers > 0;
-            Record("libraryPosterGrid", libReady && renderedGames == bridge.CachedGames.Count && coversOk, new
+            Record("optiLibrarySubTab", libReady && renderedGames == bridge.CachedGames.Count && coversOk, new
             {
                 renderedGames,
                 cachedGames = bridge.CachedGames.Count,
                 loadedCovers
             });
-            await CapturePngAsync(mainCore, outputDir, "v2_02_library_posters.png");
+            await CapturePngAsync(mainCore, outputDir, "v3_05_opti_library.png");
 
-            // Tab 3: Components
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"components\"]').click()");
-            bool compReady = await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-install-comp]').length === 4 && document.querySelectorAll('[data-active-slot]').length === 2");
+            // Opti Sub-tab: Components
+            await mainCore.ExecuteScriptAsync("document.querySelector('.sub-tab-btn[data-opti-sub=\"components\"]').click()");
+            bool compReady = await WaitUntilAsync(
+                mainCore,
+                "document.querySelector('.sub-tab-btn[data-opti-sub=\"components\"]')?.classList.contains('active') && document.querySelectorAll('[data-install-comp]').length === 4 && document.querySelectorAll('[data-active-slot]').length === 2");
             await Task.Delay(250);
             var activeKernelStr = await mainCore.ExecuteScriptAsync("document.querySelector('[data-active-slot].active')?.dataset.activeSlot || ''");
-            Record("componentsTab", compReady, new { activeKernelSlot = activeKernelStr.Trim('"') });
-            await CapturePngAsync(mainCore, outputDir, "v2_03_components.png");
+            Record("optiComponentsSubTab", compReady, new { activeKernelSlot = activeKernelStr.Trim('"') });
+            await CapturePngAsync(mainCore, outputDir, "v3_06_opti_components.png");
 
-            // Tab 4: Shortcuts & Spatial Focus
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"shortcuts\"]').click()");
-            bool settingsReady = await WaitUntilAsync(
-                mainCore,
-                "Boolean(document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
-            await Task.Delay(150);
-            await mainCore.ExecuteScriptAsync("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
-            await Task.Delay(120);
-            var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
-            bool focusValid = settingsReady && focusCountStr == "1";
-            Record("shortcutsAndSpatialFocus", focusValid, new { focusCount = focusCountStr });
-            await CapturePngAsync(mainCore, outputDir, "v2_04_shortcuts.png");
-
-            // Window Fullscreen toggle
+            // Fullscreen Toggle
             mainWindow.SetFullscreenMode(true);
             await Task.Delay(250);
             bool fsMaximized = mainWindow.WindowState == WindowState.Maximized && mainWindow.WindowStyle == WindowStyle.None;
@@ -556,9 +644,9 @@ public partial class App : System.Windows.Application
             bool restoredFits = mainWindow.ActualWidth <= workArea.Width + 1 && mainWindow.ActualHeight <= workArea.Height + 1;
             Record("fullscreenToggle", fsMaximized && restoredFits, new { fsMaximized, restoredFits });
 
-            // Switch back to tune & open QAM overlay
-            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"tune\"]').click()");
-            await WaitUntilAsync(mainCore, "document.querySelectorAll('.preset-card').length === 4");
+            // Return to Handheld Home & open QAM Overlay
+            await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"handheld\"]').click()");
+            await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-tdp-preset]').length === 3");
             await mainCore.ExecuteScriptAsync("document.getElementById('btnOpenQam').click()");
 
             var qamDeadline = DateTime.UtcNow.AddSeconds(8);
@@ -568,35 +656,41 @@ public partial class App : System.Windows.Application
             }
 
             bool qamVisibleAndInit = qamWindow.IsVisible && qamWindow.WebViewInitialized;
-            bool qamDomReady = false;
+            bool qamHandheldReady = false;
             bool qamWidthOk = false;
-            bool qamSystemOk = false;
-            bool qamRailAndGamesOk = false;
+            bool qamOsdOk = false;
+            bool qamControlsOk = false;
+            bool qamOptiOk = false;
             int qamErrCount = 0;
 
             if (qamVisibleAndInit && qamWindow.QamWebView.CoreWebView2 is { } qamCore)
             {
-                qamDomReady = await WaitUntilAsync(
+                qamHandheldReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1");
                 await Task.Delay(250);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
-                await CapturePngAsync(qamCore, outputDir, "v2_05_qam_tune.png");
+                await CapturePngAsync(qamCore, outputDir, "v3_07_qam_handheld.png");
 
-                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"system\"]').click()");
-                qamSystemOk = await WaitUntilAsync(
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]').click()");
+                qamOsdOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"system\"]')?.classList.contains('active') && document.querySelectorAll('[data-refresh-hz]').length >= 1");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg'))");
                 await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v2_05b_qam_system.png");
-                Record("qamSystemTab", qamSystemOk, new { qamSystemOk });
+                await CapturePngAsync(qamCore, outputDir, "v3_08_qam_osd.png");
 
-                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"games\"]').click()");
-                qamRailAndGamesOk = await WaitUntilAsync(
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
+                qamControlsOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"games\"]')?.classList.contains('active') && document.querySelectorAll('.qam-game-row').length >= 1");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode'))");
+                await Task.Delay(150);
+
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]').click()");
+                qamOptiOk = await WaitUntilAsync(
+                    qamCore,
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('[data-preset]').length >= 3");
                 await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v2_06_qam_games.png");
+                await CapturePngAsync(qamCore, outputDir, "v3_09_qam_opti.png");
 
                 var qamErrStr = await qamCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
                 int.TryParse(qamErrStr, out qamErrCount);
@@ -610,13 +704,14 @@ public partial class App : System.Windows.Application
                 await Task.Delay(80);
             }
             bool qamClosed = !qamWindow.IsVisible;
-            Record("qamOverlayRailAndClose", qamVisibleAndInit && qamDomReady && qamWidthOk && qamSystemOk && qamRailAndGamesOk && qamClosed, new
+            Record("qamHandheldFirstAndClose", qamVisibleAndInit && qamHandheldReady && qamWidthOk && qamOsdOk && qamControlsOk && qamOptiOk && qamClosed, new
             {
                 qamVisibleAndInit,
-                qamDomReady,
+                qamHandheldReady,
                 qamWidthOk,
-                qamSystemOk,
-                qamRailAndGamesOk,
+                qamOsdOk,
+                qamControlsOk,
+                qamOptiOk,
                 qamActualWidth = Math.Round(qamWindow.ActualWidth, 1),
                 qamClosed
             });
