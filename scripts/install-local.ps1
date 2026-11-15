@@ -58,15 +58,59 @@ if (Test-Path $LegacyInstallDir) {
 }
 
 $dotnet = Resolve-DotnetPath
-Write-Host "[2/5] 发布自包含 Win-x64 应用至 $InstallDir ..."
-if (Test-Path $InstallDir) {
-    Remove-Item -Path $InstallDir -Recurse -Force
-}
+$StageDir = Join-Path $env:TEMP ("HaloDeck_stage_" + [Guid]::NewGuid().ToString("N"))
+Write-Host "[2/5] 发布自包含 Win-x64 应用并同步至 $InstallDir ..."
+New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-& $dotnet publish $AppCsproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $InstallDir
+& $dotnet publish $AppCsproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $StageDir
 if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish 失败（退出码 $LASTEXITCODE）。"
+    Remove-Item -Path $StageDir -Recurse -Force -ErrorAction SilentlyContinue
+    throw "dotnet publish 失败（退出码 $LASTEXITCODE）"
+}
+
+# Cleanup prior locked backups if service was restarted
+Get-ChildItem -Path $InstallDir -Filter ".old_locked_*" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$script:lockDir = $null
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+function Move-LockedOut {
+    param([string]$TargetPath, [string]$RelPath)
+    if (-not (Test-Path $TargetPath)) { return }
+    try {
+        Remove-Item -Path $TargetPath -Force -ErrorAction Stop
+    } catch {
+        if ($null -eq $script:lockDir) {
+            $script:lockDir = Join-Path $InstallDir ".old_locked_$stamp"
+            New-Item -ItemType Directory -Force -Path $script:lockDir | Out-Null
+        }
+        $destBackup = Join-Path $script:lockDir ($RelPath -replace '[\\/:]', '_')
+        Move-Item -Path $TargetPath -Destination $destBackup -Force
+    }
+}
+
+Get-ChildItem -Path $StageDir -Recurse -File | ForEach-Object {
+    $srcPath = $_.FullName
+    $rel = $srcPath.Substring($StageDir.Length).TrimStart('\', '/')
+    $dest = Join-Path $InstallDir $rel
+    $destParent = Split-Path -Parent $dest
+    if (-not (Test-Path $destParent)) {
+        New-Item -ItemType Directory -Force -Path $destParent | Out-Null
+    }
+    try {
+        Copy-Item -Path $srcPath -Destination $dest -Force -ErrorAction Stop
+    } catch {
+        Move-LockedOut -TargetPath $dest -RelPath $rel
+        Copy-Item -Path $srcPath -Destination $dest -Force
+    }
+}
+
+Remove-Item -Path $StageDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($null -ne $script:lockDir) {
+    Write-Warning "检测到旧版 HaloDeckHardwareSvc 正在运行，已将占用文件移至 $script:lockDir；可在应用顶部点击「升级重启硬件服务」切换至新版服务。"
 }
 if (-not (Test-Path $AppExe)) {
     throw "发布完成但未找到目标可执行文件: $AppExe"
@@ -110,7 +154,7 @@ Write-Host "[4/5] 注册当前用户已安装应用信息..."
 $uninstallRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HaloDeck"
 New-Item -Path $uninstallRegPath -Force | Out-Null
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayName" -Value "HaloDeck"
-Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.0"
+Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.1"
 Set-ItemProperty -Path $uninstallRegPath -Name "Publisher" -Value "HaloDeck"
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayIcon" -Value $AppExe
 Set-ItemProperty -Path $uninstallRegPath -Name "InstallLocation" -Value $InstallDir

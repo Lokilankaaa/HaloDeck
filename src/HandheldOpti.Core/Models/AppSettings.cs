@@ -32,19 +32,25 @@ public sealed class AppSettings
     public bool LaunchAtWindowsStartup { get; set; } = false;
     public int InsertHoldDurationMs { get; set; } = 65;
 
-    // TDP & Power Linkage (v0.3.0 Handheld Control Center)
+    // TDP & Power Linkage (v0.3.1 Open Power & Direct Fan Curves)
     public int TdpPresetSilent { get; set; } = 18;
     public int TdpPresetBalanced { get; set; } = 40;
     public int TdpPresetTurbo { get; set; } = 80;
+    public List<int> CustomTdpPresets { get; set; } = [15, 25, 35, 45, 60, 80, 100];
     public int CurrentTdpWatts { get; set; } = 40;
+    public bool UnlockThreeStagePower { get; set; } = false;
+    public int SlowPptWatts { get; set; } = 45;
+    public int FastPptWatts { get; set; } = 50;
     public bool PowerLinkageEnabled { get; set; } = false;
     public int BatteryTdpWatts { get; set; } = 25;
     public int AcTdpWatts { get; set; } = 55;
 
     // CPU Frequency Cap & Dual-Fan Control
     public int CpuMaxFreqMhz { get; set; } = 0; // 0 = unlimited
-    public string FanMode { get; set; } = "auto"; // "auto" | "silent" | "balanced" | "turbo" | "manual"
+    public string FanMode { get; set; } = "auto"; // "auto" | "manual" | "curve"
     public int ManualFanPercent { get; set; } = 55;
+    public string ActiveFanCurveId { get; set; } = "linear_60";
+    public List<FanCurveProfile> FanCurves { get; set; } = FanCurveEvaluator.CreateDefaultCurves();
 
     // Native Click-Through Overlay HUD
     public int OverlayLevel { get; set; } = 0; // 0=off, 1..4

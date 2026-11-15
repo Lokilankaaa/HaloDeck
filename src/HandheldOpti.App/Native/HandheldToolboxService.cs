@@ -57,8 +57,7 @@ public sealed class HandheldToolboxService : IDisposable
                 return "已打开多任务视图 (Win + Tab)";
 
             case "osk":
-                LaunchTouchKeyboard();
-                return "已呼出触摸屏幕键盘";
+                return LaunchTouchKeyboard();
 
             case "screenshot":
                 Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "ms-screenclip:", UseShellExecute = true });
@@ -247,18 +246,99 @@ public sealed class HandheldToolboxService : IDisposable
         string.Equals(name, "svchost", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(name, "HaloDeck", StringComparison.OrdinalIgnoreCase);
 
-    private static void LaunchTouchKeyboard()
+    private static readonly Guid ClsidUiHostNoLaunch = new("4CE576FA-83DC-4F88-951C-9D0782B4E376");
+
+    [ComImport]
+    [Guid("37C994E7-432B-4834-A2F7-DCE1F13B834B")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITipInvocation
     {
-        string tabTip = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
-            @"microsoft shared\ink\TabTip.exe");
-        if (File.Exists(tabTip))
+        [PreserveSig]
+        int Toggle(nint hwnd);
+    }
+
+    public static string LaunchTouchKeyboard()
+    {
+        EnsureTabTipProcessStarted();
+
+        if (TryInvokeTabTipComToggle())
         {
-            Process.Start(new ProcessStartInfo { FileName = tabTip, UseShellExecute = true });
-            return;
+            return "已通过 Windows COM (ITipInvocation) 切换触摸屏幕键盘";
         }
 
-        Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
+        try
+        {
+            Win32Interop.SendWinCtrlChord(0x4F); // Win + Ctrl + O
+            return "已触发 Win + Ctrl + O 辅助屏幕键盘";
+        }
+        catch
+        {
+            Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
+            return "已启动传统屏幕键盘 (osk.exe)";
+        }
+    }
+
+    private static void EnsureTabTipProcessStarted()
+    {
+        try
+        {
+            if (Process.GetProcessesByName("TabTip").Length > 0)
+            {
+                return;
+            }
+
+            string tabTip = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
+                @"microsoft shared\ink\TabTip.exe");
+            if (File.Exists(tabTip))
+            {
+                Process.Start(new ProcessStartInfo { FileName = tabTip, UseShellExecute = true });
+                Thread.Sleep(250);
+            }
+        }
+        catch
+        {
+            // Continue to COM / fallback
+        }
+    }
+
+    private static bool TryInvokeTabTipComToggle()
+    {
+        bool ok = false;
+        var done = new ManualResetEventSlim(false);
+        var thread = new Thread(() =>
+        {
+            object? host = null;
+            try
+            {
+                var comType = Type.GetTypeFromCLSID(ClsidUiHostNoLaunch, throwOnError: false);
+                if (comType is null) return;
+
+                host = Activator.CreateInstance(comType);
+                if (host is ITipInvocation tip)
+                {
+                    int hr = tip.Toggle(Win32Interop.GetDesktopWindow());
+                    ok = hr >= 0;
+                }
+            }
+            catch
+            {
+                ok = false;
+            }
+            finally
+            {
+                if (host is not null && Marshal.IsComObject(host))
+                {
+                    try { Marshal.FinalReleaseComObject(host); } catch { }
+                }
+                done.Set();
+            }
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        done.Wait(1500);
+        return ok;
     }
 
     public void Dispose()

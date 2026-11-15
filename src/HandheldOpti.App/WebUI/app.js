@@ -51,6 +51,8 @@
     tab: "handheld",
     optiSubTab: "tune",
     qamTab: "handheld",
+    qamOptiSubView: "tune",
+    libraryLayout: "posters",
     snapshot: null,
     activeGameId: null,
     selectedPresetId: "strix-halo-quality",
@@ -159,14 +161,149 @@
     return h > 0 ? `约 ${h}h ${m}m` : `约 ${m} 分钟`;
   }
 
+  function normalizeFanModeUi(mode) {
+    const m = String(mode || "auto").toLowerCase();
+    if (m === "manual") return "manual";
+    if (m === "curve" || m === "silent" || m === "balanced" || m === "turbo") return "curve";
+    return "auto";
+  }
+
   function formatFanModeLabel(mode) {
-    switch (mode) {
-      case "silent": return "静音曲线";
-      case "balanced": return "均衡曲线";
-      case "turbo": return "狂暴散热";
-      case "manual": return "手动定速";
+    switch (normalizeFanModeUi(mode)) {
+      case "manual": return "直接百分比";
+      case "curve": return "温度曲线";
       default: return "EC 自动";
     }
+  }
+
+  function getDefaultFanCurves() {
+    return [
+      {
+        id: "low_rpm",
+        name: "低噪温控 (30–80%)",
+        points: [
+          { tempC: 40, fanPercent: 30 },
+          { tempC: 55, fanPercent: 38 },
+          { tempC: 68, fanPercent: 52 },
+          { tempC: 76, fanPercent: 68 },
+          { tempC: 82, fanPercent: 85 }
+        ]
+      },
+      {
+        id: "linear_60",
+        name: "标准线性 (35–92%)",
+        points: [
+          { tempC: 40, fanPercent: 35 },
+          { tempC: 55, fanPercent: 48 },
+          { tempC: 65, fanPercent: 62 },
+          { tempC: 75, fanPercent: 78 },
+          { tempC: 82, fanPercent: 92 }
+        ]
+      },
+      {
+        id: "max_cool",
+        name: "低温优先 (45–100%)",
+        points: [
+          { tempC: 35, fanPercent: 45 },
+          { tempC: 50, fanPercent: 60 },
+          { tempC: 62, fanPercent: 78 },
+          { tempC: 72, fanPercent: 92 },
+          { tempC: 80, fanPercent: 100 }
+        ]
+      }
+    ];
+  }
+
+  function getActiveFanCurve(settings) {
+    const curves = (settings?.fanCurves && settings.fanCurves.length) ? settings.fanCurves : getDefaultFanCurves();
+    const id = settings?.activeFanCurveId;
+    return curves.find((c) => c.id === id) || curves[0];
+  }
+
+  function evaluateFanCurvePct(tempC, points) {
+    const pts = (points && points.length ? [...points] : getDefaultFanCurves()[1].points)
+      .slice()
+      .sort((a, b) => a.tempC - b.tempC);
+    const t = Math.max(0, Math.min(115, Number(tempC) || 48));
+    let pct;
+    if (t <= pts[0].tempC) pct = pts[0].fanPercent;
+    else if (t >= pts[pts.length - 1].tempC) pct = pts[pts.length - 1].fanPercent;
+    else {
+      pct = pts[pts.length - 1].fanPercent;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        if (t >= p0.tempC && t <= p1.tempC) {
+          const ratio = p1.tempC === p0.tempC ? 1 : (t - p0.tempC) / (p1.tempC - p0.tempC);
+          pct = Math.round(p0.fanPercent + (p1.fanPercent - p0.fanPercent) * ratio);
+          break;
+        }
+      }
+    }
+    pct = Math.max(20, Math.min(100, pct));
+    if (t >= 86) pct = 100;
+    else if (t >= 82 && pct < 80) pct = 80;
+    return pct;
+  }
+
+  function renderFanCurveSvg(curve, curTempC, evalPct) {
+    const W = 360;
+    const H = 148;
+    const padL = 32;
+    const padR = 14;
+    const padT = 14;
+    const padB = 22;
+    const iw = W - padL - padR;
+    const ih = H - padT - padB;
+    const minT = 30;
+    const maxT = 95;
+    const minF = 20;
+    const maxF = 100;
+
+    const mapX = (t) => padL + ((Math.max(minT, Math.min(maxT, t)) - minT) / (maxT - minT)) * iw;
+    const mapY = (f) => padT + (1 - (Math.max(minF, Math.min(maxF, f)) - minF) / (maxF - minF)) * ih;
+
+    const pts = (curve?.points || getDefaultFanCurves()[1].points)
+      .slice()
+      .sort((a, b) => a.tempC - b.tempC);
+    const coordStr = pts.map((p) => `${mapX(p.tempC).toFixed(1)},${mapY(p.fanPercent).toFixed(1)}`).join(" ");
+    const areaStr = pts.length
+      ? `${mapX(pts[0].tempC).toFixed(1)},${(padT + ih).toFixed(1)} ${coordStr} ${mapX(pts[pts.length - 1].tempC).toFixed(1)},${(padT + ih).toFixed(1)}`
+      : "";
+
+    const safetyX = mapX(82).toFixed(1);
+    const safetyY = mapY(80).toFixed(1);
+    const liveX = mapX(curTempC || 48).toFixed(1);
+    const liveY = mapY(evalPct).toFixed(1);
+
+    return `
+      <svg class="fan-curve-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="温度与风扇占空比曲线图">
+        <defs>
+          <linearGradient id="fanCurveArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2dd4bf" stop-opacity="0.32" />
+            <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0.02" />
+          </linearGradient>
+        </defs>
+        ${[40, 60, 80, 100].map((f) => {
+          const y = mapY(f).toFixed(1);
+          return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+                  <text x="4" y="${Number(y) + 3}" fill="#7f8da3" font-size="9">${f}%</text>`;
+        }).join("")}
+        ${[40, 55, 70, 82].map((t) => {
+          const x = mapX(t).toFixed(1);
+          return `<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT + ih}" stroke="rgba(255,255,255,0.07)" stroke-width="1" />
+                  <text x="${Number(x) - 9}" y="${H - 6}" fill="${t >= 82 ? "#fbbf24" : "#7f8da3"}" font-size="9">${t}°</text>`;
+        }).join("")}
+        <rect x="${safetyX}" y="${padT}" width="${(W - padR - Number(safetyX)).toFixed(1)}" height="${(Number(safetyY) - padT).toFixed(1)}" fill="rgba(245,158,11,0.12)" stroke="rgba(245,158,11,0.4)" stroke-dasharray="3,3" stroke-width="1" />
+        ${areaStr ? `<polygon points="${areaStr}" fill="url(#fanCurveArea)" />` : ""}
+        ${coordStr ? `<polyline points="${coordStr}" fill="none" stroke="#2dd4bf" stroke-width="2.2" stroke-linejoin="round" />` : ""}
+        ${pts.map((p, idx) => `
+          <circle cx="${mapX(p.tempC).toFixed(1)}" cy="${mapY(p.fanPercent).toFixed(1)}" r="4.2" fill="#0f1722" stroke="#2dd4bf" stroke-width="2" />
+          <text x="${mapX(p.tempC).toFixed(1)}" y="${Math.max(11, mapY(p.fanPercent) - 7).toFixed(1)}" text-anchor="middle" fill="#cbd5e1" font-size="8.5">${p.fanPercent}%</text>
+        `).join("")}
+        <circle cx="${liveX}" cy="${liveY}" r="5" fill="#fbbf24" stroke="#111827" stroke-width="1.5" />
+      </svg>
+    `;
   }
 
   function buildSvgChart(seriesA, seriesB, maxA, maxB, colorA, colorB, labelA, labelB) {
@@ -266,9 +403,20 @@
     const fanRpmBadge = document.getElementById("fanRpmBadge");
     if (fanRpmBadge) {
       const hw = sys.hardwareService || {};
+      const pwmPct = hw.appliedFanPwm > 0 ? Math.round((hw.appliedFanPwm / 244) * 100) : 0;
       fanRpmBadge.textContent = hw.ecReady && hw.fanRpm > 0
-        ? `${hw.fanRpm} RPM · PWM ${hw.appliedFanPwm}%`
+        ? `${hw.fanRpm} RPM · PWM ${pwmPct}%`
         : (hw.serviceRunning ? "仅 SMU 就绪" : "EC 未授权");
+    }
+
+    const pmReadback = document.getElementById("pmReadbackLine");
+    if (pmReadback) {
+      const hw = sys.hardwareService || {};
+      if (hw.hwStapmLimitWatts != null) {
+        const sStr = hw.hwSlowLimitWatts != null ? hw.hwSlowLimitWatts.toFixed(1) : "--";
+        const fStr = hw.hwFastLimitWatts != null ? hw.hwFastLimitWatts.toFixed(1) : "--";
+        pmReadback.textContent = `PM 实读 (${hw.pmTableVersion || "SMU"})：SPL ${hw.hwStapmLimitWatts.toFixed(1)}W · sPPT ${sStr}W · fPPT ${fStr}W`;
+      }
     }
 
     const kpiApuW = document.getElementById("kpiApuW");
@@ -286,7 +434,7 @@
 
     const chartPower = document.getElementById("svgChartPowerTemp");
     if (chartPower) {
-      chartPower.innerHTML = buildSvgChart(sys.apuWattsHistory || [], sys.tempHistory || [], 85, 100, "#2dd4bf", "#fbbf24", "APU W", "Temp °C");
+      chartPower.innerHTML = buildSvgChart(sys.apuWattsHistory || [], sys.tempHistory || [], 120, 100, "#2dd4bf", "#fbbf24", "APU W", "Temp °C");
     }
     const chartLoad = document.getElementById("svgChartGpuCpu");
     if (chartLoad) {
@@ -564,13 +712,19 @@
     const frozen = snap.frozenGames || [];
     const active = getActiveGame();
 
-    const curTdp = settings.currentTdpWatts || 45;
-    const silentW = settings.tdpPresetSilent || 18;
-    const balancedW = settings.tdpPresetBalanced || 35;
-    const turboW = settings.tdpPresetTurbo || 65;
+    const curTdp = settings.currentTdpWatts || 40;
+    const customPresets = (settings.customTdpPresets && settings.customTdpPresets.length)
+      ? settings.customTdpPresets
+      : [15, 25, 35, 45, 60, 80, 100];
+    const unlockThreeStage = !!settings.unlockThreeStagePower;
+    const slowPpt = settings.slowPptWatts || curTdp;
+    const fastPpt = settings.fastPptWatts || Math.min(140, curTdp + 2);
+    const hasCurrentPreset = customPresets.includes(curTdp);
 
-    const fanMode = settings.fanMode || "auto";
-    const manualFanPct = settings.manualFanPercent || 65;
+    const fanMode = normalizeFanModeUi(settings.fanMode);
+    const manualFanPct = settings.manualFanPercent || 55;
+    const fanCurves = (settings.fanCurves && settings.fanCurves.length) ? settings.fanCurves : getDefaultFanCurves();
+    const activeCurve = getActiveFanCurve(settings);
 
     const hzOptions = (sys.supportedRefreshRates && sys.supportedRefreshRates.length)
       ? sys.supportedRefreshRates.map((h) => ({ value: String(h), label: `${h}Hz` }))
@@ -582,6 +736,8 @@
 
     const curRes = `${sys.screenWidth || 1920}x${sys.screenHeight || 1080}`;
     const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
+    const curTempEval = maxTemp > 0 ? maxTemp : 48;
+    const curveEvalPct = evaluateFanCurvePct(curTempEval, activeCurve.points);
     const apuPowerText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${curTdp}W`;
     const batMainText = !sys.hasBattery
       ? "无电池"
@@ -613,13 +769,19 @@
       refreshRateHz: sys.refreshRateHz || 120
     }) : null;
 
+    const daemonVer = hw.daemonVersion || 0;
+    const needsDaemonUpgrade = hw.serviceRunning && daemonVer < 2;
+    const gpdConflictNote = hw.gpdServiceRunning
+      ? "⚠ GPDToolService 并行运行中：HaloDeck 直接写入 SMU/EC，GPD Tools 只显示其自有内部缓存，不会自动刷新外部变更；建议暂停 GPDTools 以避免双端抢控。"
+      : "同步机制：HaloDeck 经签名 PawnIO 直写 SMU/EC（绝不读写 GPD Tools 私密 IPC），双方互不读取彼此缓存，请以 PM-Table / APU 实测功耗为准。";
+
     const serviceBanner = !hw.serviceRunning
       ? `
         <div class="hh-banner warn">
           <div class="hh-banner-text">
             <strong>普通用户态运行中（显示 · 音频 · 监控 · 游戏工具 · 超分均已可用）</strong>
             <span class="hh-banner-sub">${hw.pawnIoInstalled
-              ? "已检测到 PawnIO 驱动。启用 HaloDeck 硬件服务后即可免 UAC 弹窗直控 12W–85W SMU 功耗与 EC 双风扇。"
+              ? "已检测到 PawnIO 驱动。点击右侧启用服务后即可免 UAC 弹窗直控 8W–120W 三段功耗、PM-Table 硬件校验与 EC 风扇曲线。"
               : "未检测到 PawnIO 驱动或尚未注册 HaloDeckHardwareSvc。安装 PawnIO 后点击右侧按钮即可开启硬件直控。"}</span>
           </div>
           <div class="hh-banner-actions">
@@ -628,22 +790,31 @@
           </div>
         </div>`
       : `
-        <div class="hh-banner">
+        <div class="hh-banner ${hw.gpdServiceRunning || needsDaemonUpgrade ? "warn" : ""}">
           <div class="hh-banner-text">
-            <strong>PawnIO 底层硬件直控已就绪 · ${esc(hw.dmiBoard || "GPD WIN 5")}</strong>
-            <span class="hh-banner-sub">SMU: ${hw.smuReady ? `已就绪 (当前目标 ${hw.appliedTdpWatts}W)` : "未就绪"} · EC 风扇: ${hw.ecReady ? `${hw.fanRpm} RPM (${formatFanModeLabel(hw.fanMode)})` : "仅 SMU 模式"}</span>
+            <strong>PawnIO 底层硬件直控已就绪 (v${daemonVer || 1}) · ${esc(hw.dmiBoard || "GPD WIN 5")}</strong>
+            <span class="hh-banner-sub">${esc(gpdConflictNote)}</span>
           </div>
           <div class="hh-banner-actions">
+            ${needsDaemonUpgrade ? `<button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">升级重启硬件服务</button>` : ""}
             ${hw.gpdServiceExists ? `<button id="btnToggleGpdSvc" class="btn btn-sm" data-focusable="true">${hw.gpdServiceRunning ? "暂停 GPDTools 服务" : "恢复 GPDTools 服务"}</button>` : ""}
           </div>
         </div>`;
+
+    const hwReadbackText = hw.hwStapmLimitWatts != null
+      ? `PM 实读 (${hw.pmTableVersion || "SMU"})：SPL ${hw.hwStapmLimitWatts.toFixed(1)}W · sPPT ${hw.hwSlowLimitWatts != null ? hw.hwSlowLimitWatts.toFixed(1) : "--"}W · fPPT ${hw.hwFastLimitWatts != null ? hw.hwFastLimitWatts.toFixed(1) : "--"}W`
+      : (needsDaemonUpgrade
+        ? `当前硬件服务 v1（仅回传目标 ${hw.appliedTdpWatts}W / 12–85W），升级服务后显示 RyzenSMU PM-Table 真实硬件读回`
+        : `SMU 目标：SPL ${hw.appliedTdpWatts || curTdp}W${hw.appliedSlowWatts ? ` · sPPT ${hw.appliedSlowWatts}W · fPPT ${hw.appliedFastWatts}W` : ""}`);
+
+    const pwmPctNow = hw.appliedFanPwm > 0 ? Math.round((hw.appliedFanPwm / 244) * 100) : 0;
 
     return `
       <div class="page-scroll">
         ${serviceBanner}
 
         <div class="hh-layout">
-          <!-- Left Column: Power Flow + TDP + Dual Fan -->
+          <!-- Left Column: Power Flow + Open Power Config + Direct % & Fan Curve -->
           <div class="hh-col">
             <div class="hh-card">
               <div class="hh-card-head">
@@ -671,44 +842,73 @@
 
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">Strix Halo APU 功耗上限 (TDP)</span>
-                <span class="hh-card-badge ${hw.smuReady ? "live" : "warn"}">${hw.smuReady ? `SMU ${hw.appliedTdpWatts}W 生效` : `设定 ${curTdp}W`}</span>
+                <span class="hh-card-title">开放功耗配置 (Strix Halo APU · 8W–120W)</span>
+                <span class="hh-card-badge ${hw.smuReady ? "live" : "warn"}">${hw.hwStapmLimitWatts != null ? `PM ${hw.hwStapmLimitWatts.toFixed(0)}W` : (hw.smuReady ? `SMU ${hw.appliedTdpWatts}W` : `设定 ${curTdp}W`)}</span>
               </div>
 
-              <div class="tdp-presets-grid">
-                <button class="tdp-preset-btn ${curTdp === silentW ? "active" : ""}" data-tdp-preset="silent" data-watts="${silentW}" data-focusable="true">
-                  <span class="tdp-preset-name">静音续航</span>
-                  <span class="tdp-preset-watt">${silentW}W</span>
-                </button>
-                <button class="tdp-preset-btn ${curTdp === balancedW ? "active" : ""}" data-tdp-preset="balanced" data-watts="${balancedW}" data-focusable="true">
-                  <span class="tdp-preset-name">甜点均衡</span>
-                  <span class="tdp-preset-watt">${balancedW}W</span>
-                </button>
-                <button class="tdp-preset-btn ${curTdp === turboW ? "active" : ""}" data-tdp-preset="turbo" data-watts="${turboW}" data-focusable="true">
-                  <span class="tdp-preset-name">狂暴释放</span>
-                  <span class="tdp-preset-watt">${turboW}W</span>
-                </button>
+              <div id="pmReadbackLine" class="gpd-sync-note">${esc(hwReadbackText)}</div>
+
+              <div class="tdp-chip-grid">
+                ${customPresets.map((w) => `
+                  <button class="tdp-chip-btn ${curTdp === w ? "active" : ""}" data-tdp-watt="${w}" data-focusable="true">${w}W</button>
+                `).join("")}
+              </div>
+
+              <div class="tdp-open-toolbar">
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  ${!hasCurrentPreset
+                    ? `<button id="btnAddTdpPreset" class="pill-btn small active" data-focusable="true">+ 存 ${curTdp}W</button>`
+                    : (customPresets.length > 1 ? `<button id="btnDelTdpPreset" class="pill-btn small" data-focusable="true">− 删 ${curTdp}W</button>` : "")}
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  <button id="btnOpenSettingsJson" class="pill-btn small" data-focusable="true">编辑 JSON</button>
+                  <button id="btnReloadSettingsJson" class="pill-btn small" data-focusable="true">重载配置</button>
+                </div>
               </div>
 
               <div class="slider-control-row">
                 <div class="slider-header">
-                  <span>手动精细调节 (12W – 85W)</span>
+                  <span>持续 TDP 上限 (STAPM / SPL)</span>
                   <div style="display:flex;align-items:center;gap:6px;">
                     <button id="btnTdpDec" class="step-btn" data-focusable="true" title="降低 1W">−1W</button>
-                    <strong id="tdpValReadout">${curTdp} W</strong>
+                    <input id="tdpNumberInput" class="num-mini-input" type="number" min="8" max="120" value="${curTdp}" aria-label="输入目标 TDP 瓦数" />
+                    <span id="tdpValReadout" style="font-size:12px;font-weight:700;">W</span>
                     <button id="btnTdpInc" class="step-btn" data-focusable="true" title="提高 1W">+1W</button>
                   </div>
                 </div>
-                <input id="tdpRangeInput" class="hh-range" type="range" min="12" max="85" step="1" value="${curTdp}" />
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:2px;">
-                  <span style="font-size:11px;color:var(--text-muted);">保存当前 ${curTdp}W 至档位：</span>
-                  <div style="display:flex;gap:4px;">
-                    <button class="pill-btn small" data-save-tdp-preset="silent" data-focusable="true">存静音</button>
-                    <button class="pill-btn small" data-save-tdp-preset="balanced" data-focusable="true">存均衡</button>
-                    <button class="pill-btn small" data-save-tdp-preset="turbo" data-focusable="true">存狂暴</button>
-                  </div>
-                </div>
+                <input id="tdpRangeInput" class="hh-range" type="range" min="8" max="120" step="1" value="${curTdp}" />
               </div>
+
+              <div class="cw-row" style="padding:8px 0 4px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">解锁独立三段功耗 (SPL / sPPT / fPPT)</span>
+                  <span class="cw-row-sub">分别配置持续功耗 (0x14)、慢速升压 (0x16) 与瞬时峰值 (0x15)</span>
+                </div>
+                ${renderSwitch("swUnlockThreeStage", unlockThreeStage)}
+              </div>
+
+              ${unlockThreeStage ? `
+                <div class="tdp-three-stage">
+                  <div class="stage-row">
+                    <span>sPPT 慢速升压 (8–130W)</span>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <button class="step-btn" data-stage-step="slow:-2" data-focusable="true">−2</button>
+                      <strong id="slowPptVal">${slowPpt} W</strong>
+                      <button class="step-btn" data-stage-step="slow:2" data-focusable="true">+2</button>
+                    </div>
+                  </div>
+                  <input id="slowPptRange" class="hh-range" type="range" min="8" max="130" step="1" value="${slowPpt}" />
+
+                  <div class="stage-row" style="margin-top:4px;">
+                    <span>fPPT 瞬时峰值 (8–140W)</span>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <button class="step-btn" data-stage-step="fast:-2" data-focusable="true">−2</button>
+                      <strong id="fastPptVal">${fastPpt} W</strong>
+                      <button class="step-btn" data-stage-step="fast:2" data-focusable="true">+2</button>
+                    </div>
+                  </div>
+                  <input id="fastPptRange" class="hh-range" type="range" min="8" max="140" step="1" value="${fastPpt}" />
+                </div>` : ""}
 
               <div class="cw-row" style="padding:8px 0 4px;">
                 <div class="cw-row-copy">
@@ -740,30 +940,79 @@
 
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">双风扇智能温控</span>
-                <span id="fanRpmBadge" class="hh-card-badge ${hw.ecReady ? "live" : ""}">${hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM · PWM ${hw.appliedFanPwm}%` : (hw.serviceRunning ? "仅 SMU 就绪" : "EC 未授权")}</span>
+                <span class="hh-card-title">风扇直控与温度曲线 (GPD 双风扇 EC)</span>
+                <span id="fanRpmBadge" class="hh-card-badge ${hw.ecReady ? "live" : ""}">${hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM · PWM ${pwmPctNow}%` : (hw.serviceRunning ? "仅 SMU 就绪" : "EC 未授权")}</span>
               </div>
+
               <div class="fan-mode-pills">
                 ${[
                   { value: "auto", label: "EC 自动" },
-                  { value: "silent", label: "静音" },
-                  { value: "balanced", label: "均衡" },
-                  { value: "turbo", label: "狂暴" },
-                  { value: "manual", label: "手动%" }
+                  { value: "manual", label: "直接百分比" },
+                  { value: "curve", label: "温度曲线" }
                 ].map((opt) => `
                   <button class="pill-btn ${fanMode === opt.value ? "active" : ""}" data-fan-mode="${opt.value}" data-focusable="true">${opt.label}</button>
                 `).join("")}
               </div>
-              ${fanMode === "manual" ? `
-                <div class="slider-control-row">
-                  <div class="slider-header">
-                    <span>手动固定占空比</span>
+
+              <div class="fan-direct-box ${fanMode === "manual" ? "is-active" : ""}">
+                <div class="slider-header">
+                  <span>直接风扇百分比 (${fanMode === "manual" ? "当前直接定速生效" : "拖动或点按快捷 % 即切入直接控制"})</span>
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    <button id="btnFanPctDec" class="step-btn" data-focusable="true">−5%</button>
                     <strong id="fanManualVal">${manualFanPct}%</strong>
+                    <button id="btnFanPctInc" class="step-btn" data-focusable="true">+5%</button>
                   </div>
-                  <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="5" value="${manualFanPct}" />
-                </div>` : ""}
+                </div>
+                <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="1" value="${manualFanPct}" />
+                <div class="fan-quick-grid">
+                  ${[30, 45, 60, 75, 90, 100].map((p) => `
+                    <button class="pill-btn small ${fanMode === "manual" && manualFanPct === p ? "active" : ""}" data-fan-quick-pct="${p}" data-focusable="true">${p}%</button>
+                  `).join("")}
+                </div>
+              </div>
+
+              <div class="fan-curve-box ${fanMode === "curve" ? "is-active" : ""}">
+                <div class="fan-curve-head">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <strong style="font-size:12.5px;color:#fff;">可选 / 可编辑温度曲线</strong>
+                    <span class="hh-card-badge ${fanMode === "curve" ? "live" : ""}">当前 ${curTempEval}°C → ${curveEvalPct}%</span>
+                  </div>
+                  <div style="display:flex;gap:6px;">
+                    <button id="btnAddFanCurve" class="pill-btn small" data-focusable="true">+ 新建曲线</button>
+                    ${fanCurves.length > 1 ? `<button id="btnDelFanCurve" class="pill-btn small" data-focusable="true">删除</button>` : ""}
+                  </div>
+                </div>
+
+                <div class="fan-curve-selector">
+                  ${fanCurves.map((c) => `
+                    <button class="pill-btn small ${activeCurve.id === c.id ? "active" : ""}" data-select-fan-curve="${esc(c.id)}" data-focusable="true">${esc(c.name)}</button>
+                  `).join("")}
+                </div>
+
+                ${renderFanCurveSvg(activeCurve, curTempEval, curveEvalPct)}
+
+                <div class="fan-node-list">
+                  ${(activeCurve.points || []).map((pt, idx) => `
+                    <div class="fan-node-row">
+                      <span class="fan-node-idx">P${idx + 1}</span>
+                      <div class="fan-node-ctrl">
+                        <button class="step-btn" data-curve-node-adj="${idx}:tempC:-2" data-focusable="true">−2°</button>
+                        <strong>${pt.tempC}°C</strong>
+                        <button class="step-btn" data-curve-node-adj="${idx}:tempC:2" data-focusable="true">+2°</button>
+                      </div>
+                      <span style="color:var(--text-muted);font-size:11px;">→</span>
+                      <div class="fan-node-ctrl">
+                        <button class="step-btn" data-curve-node-adj="${idx}:fanPercent:-5" data-focusable="true">−5%</button>
+                        <strong>${pt.fanPercent}%</strong>
+                        <button class="step-btn" data-curve-node-adj="${idx}:fanPercent:5" data-focusable="true">+5%</button>
+                      </div>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+
               <div style="font-size:11px;color:var(--text-muted);">
-                热安全保护：APU ≥ 82°C 时强制提升至 75%+ 防过热降频；服务停止或退出时自动交还 EC 自主控温。
+                热安全底线：APU ≥ 82°C 强制保底 ≥ 80%、≥ 86°C 强制 100%；15s 心跳超时或退出程序自动交还 EC 自主控温。
               </div>
             </div>
           </div>
@@ -1308,19 +1557,14 @@
                 ${active ? renderCapabilities(active) : ""}
               </div>
 
-              <div class="target-switcher">
-                <div class="target-switcher-head">
-                  <span>快速切换注入目标</span>
-                  <button id="btnAddExeInline" class="btn btn-sm" data-focusable="true">+ 添加 EXE</button>
+              <div class="console-target-card">
+                <div class="console-target-info">
+                  <span style="font-size:11px;color:var(--text-muted);">目标游戏选择（二级完整游戏库）</span>
+                  <strong style="font-size:13px;color:#fff;">${active ? esc(active.title) : "暂未选择目标"} · 共检测到 ${games.length} 款游戏</strong>
                 </div>
-                <div class="target-chips">
-                  ${quickTargets.map((g) => `
-                    <button class="target-chip ${active && g.id === active.id ? "active" : ""}"
-                            data-select-game="${esc(g.id)}"
-                            title="${esc(g.title)}"
-                            data-focusable="true">${esc(g.title)}</button>
-                  `).join("")}
-                  ${games.length > 4 ? `<button id="btnMoreGames" class="target-chip" data-focusable="true">全部 (${games.length})</button>` : ""}
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  <button id="btnOpenConsoleGamePicker" class="btn btn-sm btn-primary" data-focusable="true">切换目标游戏 (${games.length}) ▸</button>
+                  <button id="btnAddExeInline" class="btn btn-sm" data-focusable="true">+ 添加 EXE</button>
                 </div>
               </div>
             </div>
@@ -1532,6 +1776,7 @@
       <div class="library-shell">
         <div class="library-toolbar">
           <div class="toolbar-left">
+            <button id="btnLibBackToTune" class="btn btn-sm" data-focusable="true">‹ 返回当前调优</button>
             <div class="search-box">
               ${svgIcon("search")}
               <input id="libSearchInput" type="text" placeholder="搜索已安装游戏..." value="${esc(state.searchQuery)}" />
@@ -1545,11 +1790,41 @@
           </div>
 
           <div class="toolbar-left">
+            ${renderSegmented("data-lib-layout", [
+              { value: "posters", label: "海报墙" },
+              { value: "list", label: "列表" }
+            ], state.libraryLayout, "compact")}
             <button id="btnScanGames" class="btn btn-sm" data-focusable="true">重新扫描目录</button>
             <button id="btnAddExeLib" class="btn btn-sm btn-primary" data-focusable="true">+ 添加本地 EXE</button>
           </div>
         </div>
 
+        ${state.libraryLayout === "list" ? `
+          <div class="lib-list-grid">
+            ${filtered.length === 0 ? `
+              <div class="cw-group" style="padding:28px;text-align:center;color:var(--text-secondary);">
+                未找到匹配的游戏。点击右上角「重新扫描目录」或手动添加游戏主程序 (.exe)。
+              </div>
+            ` : filtered.map((g) => {
+              const caps = g.nativeUpscalers || {};
+              const capTag = caps.hasDlssG ? "DLSS-G" : caps.hasDlss ? "DLSS" : caps.hasXeSs ? "XeSS" : "常规";
+              const isSel = active && active.id === g.id;
+              return `
+                <button class="lib-list-row ${isSel ? "active" : ""}" data-open-game="${esc(g.id)}" data-focusable="true">
+                  <div class="lib-list-main">
+                    <strong>${esc(g.title)}</strong>
+                    <span class="lib-list-path">${esc(g.platform)} · ${esc(g.engine)} · ${esc(g.targetRenderDirectory)}</span>
+                  </div>
+                  <div class="lib-list-badges">
+                    <span class="pill-badge ${caps.hasDlss ? "blue" : ""}">${capTag}</span>
+                    ${g.isCurrentlyRunning ? `<span class="pill-badge live">运行中</span>` : ""}
+                    <span class="pill-badge ${g.injection?.isInjected ? "blue" : ""}">${g.injection?.isInjected ? "已注入" : "原生未注入"}</span>
+                  </div>
+                </button>
+              `;
+            }).join("")}
+          </div>
+        ` : `
         <div class="poster-grid">
           ${filtered.length === 0 ? `
             <div class="cw-group" style="grid-column: 1 / -1; padding: 28px; text-align:center; color:var(--text-secondary);">
@@ -1581,7 +1856,7 @@
               </button>
             `;
           }).join("")}
-        </div>
+        </div>`}
       </div>
     `;
   }
@@ -1714,12 +1989,17 @@
     const games = snap.games || [];
 
     if (state.qamTab === "handheld") {
-      const curTdp = settings.currentTdpWatts || 45;
-      const silentW = settings.tdpPresetSilent || 18;
-      const balancedW = settings.tdpPresetBalanced || 35;
-      const turboW = settings.tdpPresetTurbo || 65;
-      const fanMode = settings.fanMode || "auto";
+      const curTdp = settings.currentTdpWatts || 40;
+      const customPresets = (settings.customTdpPresets && settings.customTdpPresets.length)
+        ? settings.customTdpPresets
+        : [15, 25, 35, 45, 60, 80, 100];
+      const fanMode = normalizeFanModeUi(settings.fanMode);
+      const manualFanPct = settings.manualFanPercent || 55;
+      const fanCurves = (settings.fanCurves && settings.fanCurves.length) ? settings.fanCurves : getDefaultFanCurves();
+      const activeCurve = getActiveFanCurve(settings);
       const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
+      const curTempEval = maxTemp > 0 ? maxTemp : 48;
+      const curveEvalPct = evaluateFanCurvePct(curTempEval, activeCurve.points);
       const apuStr = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--W";
       const rpm = hw.fanRpm || 0;
       const hzOptions = (sys.supportedRefreshRates && sys.supportedRefreshRates.length)
@@ -1735,35 +2015,50 @@
             </div>
             ${!hw.serviceRunning ? `
               <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:6px;" data-focusable="true">一键启用 TDP / 风扇直控</button>
-            ` : ""}
+            ` : ((hw.daemonVersion || 0) < 2 ? `
+              <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:6px;" data-focusable="true">升级硬件服务 (解锁 PM-Table / 120W)</button>
+            ` : "")}
           </div>
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>APU 功耗调节</span>
-              <strong>${curTdp} W</strong>
+              <span>开放 APU 功耗 (8–120W)</span>
+              <strong>${curTdp}W${hw.hwStapmLimitWatts != null ? ` (实读 ${hw.hwStapmLimitWatts.toFixed(0)}W)` : ""}</strong>
             </div>
-            <div class="qam-preset-row">
-              <button class="pill-btn small ${curTdp === silentW ? "active" : ""}" data-tdp-preset="silent" data-watts="${silentW}" data-focusable="true">静音 ${silentW}W</button>
-              <button class="pill-btn small ${curTdp === balancedW ? "active" : ""}" data-tdp-preset="balanced" data-watts="${balancedW}" data-focusable="true">均衡 ${balancedW}W</button>
-              <button class="pill-btn small ${curTdp === turboW ? "active" : ""}" data-tdp-preset="turbo" data-watts="${turboW}" data-focusable="true">狂暴 ${turboW}W</button>
+            <div class="qam-preset-row wrap">
+              ${customPresets.slice(0, 6).map((w) => `
+                <button class="pill-btn small ${curTdp === w ? "active" : ""}" data-tdp-watt="${w}" data-focusable="true">${w}W</button>
+              `).join("")}
             </div>
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
               <button id="btnTdpDec" class="step-btn" data-focusable="true">−2</button>
-              <input id="tdpRangeInput" class="hh-range" type="range" min="12" max="85" step="1" value="${curTdp}" style="flex:1;" />
+              <input id="tdpRangeInput" class="hh-range" type="range" min="8" max="120" step="1" value="${curTdp}" style="flex:1;" />
               <button id="btnTdpInc" class="step-btn" data-focusable="true">+2</button>
             </div>
             <div class="qam-fan-row">
               ${[
-                { value: "auto", label: "自动" },
-                { value: "silent", label: "静" },
-                { value: "balanced", label: "均" },
-                { value: "turbo", label: "狂" },
-                { value: "manual", label: "定" }
+                { value: "auto", label: "EC 自动" },
+                { value: "manual", label: "直接 %" },
+                { value: "curve", label: "温度曲线" }
               ].map((opt) => `
                 <button class="pill-btn small ${fanMode === opt.value ? "active" : ""}" data-fan-mode="${opt.value}" data-focusable="true">${opt.label}</button>
               `).join("")}
             </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <button id="btnFanPctDec" class="step-btn" data-focusable="true">−5%</button>
+              <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="1" value="${manualFanPct}" style="flex:1;" />
+              <span id="fanManualVal" style="font-size:11px;font-weight:700;min-width:34px;text-align:right;">${manualFanPct}%</span>
+              <button id="btnFanPctInc" class="step-btn" data-focusable="true">+5%</button>
+            </div>
+            ${fanMode === "curve" ? `
+              <div class="qam-curve-row">
+                <div class="qam-preset-row wrap" style="margin:6px 0 2px;">
+                  ${fanCurves.map((c) => `
+                    <button class="pill-btn small ${activeCurve.id === c.id ? "active" : ""}" data-select-fan-curve="${esc(c.id)}" data-focusable="true">${esc(c.name.split(" ")[0])}</button>
+                  `).join("")}
+                </div>
+                <span style="font-size:10.5px;color:var(--text-secondary);">曲线实时目标：${curTempEval}°C → ${curveEvalPct}%</span>
+              </div>` : ""}
           </div>
 
           <div class="qam-section">
@@ -1868,31 +2163,65 @@
       `;
     }
 
-    // QAM Tab 4: OptiScaler Tuning + Inline Game Switcher & Real Status Banner
+    // QAM Tab 4: Multi-level OptiScaler Tuning <-> Game Picker Drill-Down
+    if (state.qamOptiSubView === "games") {
+      return `
+        <div class="qam-body">
+          <div class="qam-game-picker-view">
+            <div class="qam-picker-head">
+              <button id="btnQamBackToTune" class="btn btn-sm" data-focusable="true">‹ 返回调优</button>
+              <strong style="font-size:12.5px;color:#fff;">选择目标 (${games.length})</strong>
+              <button id="btnQamRescan" class="btn btn-sm" data-focusable="true">扫描</button>
+            </div>
+            <div class="qam-game-list">
+              ${games.length === 0 ? `
+                <div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:12px;">
+                  暂无游戏，请点击右上角「扫描」或在主控台添加本地 EXE。
+                </div>
+              ` : games.map((g) => {
+                const isSel = active && active.id === g.id;
+                const gInj = g.injection;
+                const gSub = gInj?.isInjected
+                  ? `已注入 · ${formatConfigSummary(gInj.appliedConfig || DEFAULT_CONFIG, true)}`
+                  : `${g.platform} · ${g.engine} · 原生未注入`;
+                return `
+                  <button class="qam-game-row ${isSel ? "active" : ""}" data-select-game="${esc(g.id)}" data-focusable="true">
+                    <div class="qam-game-row-top">
+                      <span class="qam-game-row-title">${esc(g.title)}</span>
+                      <div style="display:flex;gap:4px;flex-shrink:0;">
+                        ${g.isCurrentlyRunning ? `<span class="hh-card-badge live">运行中</span>` : ""}
+                        <span class="hh-card-badge ${gInj?.isInjected ? "live" : "warn"}">${gInj?.isInjected ? "已注入" : "未注入"}</span>
+                      </div>
+                    </div>
+                    <span class="qam-game-row-sub">${esc(gSub)}</span>
+                  </button>
+                `;
+              }).join("")}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     const inj = active?.injection;
     const cfg = state.config;
     const presets = snap.presets || [];
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
-      : "当前目标原生未注入（切换上方游戏可即时查看各自真实注入状态）";
+      : "当前目标原生未注入（点击右上角切换目标进入完整游戏选择页）";
 
     return `
       <div class="qam-body">
-        <div class="qam-game-switcher" aria-label="快捷切游戏查看注入状态">
-          ${games.map((g) => `
-            <button class="qam-game-pill ${active && active.id === g.id ? "active" : ""}"
-                    data-select-game="${esc(g.id)}"
-                    title="${esc(g.title)}"
-                    data-focusable="true">${g.injection?.isInjected ? "● " : ""}${esc(g.title)}</button>
-          `).join("")}
-        </div>
-
-        <div id="qamStatusBanner" class="qam-status-banner ${inj?.isInjected ? "injected" : "uninjected"}">
+        <div id="qamStatusBanner" class="qam-target-card ${inj?.isInjected ? "injected" : "uninjected"}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-            <strong style="font-size:12.5px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(active?.title || "未选择游戏")}</strong>
+            <strong style="font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(active?.title || "未选择游戏")}</strong>
             <span class="hh-card-badge ${inj?.isInjected ? "live" : "warn"}">${inj?.isInjected ? "已注入" : "原生未注入"}</span>
           </div>
           <span style="font-size:11px;color:var(--text-secondary);">${esc(statusText)}</span>
+          <button id="btnQamOpenGamePicker" class="btn btn-sm" style="width:100%;margin-top:4px;justify-content:space-between;" data-focusable="true">
+            <span>切换游戏 (${games.length})</span>
+            <span>▸</span>
+          </button>
         </div>
 
         <div class="qam-section">
@@ -1947,11 +2276,12 @@
     if (!legend) return;
 
     if (IS_QAM) {
-      const showXInject = state.qamTab === "opti";
+      const inGamePicker = state.qamTab === "opti" && state.qamOptiSubView === "games";
+      const showXInject = state.qamTab === "opti" && !inGamePicker;
       legend.innerHTML = `
         <div class="legend-group" style="gap:10px;">
-          <span class="legend-item"><span class="gp-btn-glyph a">A</span>确认</span>
-          <span class="legend-item"><span class="gp-btn-glyph b">B</span>关闭</span>
+          <span class="legend-item"><span class="gp-btn-glyph a">A</span>${inGamePicker ? "选定" : "确认"}</span>
+          <span class="legend-item"><span class="gp-btn-glyph b">B</span>${inGamePicker ? "返回" : "关闭"}</span>
           ${showXInject ? `<span class="legend-item"><span class="gp-btn-glyph x">X</span>注入</span>` : ""}
         </div>
         <div class="legend-group" style="gap:8px;">
@@ -2052,10 +2382,10 @@
       }
     };
 
-    const setTdpWatts = async (watts, savePreset = null) => {
-      const clamped = Math.max(12, Math.min(85, Math.round(watts)));
+    const setTdpWatts = async (watts) => {
+      const clamped = Math.max(8, Math.min(120, Math.round(watts)));
       try {
-        const res = await rpc("setTdp", savePreset ? { watts: clamped, savePreset } : { watts: clamped });
+        const res = await rpc("setTdp", { watts: clamped });
         if (res?.systemControl && state.snapshot) {
           state.snapshot.systemControl = res.systemControl;
         }
@@ -2065,35 +2395,101 @@
       }
     };
 
-    // Handheld TDP, Linkage, Fan & Toolbox events
-    document.querySelectorAll("[data-tdp-preset]").forEach((el) => {
+    // Handheld Open Power, 3-Stage PPT, Fan Direct % & Curves, Toolbox
+    document.querySelectorAll("[data-tdp-watt]").forEach((el) => {
       el.addEventListener("click", () => {
-        const watts = Number(el.dataset.watts);
+        const watts = Number(el.dataset.tdpWatt);
         if (watts > 0) setTdpWatts(watts);
       });
     });
 
-    document.querySelectorAll("[data-save-tdp-preset]").forEach((el) => {
-      el.addEventListener("click", () => {
-        const curW = state.snapshot?.settings?.currentTdpWatts || 45;
-        setTdpWatts(curW, el.dataset.saveTdpPreset);
-      });
+    document.getElementById("btnAddTdpPreset")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings || {};
+      const curW = s.currentTdpWatts || 40;
+      const list = Array.isArray(s.customTdpPresets) ? [...s.customTdpPresets] : [15, 25, 35, 45, 60, 80, 100];
+      if (!list.includes(curW)) list.push(curW);
+      list.sort((a, b) => a - b);
+      await rpc("savePowerConfig", { customTdpPresets: list });
+      showToast(`已将 ${curW}W 添加到自定义档位组`, "success");
+    });
+
+    document.getElementById("btnDelTdpPreset")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings || {};
+      const curW = s.currentTdpWatts || 40;
+      const list = (s.customTdpPresets || []).filter((w) => w !== curW);
+      if (list.length > 0) {
+        await rpc("savePowerConfig", { customTdpPresets: list });
+        showToast(`已从档位组移除 ${curW}W`, "info");
+      }
+    });
+
+    document.getElementById("btnOpenSettingsJson")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openSettingsJson", {});
+        showToast(res?.message || "已在记事本打开 settings.json", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnReloadSettingsJson")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("reloadSettingsJson", {});
+        showToast(res?.message || "已重载 settings.json", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
     });
 
     const tdpRange = document.getElementById("tdpRangeInput");
+    const tdpNum = document.getElementById("tdpNumberInput");
     tdpRange?.addEventListener("input", () => {
-      const readout = document.getElementById("tdpValReadout");
-      if (readout) readout.textContent = `${tdpRange.value} W`;
+      if (tdpNum) tdpNum.value = tdpRange.value;
     });
     tdpRange?.addEventListener("change", () => setTdpWatts(Number(tdpRange.value)));
+    tdpNum?.addEventListener("change", () => setTdpWatts(Number(tdpNum.value)));
 
     document.getElementById("btnTdpDec")?.addEventListener("click", () => {
       const step = IS_QAM ? 2 : 1;
-      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 45) - step);
+      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) - step);
     });
     document.getElementById("btnTdpInc")?.addEventListener("click", () => {
       const step = IS_QAM ? 2 : 1;
-      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 45) + step);
+      setTdpWatts((state.snapshot?.settings?.currentTdpWatts || 40) + step);
+    });
+
+    document.getElementById("swUnlockThreeStage")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings || {};
+      const next = !s.unlockThreeStagePower;
+      await rpc("savePowerConfig", { unlockThreeStagePower: next, applyNow: true });
+      showToast(next ? "已解锁独立三段功耗 (SPL / sPPT / fPPT)" : "已恢复联动双段功耗", "info");
+    });
+
+    const slowRange = document.getElementById("slowPptRange");
+    const fastRange = document.getElementById("fastPptRange");
+    slowRange?.addEventListener("input", () => {
+      const el = document.getElementById("slowPptVal");
+      if (el) el.textContent = `${slowRange.value} W`;
+    });
+    slowRange?.addEventListener("change", () => rpc("savePowerConfig", { slowPptWatts: Number(slowRange.value), applyNow: true }));
+    fastRange?.addEventListener("input", () => {
+      const el = document.getElementById("fastPptVal");
+      if (el) el.textContent = `${fastRange.value} W`;
+    });
+    fastRange?.addEventListener("change", () => rpc("savePowerConfig", { fastPptWatts: Number(fastRange.value), applyNow: true }));
+    document.querySelectorAll("[data-stage-step]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const [kind, dStr] = el.dataset.stageStep.split(":");
+        const delta = Number(dStr);
+        const s = state.snapshot?.settings || {};
+        if (kind === "slow") {
+          const next = Math.max(8, Math.min(130, (s.slowPptWatts || 45) + delta));
+          await rpc("savePowerConfig", { slowPptWatts: next, applyNow: true });
+        } else {
+          const next = Math.max(8, Math.min(140, (s.fastPptWatts || 50) + delta));
+          await rpc("savePowerConfig", { fastPptWatts: next, applyNow: true });
+        }
+      });
     });
 
     document.getElementById("swPowerLinkage")?.addEventListener("click", async () => {
@@ -2108,8 +2504,8 @@
 
     const stepLinkage = async (isAc, delta) => {
       const s = state.snapshot?.settings || {};
-      const bat = isAc ? (s.batteryTdpWatts || 25) : Math.max(12, Math.min(85, (s.batteryTdpWatts || 25) + delta));
-      const ac = isAc ? Math.max(12, Math.min(85, (s.acTdpWatts || 55) + delta)) : (s.acTdpWatts || 55);
+      const bat = isAc ? (s.batteryTdpWatts || 25) : Math.max(8, Math.min(120, (s.batteryTdpWatts || 25) + delta));
+      const ac = isAc ? Math.max(8, Math.min(120, (s.acTdpWatts || 55) + delta)) : (s.acTdpWatts || 55);
       await rpc("setPowerLinkage", { enabled: !!s.powerLinkageEnabled, batteryWatts: bat, acWatts: ac });
     };
     document.getElementById("btnBatTdpDec")?.addEventListener("click", () => stepLinkage(false, -2));
@@ -2121,32 +2517,104 @@
       el.addEventListener("click", async () => {
         try {
           const mode = el.dataset.fanMode;
-          const manualPct = state.snapshot?.settings?.manualFanPercent || 65;
-          const res = await rpc("setFanMode", { mode, manualPercent: manualPct });
-          showToast(res?.message || `风扇模式已切换为 ${mode}`, res?.hardwareApplied ? "success" : "info");
+          const s = state.snapshot?.settings || {};
+          const res = await rpc("setFanMode", {
+            mode,
+            manualPercent: s.manualFanPercent || 55,
+            curveId: s.activeFanCurveId || "linear_60"
+          });
+          showToast(res?.message || `风扇模式已切换为 ${formatFanModeLabel(mode)}`, res?.hardwareApplied ? "success" : "info");
         } catch (err) {
           showToast(err.message, "error");
         }
       });
     });
 
+    const applyDirectFanPct = async (pct) => {
+      const clamped = Math.max(20, Math.min(100, Math.round(pct)));
+      try {
+        const res = await rpc("setFanMode", { mode: "manual", manualPercent: clamped });
+        showToast(res?.message || `风扇直接百分比已设为 ${clamped}%`, res?.hardwareApplied ? "success" : "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+
     const fanRange = document.getElementById("fanManualRange");
     fanRange?.addEventListener("input", () => {
       const val = document.getElementById("fanManualVal");
       if (val) val.textContent = `${fanRange.value}%`;
     });
-    fanRange?.addEventListener("change", async () => {
-      try {
-        const res = await rpc("setFanMode", { mode: "manual", manualPercent: Number(fanRange.value) });
-        showToast(res?.message || `风扇手动占空比 ${fanRange.value}%`, "info");
-      } catch (err) {
-        showToast(err.message, "error");
-      }
+    fanRange?.addEventListener("change", () => applyDirectFanPct(Number(fanRange.value)));
+    document.getElementById("btnFanPctDec")?.addEventListener("click", () => applyDirectFanPct((state.snapshot?.settings?.manualFanPercent || 55) - 5));
+    document.getElementById("btnFanPctInc")?.addEventListener("click", () => applyDirectFanPct((state.snapshot?.settings?.manualFanPercent || 55) + 5));
+    document.querySelectorAll("[data-fan-quick-pct]").forEach((el) => {
+      el.addEventListener("click", () => applyDirectFanPct(Number(el.dataset.fanQuickPct)));
+    });
+
+    document.querySelectorAll("[data-select-fan-curve]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          const curveId = el.dataset.selectFanCurve;
+          const res = await rpc("setFanMode", { mode: "curve", curveId });
+          showToast(res?.message || "已应用所选风扇温度曲线", res?.hardwareApplied ? "success" : "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.getElementById("btnAddFanCurve")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings || {};
+      const curves = (s.fanCurves && s.fanCurves.length ? s.fanCurves : getDefaultFanCurves()).map((c) => ({
+        ...c,
+        points: (c.points || []).map((p) => ({ ...p }))
+      }));
+      const base = getActiveFanCurve(s);
+      const newId = `custom_${Date.now().toString(36).slice(-4)}`;
+      const nextCurve = {
+        id: newId,
+        name: `自定义曲线 ${curves.length + 1}`,
+        points: (base.points || []).map((p) => ({ ...p }))
+      };
+      curves.push(nextCurve);
+      await rpc("saveFanCurves", { curves, activeCurveId: newId, activate: true });
+      showToast(`已新建并启用「${nextCurve.name}」`, "success");
+    });
+
+    document.getElementById("btnDelFanCurve")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings || {};
+      const curves = (s.fanCurves || []).filter((c) => c.id !== s.activeFanCurveId);
+      if (curves.length === 0) return;
+      await rpc("saveFanCurves", { curves, activeCurveId: curves[0].id, activate: s.fanMode === "curve" });
+      showToast("已删除当前风扇曲线", "info");
+    });
+
+    document.querySelectorAll("[data-curve-node-adj]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const [idxStr, field, deltaStr] = el.dataset.curveNodeAdj.split(":");
+        const idx = Number(idxStr);
+        const delta = Number(deltaStr);
+        const s = state.snapshot?.settings || {};
+        const curves = (s.fanCurves && s.fanCurves.length ? s.fanCurves : getDefaultFanCurves()).map((c) => ({
+          ...c,
+          points: (c.points || []).map((p) => ({ ...p }))
+        }));
+        const cur = curves.find((c) => c.id === s.activeFanCurveId) || curves[0];
+        if (!cur || !cur.points[idx]) return;
+        if (field === "tempC") {
+          cur.points[idx].tempC = Math.max(25, Math.min(95, cur.points[idx].tempC + delta));
+        } else {
+          cur.points[idx].fanPercent = Math.max(20, Math.min(100, cur.points[idx].fanPercent + delta));
+        }
+        cur.points.sort((a, b) => a.tempC - b.tempC);
+        await rpc("saveFanCurves", { curves, activeCurveId: cur.id, activate: false });
+      });
     });
 
     document.getElementById("btnInstallHwSvc")?.addEventListener("click", async () => {
       try {
-        showToast("正在请求一次性管理员授权安装 HaloDeckHardwareSvc...");
+        showToast("正在请求一次性管理员授权更新 HaloDeckHardwareSvc...");
         const res = await rpc("installHardwareService", {});
         showToast(res?.message || "底层硬件服务已启用", "success");
       } catch (err) {
@@ -2174,7 +2642,7 @@
     document.querySelectorAll("[data-toolbox]").forEach((el) => {
       el.addEventListener("click", async () => {
         try {
-          const res = await rpc("runToolboxAction", { action: el.dataset.toolbox });
+          const res = await rpc("runToolboxAction", { action: el.dataset.toolbox, fromQam: IS_QAM });
           showToast(res?.message || "操作完成", "info");
         } catch (err) {
           showToast(err.message, "error");
@@ -2233,13 +2701,13 @@
     });
     document.getElementById("btnGamePerfTdpDec")?.addEventListener("click", () => {
       const active = getActiveGame();
-      const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 45;
-      saveGamePerf({ tdpWatts: Math.max(12, curW - 5) });
+      const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
+      saveGamePerf({ tdpWatts: Math.max(8, curW - 5) });
     });
     document.getElementById("btnGamePerfTdpInc")?.addEventListener("click", () => {
       const active = getActiveGame();
-      const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 45;
-      saveGamePerf({ tdpWatts: Math.min(85, curW + 5) });
+      const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
+      saveGamePerf({ tdpWatts: Math.min(120, curW + 5) });
     });
     document.querySelectorAll("[data-game-perf-hz]").forEach((el) => {
       el.addEventListener("click", () => saveGamePerf({ refreshRateHz: Number(el.dataset.gamePerfHz) }));
@@ -2588,6 +3056,7 @@
         await rpc("selectRunningFallback", { gameId: el.dataset.selectGame });
         if (IS_QAM) {
           state.qamTab = "opti";
+          state.qamOptiSubView = "tune";
           state.focusIndex = 0;
         }
         syncConfigFromActiveGame(state.snapshot);
@@ -2595,11 +3064,44 @@
       });
     });
 
-    document.getElementById("btnMoreGames")?.addEventListener("click", () => {
+    document.getElementById("btnOpenConsoleGamePicker")?.addEventListener("click", () => {
       state.tab = "opti";
       state.optiSubTab = "library";
       state.focusIndex = 0;
       render();
+    });
+
+    document.getElementById("btnLibBackToTune")?.addEventListener("click", () => {
+      state.tab = "opti";
+      state.optiSubTab = "tune";
+      state.focusIndex = 0;
+      render();
+    });
+
+    document.querySelectorAll("[data-lib-layout]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.libraryLayout = el.dataset.libLayout || "posters";
+        state.focusIndex = 0;
+        render();
+      });
+    });
+
+    document.getElementById("btnQamOpenGamePicker")?.addEventListener("click", () => {
+      state.qamOptiSubView = "games";
+      state.focusIndex = 0;
+      render();
+    });
+
+    document.getElementById("btnQamBackToTune")?.addEventListener("click", () => {
+      state.qamOptiSubView = "tune";
+      state.focusIndex = 0;
+      render();
+    });
+
+    document.getElementById("btnQamRescan")?.addEventListener("click", async () => {
+      showToast("正在扫描已安装游戏...");
+      await rpc("scanGames");
+      showToast("游戏列表已刷新", "success");
     });
 
     document.getElementById("btnInject")?.addEventListener("click", () => executeInject(false));
@@ -2939,8 +3441,16 @@
         if (modalOpen) {
           modal.classList.add("hidden");
           applySpatialFocus();
+        } else if (!IS_QAM && state.tab === "opti" && state.optiSubTab === "library") {
+          state.optiSubTab = "tune";
+          state.focusIndex = 0;
+          render();
         } else if (state.advancedOpen && !IS_QAM) {
           state.advancedOpen = false;
+          render();
+        } else if (IS_QAM && state.qamTab === "opti" && state.qamOptiSubView === "games") {
+          state.qamOptiSubView = "tune";
+          state.focusIndex = 0;
           render();
         } else if (IS_QAM) {
           rpc("hideQam");
@@ -2985,6 +3495,9 @@
   document.querySelectorAll(".qam-rail-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.qamTab = btn.dataset.qamTab || "handheld";
+      if (state.qamTab !== "opti") {
+        state.qamOptiSubView = "tune";
+      }
       state.focusIndex = 0;
       render();
     });

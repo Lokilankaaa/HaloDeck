@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
+using HandheldOpti.Core.Models;
 
 namespace HandheldOpti.App.Native;
 
@@ -66,17 +67,45 @@ public sealed class HardwareServiceClient
         return _cachedStatus;
     }
 
-    public (bool Ok, string Error, HardwareDaemonStatus Status) SetTdp(int watts)
+    public (bool Ok, string Error, HardwareDaemonStatus Status) SetTdp(int stapmWatts, int? slowWatts = null, int? fastWatts = null)
     {
-        var res = SendPipeRequest(new { op = "set_tdp", watts = Math.Clamp(watts, 12, 85) });
+        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion;
+        int w = v1Daemon ? Math.Clamp(stapmWatts, 12, 85) : Math.Clamp(stapmWatts, 8, 120);
+        int slow = Math.Clamp(slowWatts ?? w, 8, 130);
+        int fast = Math.Clamp(fastWatts ?? Math.Min(140, Math.Max(slow, w + 2)), 8, 140);
+
+        var res = SendPipeRequest(new { op = "set_tdp", watts = w, slowWatts = slow, fastWatts = fast });
         if (res.Status is not null) _cachedStatus = res.Status;
         _lastStatusAtUtc = DateTime.UtcNow;
         return (res.Ok, res.Error, _cachedStatus);
     }
 
-    public (bool Ok, string Error, HardwareDaemonStatus Status) SetFan(string mode, int percent, int tempC)
+    public (bool Ok, string Error, HardwareDaemonStatus Status) SetFan(
+        string mode,
+        int percent,
+        int tempC,
+        IEnumerable<FanCurvePoint>? curvePoints = null)
     {
-        var res = SendPipeRequest(new { op = "set_fan", mode, percent = Math.Clamp(percent, 20, 100), tempC });
+        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion;
+        string normalized = (mode ?? "auto").Trim().ToLowerInvariant();
+        if (v1Daemon && normalized == "curve")
+        {
+            int evaluatedPct = FanCurveEvaluator.Evaluate(tempC, curvePoints);
+            var fallbackRes = SendPipeRequest(new { op = "set_fan", mode = "manual", percent = evaluatedPct, tempC });
+            if (fallbackRes.Status is not null) _cachedStatus = fallbackRes.Status;
+            _lastStatusAtUtc = DateTime.UtcNow;
+            return (fallbackRes.Ok, fallbackRes.Error, _cachedStatus);
+        }
+
+        var pts = curvePoints is null ? null : FanCurveEvaluator.NormalizePoints(curvePoints);
+        var res = SendPipeRequest(new
+        {
+            op = "set_fan",
+            mode = normalized,
+            percent = Math.Clamp(percent, 20, 100),
+            tempC,
+            curvePoints = pts
+        });
         if (res.Status is not null) _cachedStatus = res.Status;
         _lastStatusAtUtc = DateTime.UtcNow;
         return (res.Ok, res.Error, _cachedStatus);

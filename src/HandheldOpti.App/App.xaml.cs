@@ -109,6 +109,7 @@ public partial class App : System.Windows.Application
 
         if (verifyStartup)
         {
+            _bridge.SuppressHardwareCleanupOnDispose = true;
             await RunStartupSelfVerifyAsync(_mainWindow, _bridge, _inputHub);
             Shutdown(0);
             return;
@@ -119,6 +120,7 @@ public partial class App : System.Windows.Application
 
         if (verifyGui)
         {
+            _bridge.SuppressHardwareCleanupOnDispose = true;
             int exitCode = await RunGuiSelfVerifyAsync(verifyGuiOutDir, _mainWindow, _qamWindow, _overlayHudWindow, _bridge);
             ShutdownApplicationWithCode(exitCode);
             return;
@@ -452,7 +454,7 @@ public partial class App : System.Windows.Application
 
             bool handheldReady = await WaitUntilAsync(
                 mainCore,
-                "document.readyState === 'complete' && Boolean(document.querySelector('.tab-btn[data-nav=\"handheld\"].active')) && document.querySelectorAll('[data-tdp-preset]').length === 3 && document.querySelectorAll('[data-fan-mode]').length === 5");
+                "document.readyState === 'complete' && Boolean(document.querySelector('.tab-btn[data-nav=\"handheld\"].active')) && document.querySelectorAll('[data-tdp-watt]').length >= 3 && document.querySelectorAll('[data-tdp-preset]').length === 0 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('svg.fan-curve-svg').length === 1 && Boolean(document.getElementById('fanManualRange'))");
             await Task.Delay(350);
 
             var workArea = SystemParameters.WorkArea;
@@ -468,8 +470,11 @@ public partial class App : System.Windows.Application
 
             var homeInfoJson = await mainCore.ExecuteScriptAsync("""
                 (() => ({
-                  tdpPresets: document.querySelectorAll('[data-tdp-preset]').length,
+                  tdpChips: document.querySelectorAll('[data-tdp-watt]').length,
+                  legacyTdpPresets: document.querySelectorAll('[data-tdp-preset]').length,
                   fanModes: document.querySelectorAll('[data-fan-mode]').length,
+                  fanCurveSvg: document.querySelectorAll('svg.fan-curve-svg').length,
+                  hasFanSlider: Boolean(document.getElementById('fanManualRange')),
                   toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
                   selectCount: document.querySelectorAll('select').length,
                   legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
@@ -480,8 +485,11 @@ public partial class App : System.Windows.Application
             using var homeDoc = JsonDocument.Parse(homeInfoJson);
             var homeRoot = homeDoc.RootElement;
             bool homeOk = handheldReady &&
-                          homeRoot.GetProperty("tdpPresets").GetInt32() == 3 &&
-                          homeRoot.GetProperty("fanModes").GetInt32() == 5 &&
+                          homeRoot.GetProperty("tdpChips").GetInt32() >= 3 &&
+                          homeRoot.GetProperty("legacyTdpPresets").GetInt32() == 0 &&
+                          homeRoot.GetProperty("fanModes").GetInt32() == 3 &&
+                          homeRoot.GetProperty("fanCurveSvg").GetInt32() == 1 &&
+                          homeRoot.GetProperty("hasFanSlider").GetBoolean() &&
                           homeRoot.GetProperty("toolboxTiles").GetInt32() >= 8 &&
                           homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           homeRoot.GetProperty("legendFits").GetBoolean() &&
@@ -540,6 +548,8 @@ public partial class App : System.Windows.Application
                   presetCount: document.querySelectorAll('.preset-card').length,
                   srPills: document.querySelectorAll('[data-sr-mode]').length,
                   fgPills: document.querySelectorAll('[data-fg-type]').length,
+                  targetChipsCount: document.querySelectorAll('.target-chip').length,
+                  hasConsolePickerBtn: Boolean(document.getElementById('btnOpenConsoleGamePicker')),
                   selectCount: document.querySelectorAll('select').length,
                   srActive: document.querySelector('[data-sr-mode].active')?.dataset.srMode || '',
                   fgActive: document.querySelector('[data-fg-type].active')?.dataset.fgType || '',
@@ -558,6 +568,8 @@ public partial class App : System.Windows.Application
                           tuneRoot.GetProperty("presetCount").GetInt32() == 4 &&
                           tuneRoot.GetProperty("srPills").GetInt32() == 4 &&
                           tuneRoot.GetProperty("fgPills").GetInt32() == 3 &&
+                          tuneRoot.GetProperty("targetChipsCount").GetInt32() == 0 &&
+                          tuneRoot.GetProperty("hasConsolePickerBtn").GetBoolean() &&
                           tuneRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           tuneRoot.GetProperty("srActive").GetString() == expectedCfg.SrMode &&
                           tuneRoot.GetProperty("fgActive").GetString() == expectedCfg.FgType &&
@@ -688,9 +700,19 @@ public partial class App : System.Windows.Application
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]').click()");
                 qamOptiOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('[data-preset]').length >= 3");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && Boolean(document.getElementById('btnQamOpenGamePicker')) && document.querySelectorAll('.qam-game-switcher').length === 0 && document.querySelectorAll('[data-preset]').length >= 3");
                 await Task.Delay(200);
                 await CapturePngAsync(qamCore, outputDir, "v3_09_qam_opti.png");
+
+                await qamCore.ExecuteScriptAsync("document.getElementById('btnQamOpenGamePicker').click()");
+                bool qamGamesPickerOk = await WaitUntilAsync(
+                    qamCore,
+                    "Boolean(document.querySelector('.qam-game-picker-view')) && Boolean(document.getElementById('btnQamBackToTune')) && document.querySelectorAll('.qam-game-row').length >= 1");
+                await Task.Delay(200);
+                await CapturePngAsync(qamCore, outputDir, "v3_10_qam_opti_games.png");
+                await qamCore.ExecuteScriptAsync("document.getElementById('btnQamBackToTune').click()");
+                await WaitUntilAsync(qamCore, "Boolean(document.getElementById('qamStatusBanner'))");
+                qamOptiOk = qamOptiOk && qamGamesPickerOk;
 
                 var qamErrStr = await qamCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
                 int.TryParse(qamErrStr, out qamErrCount);

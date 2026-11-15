@@ -7,12 +7,14 @@ using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Text.Json;
+using HandheldOpti.Core.Models;
 using Microsoft.Win32;
 
 namespace HandheldOpti.App.Native;
 
 public sealed class HardwareDaemonStatus
 {
+    public int DaemonVersion { get; set; }
     public bool ServiceInstalled { get; set; }
     public bool ServiceRunning { get; set; }
     public bool PawnIoInstalled { get; set; }
@@ -20,6 +22,12 @@ public sealed class HardwareDaemonStatus
     public bool EcReady { get; set; }
     public string DmiBoard { get; set; } = string.Empty;
     public int AppliedTdpWatts { get; set; } = 40;
+    public int AppliedSlowWatts { get; set; } = 45;
+    public int AppliedFastWatts { get; set; } = 50;
+    public string PmTableVersion { get; set; } = string.Empty;
+    public double? HwStapmLimitWatts { get; set; }
+    public double? HwSlowLimitWatts { get; set; }
+    public double? HwFastLimitWatts { get; set; }
     public string FanMode { get; set; } = "auto";
     public int ManualFanPercent { get; set; } = 55;
     public int FanRpm { get; set; }
@@ -36,12 +44,15 @@ public sealed class HardwareDaemonStatus
 /// </summary>
 public sealed class PawnIoHardwareDaemon : ServiceBase
 {
+    public const int CurrentDaemonVersion = 2;
     public const string WindowsServiceName = "HaloDeckHardwareSvc";
     public const string PipeName = "HaloDeck.Hardware.v1";
 
     private const string PawnIoDllPath = @"C:\Program Files\PawnIO\PawnIOLib.dll";
-    private const int MinTdpWatts = 12;
-    private const int MaxTdpWatts = 85;
+    private const int MinTdpWatts = 8;
+    private const int MaxTdpWatts = 120;
+    private const int MaxSlowWatts = 130;
+    private const int MaxFastWatts = 140;
 
     // Strix Halo SMU mailbox addresses (RyzenSMU)
     private const uint Mp1CmdReg = 0x03B10928;
@@ -68,8 +79,20 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private string _lastError = string.Empty;
 
     private int _appliedTdpWatts = 40;
+    private int _appliedSlowWatts = 45;
+    private int _appliedFastWatts = 50;
+    private string _pmTableVersion = string.Empty;
+    private double? _hwStapmLimitWatts;
+    private double? _hwSlowLimitWatts;
+    private double? _hwFastLimitWatts;
+    private bool _pmTableResolved;
+    private bool _pmTableUnavailable;
+    private DateTime _lastPmReadUtc = DateTime.MinValue;
+    private readonly ulong[] _pmTableBuf = new ulong[1024];
+
     private string _fanMode = "auto";
     private int _manualFanPercent = 55;
+    private List<FanCurvePoint> _activeCurvePoints = FanCurveEvaluator.CreateDefaultCurves()[1].Points;
     private int _lastTempC = 48;
     private int _lastFanRpm;
     private int _appliedFanPwm;
@@ -353,7 +376,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                         }
 
                         // If curve mode hasn't received client temperature heartbeat in 15s, hand control back to BIOS auto
-                        if ((_fanMode is "silent" or "balanced") &&
+                        if ((_fanMode is "curve" or "silent" or "balanced") &&
                             (DateTime.UtcNow - _lastFanHeartbeatUtc) > TimeSpan.FromSeconds(15))
                         {
                             _fanMode = "auto";
@@ -393,15 +416,23 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                     {
                         WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () => _lastFanRpm = ReadFanRpmInternal());
                     }
+                    TryRefreshPmTableLocked(force: false);
                     return new { ok = true, status = BuildStatusSnapshotLocked() };
                 }
 
             case "set_tdp":
             {
                 int watts = Math.Clamp(root.GetProperty("watts").GetInt32(), MinTdpWatts, MaxTdpWatts);
+                int slowWatts = root.TryGetProperty("slowWatts", out var sp) && sp.ValueKind == JsonValueKind.Number
+                    ? Math.Clamp(sp.GetInt32(), MinTdpWatts, MaxSlowWatts)
+                    : watts;
+                int fastWatts = root.TryGetProperty("fastWatts", out var fp) && fp.ValueKind == JsonValueKind.Number
+                    ? Math.Clamp(fp.GetInt32(), MinTdpWatts, MaxFastWatts)
+                    : Math.Min(MaxFastWatts, Math.Max(slowWatts, watts + 2));
+
                 lock (_hwLock)
                 {
-                    bool ok = ApplyStrixHaloTdpLocked(watts, out string err);
+                    bool ok = ApplyStrixHaloTdpLocked(watts, slowWatts, fastWatts, out string err);
                     return new { ok, error = err, status = BuildStatusSnapshotLocked() };
                 }
             }
@@ -411,10 +442,22 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 string mode = (root.TryGetProperty("mode", out var mp) ? mp.GetString() : "auto") ?? "auto";
                 int pct = Math.Clamp(root.TryGetProperty("percent", out var pp) ? pp.GetInt32() : 55, 20, 100);
                 int tempC = root.TryGetProperty("tempC", out var tp) ? Math.Clamp(tp.GetInt32(), 0, 115) : _lastTempC;
+
+                List<FanCurvePoint>? parsedCurve = null;
+                if (root.TryGetProperty("curvePoints", out var cp) && cp.ValueKind == JsonValueKind.Array)
+                {
+                    parsedCurve = JsonSerializer.Deserialize<List<FanCurvePoint>>(cp.GetRawText(), JsonOpts);
+                }
+
                 lock (_hwLock)
                 {
                     _lastTempC = tempC;
                     _lastFanHeartbeatUtc = DateTime.UtcNow;
+                    if (parsedCurve is { Count: > 0 })
+                    {
+                        _activeCurvePoints = FanCurveEvaluator.NormalizePoints(parsedCurve);
+                    }
+
                     if (!_ecReady || _ecHandle == 0)
                     {
                         return new { ok = false, error = "EC 风扇通道仅支持 GPD G1618-05 / G1622-01", status = BuildStatusSnapshotLocked() };
@@ -454,6 +497,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         var (gpdExists, gpdRunning) = ProbeWindowsServiceState("GPDToolService");
         return new HardwareDaemonStatus
         {
+            DaemonVersion = CurrentDaemonVersion,
             ServiceInstalled = true,
             ServiceRunning = true,
             PawnIoInstalled = _pawnIoInstalled,
@@ -461,6 +505,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             EcReady = _ecReady,
             DmiBoard = _dmiBoard,
             AppliedTdpWatts = _appliedTdpWatts,
+            AppliedSlowWatts = _appliedSlowWatts,
+            AppliedFastWatts = _appliedFastWatts,
+            PmTableVersion = _pmTableVersion,
+            HwStapmLimitWatts = _hwStapmLimitWatts,
+            HwSlowLimitWatts = _hwSlowLimitWatts,
+            HwFastLimitWatts = _hwFastLimitWatts,
             FanMode = _fanMode,
             ManualFanPercent = _manualFanPercent,
             FanRpm = _lastFanRpm,
@@ -471,7 +521,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         };
     }
 
-    private bool ApplyStrixHaloTdpLocked(int watts, out string error)
+    private bool ApplyStrixHaloTdpLocked(int watts, int slowWatts, int fastWatts, out string error)
     {
         error = string.Empty;
         if (!_smuReady || _smuHandle == 0 || _pawnExecute is null)
@@ -480,17 +530,18 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             return false;
         }
 
-        uint sustMw = (uint)(watts * 1000);
-        uint fastMw = (uint)(Math.Min(MaxTdpWatts + 5, watts + 2) * 1000);
+        uint stapmMw = (uint)(watts * 1000);
+        uint slowMw = (uint)(slowWatts * 1000);
+        uint fastMw = (uint)(fastWatts * 1000);
 
         bool success = false;
         string localErr = string.Empty;
 
         WithNamedMutex(@"Global\Access_PCI", () =>
         {
-            bool okStapm = SendMp1MailboxCommand(0x14, sustMw, out int rspCode);
+            bool okStapm = SendMp1MailboxCommand(0x14, stapmMw, out int rspCode);
             bool okFast = SendMp1MailboxCommand(0x15, fastMw, out _);
-            bool okSlow = SendMp1MailboxCommand(0x16, sustMw, out _);
+            bool okSlow = SendMp1MailboxCommand(0x16, slowMw, out _);
 
             if (okStapm)
             {
@@ -499,7 +550,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             }
 
             // Fallback to PSMU set_stapm_limit (0x31)
-            var args = new ulong[] { 0x31, sustMw, 0, 0, 0, 0, 0 };
+            var args = new ulong[] { 0x31, stapmMw, 0, 0, 0, 0, 0 };
             var outArgs = new ulong[6];
             int hr = _pawnExecute(_smuHandle, "ioctl_send_smu_command", args, 7, outArgs, 6, out _);
             if (hr >= 0)
@@ -514,7 +565,11 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         if (success)
         {
             _appliedTdpWatts = watts;
+            _appliedSlowWatts = slowWatts;
+            _appliedFastWatts = fastWatts;
             _lastError = string.Empty;
+            Thread.Sleep(25);
+            TryRefreshPmTableLocked(force: true);
         }
         else
         {
@@ -522,6 +577,68 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             _lastError = localErr;
         }
         return success;
+    }
+
+    private void TryRefreshPmTableLocked(bool force)
+    {
+        if (!_smuReady || _smuHandle == 0 || _pawnExecute is null || _pmTableUnavailable)
+        {
+            return;
+        }
+
+        if (!force && (DateTime.UtcNow - _lastPmReadUtc) < TimeSpan.FromMilliseconds(900))
+        {
+            return;
+        }
+
+        WithNamedMutex(@"Global\Access_PCI", () =>
+        {
+            if (!_pmTableResolved)
+            {
+                var verOut = new ulong[2];
+                int hrResolve = _pawnExecute(_smuHandle, "ioctl_resolve_pm_table", Array.Empty<ulong>(), 0, verOut, 2, out _);
+                if (hrResolve < 0 || verOut[0] == 0)
+                {
+                    _pmTableUnavailable = true;
+                    return;
+                }
+
+                _pmTableVersion = $"0x{(uint)verOut[0]:X8}";
+                _pmTableResolved = true;
+            }
+
+            int hrUpdate = _pawnExecute(_smuHandle, "ioctl_update_pm_table", Array.Empty<ulong>(), 0, Array.Empty<ulong>(), 0, out _);
+            if (hrUpdate < 0)
+            {
+                return;
+            }
+
+            int hrRead = _pawnExecute(_smuHandle, "ioctl_read_pm_table", Array.Empty<ulong>(), 0, _pmTableBuf, (nuint)_pmTableBuf.Length, out nuint retQwords);
+            if (hrRead < 0 || retQwords < 3)
+            {
+                return;
+            }
+
+            // Strix Halo PM table header floats (Watts): 0x00=STAPM_LIMIT, 0x08=PPT_LIMIT_FAST, 0x10=PPT_LIMIT_SLOW
+            double? stapm = ReadPmFloatWatts(0);
+            double? fast = ReadPmFloatWatts(1);
+            double? slow = ReadPmFloatWatts(2);
+
+            if (stapm.HasValue) _hwStapmLimitWatts = stapm;
+            if (fast.HasValue) _hwFastLimitWatts = fast;
+            if (slow.HasValue) _hwSlowLimitWatts = slow;
+            _lastPmReadUtc = DateTime.UtcNow;
+        });
+    }
+
+    private double? ReadPmFloatWatts(int qwordIndex)
+    {
+        float v = BitConverter.Int32BitsToSingle(unchecked((int)(_pmTableBuf[qwordIndex] & 0xFFFFFFFF)));
+        if (float.IsNaN(v) || float.IsInfinity(v) || v < 1f || v > 300f)
+        {
+            return null;
+        }
+        return Math.Round(v, 1);
     }
 
     private bool SendMp1MailboxCommand(uint msgId, uint arg0, out int responseCode)
@@ -578,8 +695,17 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
     private void ApplyFanModeLocked(string mode, int manualPct, int tempC)
     {
-        _fanMode = mode.Trim().ToLowerInvariant();
-        _manualFanPercent = Math.Clamp(manualPct, 20, 100);
+        string normalized = mode.Trim().ToLowerInvariant();
+        _fanMode = normalized switch
+        {
+            "auto" => "auto",
+            "manual" => "manual",
+            "curve" => "curve",
+            "silent" or "balanced" => "curve",
+            "turbo" => "manual",
+            _ => "auto"
+        };
+        _manualFanPercent = normalized == "turbo" ? 100 : Math.Clamp(manualPct, 20, 100);
 
         if (_fanMode == "auto")
         {
@@ -589,31 +715,9 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             return;
         }
 
-        int pct = _fanMode switch
-        {
-            "turbo" => 100,
-            "manual" => _manualFanPercent,
-            "silent" => tempC switch
-            {
-                <= 50 => 30,
-                <= 60 => 42,
-                <= 70 => 58,
-                <= 78 => 75,
-                _ => 92
-            },
-            _ => tempC switch // balanced curve
-            {
-                <= 45 => 35,
-                <= 55 => 48,
-                <= 65 => 64,
-                <= 75 => 82,
-                _ => 96
-            }
-        };
-
-        // Mandatory thermal safety override so user cannot stall cooling under load
-        if (tempC >= 86) pct = 100;
-        else if (tempC >= 82 && pct < 80) pct = 80;
+        int pct = _fanMode == "manual"
+            ? FanCurveEvaluator.ApplySafetyFloor(tempC, _manualFanPercent)
+            : FanCurveEvaluator.Evaluate(tempC, _activeCurvePoints);
 
         byte pwm = (byte)Math.Clamp((int)Math.Round(pct / 100.0 * 244.0), 36, 244);
         _appliedFanPwm = pwm;

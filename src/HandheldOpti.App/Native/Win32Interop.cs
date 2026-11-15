@@ -289,6 +289,9 @@ internal static class Win32Interop
         SendInput(1, new[] { up }, Marshal.SizeOf<INPUT>());
     }
 
+    [DllImport("user32.dll")]
+    public static extern nint GetDesktopWindow();
+
     public static void SendWinChord(ushort vk)
     {
         const ushort vkLWin = 0x5B;
@@ -297,6 +300,22 @@ internal static class Win32Interop
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLWin } } },
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk } } },
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, dwFlags = KEYEVENTF_KEYUP } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLWin, dwFlags = KEYEVENTF_KEYUP } } }
+        };
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void SendWinCtrlChord(ushort vk)
+    {
+        const ushort vkLWin = 0x5B;
+        const ushort vkLControl = 0xA2;
+        var inputs = new INPUT[]
+        {
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLWin } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLControl } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, dwFlags = KEYEVENTF_KEYUP } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLControl, dwFlags = KEYEVENTF_KEYUP } } },
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vkLWin, dwFlags = KEYEVENTF_KEYUP } } }
         };
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());

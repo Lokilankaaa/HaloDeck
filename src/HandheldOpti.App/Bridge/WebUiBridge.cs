@@ -91,9 +91,25 @@ public sealed class WebUiBridge : IDisposable
     public GameEntry? RunningGame => _runningGame;
     public SystemControlState LatestSystemState => _latestSystemState ?? (_latestSystemState = _systemControl.GetState());
     public int ResumeAllFrozenGames() => _toolbox.ResumeAllFrozenProcesses();
+    public bool SuppressHardwareCleanupOnDispose { get; set; }
 
     public void Dispose()
     {
+        try
+        {
+            if (!SuppressHardwareCleanupOnDispose && _settings.FanMode != "auto")
+            {
+                var st = _systemControl.HardwareClient.GetStatus();
+                if (st.ServiceRunning && st.EcReady)
+                {
+                    _systemControl.HardwareClient.SetFan("auto", _settings.ManualFanPercent, 48);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore shutdown restoration failures
+        }
         _toolbox.Dispose();
         _systemControl.Dispose();
     }
@@ -184,12 +200,13 @@ public sealed class WebUiBridge : IDisposable
         // Fan curve temperature heartbeat when daemon is online & using active curve mode
         if (sys.HardwareService.ServiceRunning &&
             sys.HardwareService.EcReady &&
-            _settings.FanMode is "silent" or "balanced")
+            _settings.FanMode is "curve" or "silent" or "balanced")
         {
             int peakTemp = Math.Max(sys.GpuTempC, sys.CpuTempC);
             if (peakTemp > 0)
             {
-                _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, peakTemp);
+                var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+                _systemControl.HardwareClient.SetFan("curve", _settings.ManualFanPercent, peakTemp, activeCurve.Points);
             }
         }
 
@@ -280,7 +297,7 @@ public sealed class WebUiBridge : IDisposable
                 {
                     try { _systemControl.SetRefreshRate(prof.RefreshRateHz); } catch { }
                 }
-                if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 12 and <= 85)
+                if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 8 and <= 120)
                 {
                     _systemControl.HardwareClient.SetTdp(prof.TdpWatts);
                 }
@@ -413,13 +430,17 @@ public sealed class WebUiBridge : IDisposable
                 "setCpuBoost" => BroadcastSystemState(_systemControl.SetCpuBoostMode(payload.GetProperty("mode").GetString() ?? "aggressive")),
                 "setCpuMaxFreq" => SetCpuMaxFreq(payload),
                 "setTdp" => SetTdp(payload),
+                "savePowerConfig" => SavePowerConfig(payload),
                 "setPowerLinkage" => SetPowerLinkage(payload),
                 "setFanMode" => SetFanMode(payload),
+                "saveFanCurves" => SaveFanCurves(payload),
+                "openSettingsJson" => OpenSettingsJson(),
+                "reloadSettingsJson" => ReloadSettingsJson(),
                 "setOverlayHud" => SetOverlayHud(payload),
                 "setGamepadMouseMode" => SetGamepadMouseMode(payload),
                 "installHardwareService" => await InstallHardwareServiceAsync(),
                 "toggleGpdService" => await ToggleGpdServiceAsync(payload),
-                "runToolboxAction" => RunToolboxAction(payload),
+                "runToolboxAction" => await RunToolboxActionAsync(payload),
                 "getGpdController" => await Task.Run(() => _gpdController.ReadConfig(payload.TryGetProperty("forceRefresh", out var fr) && fr.GetBoolean())),
                 "saveGpdController" => await SaveGpdControllerAsync(payload),
                 "saveGamePerfProfile" => SaveGamePerfProfile(payload),
@@ -454,6 +475,7 @@ public sealed class WebUiBridge : IDisposable
             components = _componentManager.GetComponents(),
             customExtensions = _componentManager.GetCustomExtensions(_settings.DisabledCustomDlls),
             settings = _settings,
+            settingsFilePath = _settingsStore.SettingsFilePath,
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             memoryHealth = Win32Interop.GetSystemMemoryHealth(),
@@ -1006,18 +1028,31 @@ public sealed class WebUiBridge : IDisposable
 
     private object SetTdp(JsonElement payload)
     {
-        int watts = Math.Clamp(payload.GetProperty("watts").GetInt32(), 12, 85);
+        int watts = Math.Clamp(payload.GetProperty("watts").GetInt32(), 8, 120);
         _settings.CurrentTdpWatts = watts;
 
-        if (payload.TryGetProperty("savePreset", out var presetProp) && presetProp.GetString() is { } slot)
+        if (payload.TryGetProperty("unlockThreeStage", out var ulProp))
         {
-            switch (slot.Trim().ToLowerInvariant())
+            _settings.UnlockThreeStagePower = ulProp.GetBoolean();
+        }
+
+        if (_settings.UnlockThreeStagePower)
+        {
+            if (payload.TryGetProperty("slowWatts", out var sp) && sp.ValueKind == JsonValueKind.Number)
             {
-                case "silent": _settings.TdpPresetSilent = watts; break;
-                case "balanced": _settings.TdpPresetBalanced = watts; break;
-                case "turbo": _settings.TdpPresetTurbo = watts; break;
+                _settings.SlowPptWatts = Math.Clamp(sp.GetInt32(), 8, 130);
+            }
+            if (payload.TryGetProperty("fastWatts", out var fp) && fp.ValueKind == JsonValueKind.Number)
+            {
+                _settings.FastPptWatts = Math.Clamp(fp.GetInt32(), 8, 140);
             }
         }
+        else
+        {
+            _settings.SlowPptWatts = watts;
+            _settings.FastPptWatts = Math.Min(140, watts + 2);
+        }
+
         _settingsStore.Save(_settings);
 
         var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
@@ -1026,13 +1061,20 @@ public sealed class WebUiBridge : IDisposable
 
         if (hw.ServiceRunning)
         {
-            var (ok, err, nextHw) = _systemControl.HardwareClient.SetTdp(watts);
+            int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
+            int? fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, watts + 2);
+            var (ok, err, nextHw) = _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg);
             if (!ok)
             {
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
             }
             hardwareApplied = true;
-            note = $"Strix Halo APU 功耗上限已即时调整为 {nextHw.AppliedTdpWatts}W";
+            bool v1Clamped = nextHw.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion && (watts < 12 || watts > 85);
+            note = v1Clamped
+                ? $"旧版硬件服务已钳位应用 {nextHw.AppliedTdpWatts}W（点击「升级重启硬件服务」解锁 8–120W 与三段功耗读回）"
+                : (_settings.UnlockThreeStagePower
+                    ? $"已下发 SMU 三段功耗：SPL {nextHw.AppliedTdpWatts}W / sPPT {nextHw.AppliedSlowWatts}W / fPPT {nextHw.AppliedFastWatts}W"
+                    : $"Strix Halo APU 功耗上限已即时调整为 {nextHw.AppliedTdpWatts}W");
         }
 
         var updatedSys = _systemControl.GetState(includeHardwareRefresh: true);
@@ -1041,11 +1083,66 @@ public sealed class WebUiBridge : IDisposable
         return new { ok = true, hardwareApplied, watts, message = note, systemControl = updatedSys };
     }
 
+    private object SavePowerConfig(JsonElement payload)
+    {
+        if (payload.TryGetProperty("customTdpPresets", out var listProp) && listProp.ValueKind == JsonValueKind.Array)
+        {
+            var nextPresets = new List<int>();
+            foreach (var el in listProp.EnumerateArray())
+            {
+                if (el.ValueKind == JsonValueKind.Number)
+                {
+                    nextPresets.Add(Math.Clamp(el.GetInt32(), 8, 120));
+                }
+            }
+            if (nextPresets.Count > 0)
+            {
+                _settings.CustomTdpPresets = nextPresets.Distinct().OrderBy(w => w).ToList();
+            }
+        }
+
+        if (payload.TryGetProperty("unlockThreeStagePower", out var ulProp))
+        {
+            _settings.UnlockThreeStagePower = ulProp.GetBoolean();
+        }
+        if (payload.TryGetProperty("slowPptWatts", out var spProp) && spProp.ValueKind == JsonValueKind.Number)
+        {
+            _settings.SlowPptWatts = Math.Clamp(spProp.GetInt32(), 8, 130);
+        }
+        if (payload.TryGetProperty("fastPptWatts", out var fpProp) && fpProp.ValueKind == JsonValueKind.Number)
+        {
+            _settings.FastPptWatts = Math.Clamp(fpProp.GetInt32(), 8, 140);
+        }
+
+        _settingsStore.Save(_settings);
+
+        bool applyNow = payload.TryGetProperty("applyNow", out var apProp) && apProp.GetBoolean();
+        if (applyNow)
+        {
+            var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
+            if (hw.ServiceRunning)
+            {
+                int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
+                int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
+                var (ok, err, _) = _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg);
+                if (!ok)
+                {
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU 三段功耗失败" : err);
+                }
+            }
+        }
+
+        var nextSys = _systemControl.GetState(includeHardwareRefresh: applyNow);
+        BroadcastSystemState(nextSys);
+        BroadcastStateSnapshot();
+        return new { ok = true, settings = _settings, systemControl = nextSys };
+    }
+
     private object SetPowerLinkage(JsonElement payload)
     {
         bool enabled = payload.TryGetProperty("enabled", out var enProp) ? enProp.GetBoolean() : _settings.PowerLinkageEnabled;
-        int batteryW = payload.TryGetProperty("batteryWatts", out var bwProp) ? Math.Clamp(bwProp.GetInt32(), 12, 85) : _settings.BatteryTdpWatts;
-        int acW = payload.TryGetProperty("acWatts", out var awProp) ? Math.Clamp(awProp.GetInt32(), 12, 85) : _settings.AcTdpWatts;
+        int batteryW = payload.TryGetProperty("batteryWatts", out var bwProp) ? Math.Clamp(bwProp.GetInt32(), 8, 120) : _settings.BatteryTdpWatts;
+        int acW = payload.TryGetProperty("acWatts", out var awProp) ? Math.Clamp(awProp.GetInt32(), 8, 120) : _settings.AcTdpWatts;
 
         _settings.PowerLinkageEnabled = enabled;
         _settings.BatteryTdpWatts = batteryW;
@@ -1069,27 +1166,45 @@ public sealed class WebUiBridge : IDisposable
 
     private object SetFanMode(JsonElement payload)
     {
-        string mode = (payload.TryGetProperty("mode", out var mp) ? mp.GetString() : "auto") ?? "auto";
+        string rawMode = (payload.TryGetProperty("mode", out var mp) ? mp.GetString() : "auto") ?? "auto";
         int manualPct = payload.TryGetProperty("manualPercent", out var pp)
             ? Math.Clamp(pp.GetInt32(), 20, 100)
             : _settings.ManualFanPercent;
 
-        mode = mode.Trim().ToLowerInvariant();
-        if (mode is not ("auto" or "silent" or "balanced" or "turbo" or "manual"))
+        if (payload.TryGetProperty("curveId", out var cidProp) && cidProp.GetString() is { Length: > 0 } cid)
         {
-            mode = "auto";
+            _settings.ActiveFanCurveId = cid;
         }
+
+        if (payload.TryGetProperty("curves", out var curvesProp) && curvesProp.ValueKind == JsonValueKind.Array)
+        {
+            var parsed = JsonSerializer.Deserialize<List<FanCurveProfile>>(curvesProp.GetRawText(), JsonOptions);
+            if (parsed is { Count: > 0 })
+            {
+                _settings.FanCurves = FanCurveEvaluator.NormalizeCurves(parsed);
+            }
+        }
+
+        string mode = rawMode.Trim().ToLowerInvariant() switch
+        {
+            "auto" => "auto",
+            "manual" => "manual",
+            "curve" or "silent" or "balanced" or "turbo" => "curve",
+            _ => "auto"
+        };
 
         _settings.FanMode = mode;
         _settings.ManualFanPercent = manualPct;
+        var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+        _settings.ActiveFanCurveId = activeCurve.Id;
         _settingsStore.Save(_settings);
 
-        var curSys = _systemControl.GetState(forceRefreshSafe());
+        var curSys = _systemControl.GetState(includeHardwareRefresh: true);
         bool hardwareApplied = false;
         if (curSys.HardwareService.ServiceRunning)
         {
             int tempC = Math.Max(curSys.GpuTempC, curSys.CpuTempC);
-            var (ok, err, _) = _systemControl.HardwareClient.SetFan(mode, manualPct, tempC);
+            var (ok, err, _) = _systemControl.HardwareClient.SetFan(mode, manualPct, tempC, activeCurve.Points);
             if (!ok)
             {
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 EC 风扇策略失败" : err);
@@ -1100,15 +1215,94 @@ public sealed class WebUiBridge : IDisposable
         var nextSys = _systemControl.GetState(includeHardwareRefresh: true);
         BroadcastSystemState(nextSys);
         BroadcastStateSnapshot();
+
+        string modeText = mode switch
+        {
+            "auto" => "EC 自动",
+            "manual" => $"直接固定 {manualPct}%",
+            _ => $"温度曲线 ({activeCurve.Name})"
+        };
         return new
         {
             ok = true,
             hardwareApplied,
-            message = hardwareApplied ? $"风扇模式已切换为 {mode}" : "已保存风扇策略（启用底层硬件服务后生效）",
+            message = hardwareApplied ? $"风扇模式已切换为 {modeText}" : $"已保存风扇策略：{modeText}（启用底层硬件服务后生效）",
             systemControl = nextSys
         };
+    }
 
-        static bool forceRefreshSafe() => true;
+    private object SaveFanCurves(JsonElement payload)
+    {
+        if (payload.TryGetProperty("curves", out var curvesProp) && curvesProp.ValueKind == JsonValueKind.Array)
+        {
+            var parsed = JsonSerializer.Deserialize<List<FanCurveProfile>>(curvesProp.GetRawText(), JsonOptions);
+            _settings.FanCurves = FanCurveEvaluator.NormalizeCurves(parsed);
+        }
+
+        if (payload.TryGetProperty("activeCurveId", out var cidProp) && cidProp.GetString() is { Length: > 0 } cid)
+        {
+            _settings.ActiveFanCurveId = cid;
+        }
+
+        var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+        _settings.ActiveFanCurveId = activeCurve.Id;
+        bool activate = payload.TryGetProperty("activate", out var actProp) && actProp.GetBoolean();
+        if (activate)
+        {
+            _settings.FanMode = "curve";
+        }
+        _settingsStore.Save(_settings);
+
+        var sys = _systemControl.GetState(includeHardwareRefresh: true);
+        if (_settings.FanMode == "curve" && sys.HardwareService.ServiceRunning)
+        {
+            int tempC = Math.Max(sys.GpuTempC, sys.CpuTempC);
+            var (ok, err, _) = _systemControl.HardwareClient.SetFan("curve", _settings.ManualFanPercent, tempC, activeCurve.Points);
+            if (!ok)
+            {
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "更新 EC 风扇曲线失败" : err);
+            }
+            sys = _systemControl.GetState(includeHardwareRefresh: true);
+            BroadcastSystemState(sys);
+        }
+
+        BroadcastStateSnapshot();
+        return new { ok = true, settings = _settings, activeCurve, systemControl = sys };
+    }
+
+    private object OpenSettingsJson()
+    {
+        _settingsStore.Save(_settings);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "notepad.exe",
+            Arguments = $"\"{_settingsStore.SettingsFilePath}\"",
+            UseShellExecute = true
+        });
+        return new { ok = true, path = _settingsStore.SettingsFilePath, message = "已打开 settings.json，修改保存后点击「重载」即可立即生效" };
+    }
+
+    private object ReloadSettingsJson()
+    {
+        _settings = _settingsStore.Load();
+        var sys = _systemControl.GetState(includeHardwareRefresh: true);
+        if (sys.HardwareService.ServiceRunning)
+        {
+            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
+            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
+            try { _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg); } catch { }
+
+            var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+            try { _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points); } catch { }
+            sys = _systemControl.GetState(includeHardwareRefresh: true);
+        }
+
+        ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
+        _inputHub.GamepadMouseModeEnabled = _settings.GamepadMouseModeEnabled;
+        OverlayHudUpdated?.Invoke();
+        BroadcastSystemState(sys);
+        BroadcastStateSnapshot();
+        return new { ok = true, settings = _settings, systemControl = sys, message = "已重新载入 settings.json 并同步电源与风扇配置" };
     }
 
     private object SetOverlayHud(JsonElement payload)
@@ -1175,8 +1369,11 @@ public sealed class WebUiBridge : IDisposable
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
-            _systemControl.HardwareClient.SetTdp(Math.Clamp(_settings.CurrentTdpWatts, 12, 85));
-            _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC));
+            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
+            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
+            _systemControl.HardwareClient.SetTdp(Math.Clamp(_settings.CurrentTdpWatts, 8, 120), slowArg, fastArg);
+            var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+            _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points);
             sys = _systemControl.GetState(includeHardwareRefresh: true);
         }
 
@@ -1233,10 +1430,11 @@ public sealed class WebUiBridge : IDisposable
         return new { ok = true, paused, systemControl = nextSys, message = paused ? "已暂停 GPDToolService" : "已恢复运行 GPDToolService" };
     }
 
-    private object RunToolboxAction(JsonElement payload)
+    private async Task<object> RunToolboxActionAsync(JsonElement payload)
     {
         string action = payload.GetProperty("action").GetString() ?? "";
         int pid = payload.TryGetProperty("pid", out var pidProp) ? pidProp.GetInt32() : 0;
+        bool fromQam = payload.TryGetProperty("fromQam", out var qamProp) && qamProp.GetBoolean();
 
         if (pid <= 0 && _runningGame is { IsCurrentlyRunning: true })
         {
@@ -1251,6 +1449,12 @@ public sealed class WebUiBridge : IDisposable
             pid = frozenPid;
             gameName = _toolbox.GetFrozenGames().FirstOrDefault(f => f.Pid == frozenPid)?.GameName;
             hasAntiCheat = false;
+        }
+
+        if (fromQam && action is "osk" or "show_desktop" or "task_view" or "screenshot")
+        {
+            InvokeUiAction(() => RequestHideQam?.Invoke());
+            await Task.Delay(95).ConfigureAwait(false);
         }
 
         string msg = _toolbox.ExecuteAction(action, pid, gameName, hasAntiCheat);
@@ -1289,7 +1493,7 @@ public sealed class WebUiBridge : IDisposable
             GameId = gameId,
             GameName = payload.TryGetProperty("gameName", out var np) ? (np.GetString() ?? gameId) : gameId,
             Enabled = payload.TryGetProperty("enabled", out var ep) && ep.GetBoolean(),
-            TdpWatts = payload.TryGetProperty("tdpWatts", out var tp) ? Math.Clamp(tp.GetInt32(), 12, 85) : 40,
+            TdpWatts = payload.TryGetProperty("tdpWatts", out var tp) ? Math.Clamp(tp.GetInt32(), 8, 120) : 40,
             RefreshRateHz = payload.TryGetProperty("refreshRateHz", out var hp) ? hp.GetInt32() : 0
         };
 
