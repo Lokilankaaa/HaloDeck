@@ -42,6 +42,12 @@
                                FontWeight="SemiBold"/>
                 </DockPanel>
 
+                <TextBlock x:Name="FpsLineText"
+                           Foreground="#38BDF8"
+                           FontSize="11.5"
+                           FontWeight="Bold"
+                           Margin="0,0,0,3"/>
+
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>

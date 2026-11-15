@@ -38,14 +38,48 @@
     vsyncMode: "on"
   };
 
-  const GPD_BACK_KEY_OPTIONS = [
-    { value: -1, label: "保留原宏/不变" },
-    { value: 0x0068, label: "F13 (侧边栏)" },
-    { value: 0x0069, label: "F14 (性能OSD)" },
-    { value: 0x0049, label: "Insert (菜单)" },
-    { value: 0x006A, label: "F15 (菜单/备用)" },
-    { value: 0x0000, label: "解除映射" }
+  const GPD_BACK_GAMEPAD_OPTIONS = [
+    { value: 0x800F, label: "手柄 L3" },
+    { value: 0x8010, label: "手柄 R3" },
+    { value: 0x8007, label: "手柄 A" },
+    { value: 0x8008, label: "手柄 B" },
+    { value: 0x8009, label: "手柄 X" },
+    { value: 0x800A, label: "手柄 Y" },
+    { value: 0x800B, label: "手柄 LB" },
+    { value: 0x800C, label: "手柄 RB" },
+    { value: 0x800D, label: "手柄 LT" },
+    { value: 0x800E, label: "手柄 RT" },
+    { value: 0x8000, label: "十字 ↑" },
+    { value: 0x8001, label: "十字 ↓" },
+    { value: 0x8002, label: "十字 ←" },
+    { value: 0x8003, label: "十字 →" },
+    { value: 0x8004, label: "Start" },
+    { value: 0x8005, label: "Select" }
   ];
+
+  const GPD_BACK_KEYBOARD_OPTIONS = [
+    { value: -1, label: "保留原宏" },
+    { value: 0x0000, label: "解除映射" },
+    { value: 0x002C, label: "Space 跳跃" },
+    { value: 0x00E1, label: "Shift 冲刺" },
+    { value: 0x00E0, label: "Ctrl 下蹲" },
+    { value: 0x0008, label: "E 互动" },
+    { value: 0x0009, label: "F 互动" },
+    { value: 0x0015, label: "R 换弹" },
+    { value: 0x002B, label: "Tab" },
+    { value: 0x0029, label: "Esc" },
+    { value: 0x0068, label: "F13 (侧栏)" },
+    { value: 0x0069, label: "F14 (OSD)" },
+    { value: 0x006A, label: "F15 (菜单)" },
+    { value: 0x0049, label: "Insert (超分)" }
+  ];
+
+  const GPD_BACK_PRESETS = {
+    fps_l3r3: { l4: 0x800F, r4: 0x8010, label: "FPS 摇杆直通 (L4=手柄L3 / R4=手柄R3)" },
+    act_ab: { l4: 0x8007, r4: 0x8008, label: "动作闪避跳跃 (L4=手柄A / R4=手柄B)" },
+    shoulder_lbrb: { l4: 0x800B, r4: 0x800C, label: "肩键扩展 (L4=手柄LB / R4=手柄RB)" },
+    halodeck_fn: { l4: 0x0068, r4: 0x0069, label: "HaloDeck 快捷键 (L4=F13侧栏 / R4=F14 OSD)", enableHotkeys: true }
+  };
 
   const state = {
     tab: "handheld",
@@ -62,6 +96,11 @@
     searchQuery: "",
     libraryFilter: "all",
     focusIndex: 0,
+    lastInputModality: "pointer",
+    isDraggingRange: false,
+    pendingSnapshot: null,
+    scrollPositions: {},
+    lastScrollRouteKey: "",
     recordingTarget: null,
     progressBySlot: {},
     busy: false,
@@ -351,12 +390,21 @@
 
   function patchLiveTelemetryDom(sys) {
     if (!sys) return;
+    const hw = sys.hardwareService || {};
     const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
     const apuText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--W";
+    const vramUsedGb = ((sys.vramUsedMb || 0) / 1024).toFixed(1);
+    const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
+    const sharedGb = ((sys.sharedVramUsedMb || 0) / 1024).toFixed(1);
+    const fpsText = sys.currentFps > 0 ? `${sys.currentFps} FPS` : "待检测游戏";
+    const frameTimeText = sys.frameTimeMs > 0
+      ? `${sys.frameTimeMs.toFixed(1)} ms · ETW 无钩子`
+      : ((hw.daemonVersion || 0) >= 3 ? "DX11 / DX12 / Vulkan 就绪" : "升级硬件服务 v3 解锁");
 
     const topApuLabel = document.getElementById("topApuLabel");
     if (topApuLabel) {
-      topApuLabel.textContent = `APU ${apuText} · ${maxTemp > 0 ? `${maxTemp}°C` : "--°C"}`;
+      const fpsPrefix = sys.currentFps > 0 ? `${sys.currentFps} FPS · ` : "";
+      topApuLabel.textContent = `${fpsPrefix}APU ${apuText} · C${sys.cpuTempC || "--"}°/G${sys.gpuTempC || "--"}° · VRAM ${vramUsedGb}G`;
     }
 
     const topSysLabel = document.getElementById("topSysLabel");
@@ -368,7 +416,7 @@
     if (pfApuVal) pfApuVal.textContent = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${state.snapshot?.settings?.currentTdpWatts || 45}W`;
 
     const pfApuSub = document.getElementById("pfApuSub");
-    if (pfApuSub) pfApuSub.textContent = `GPU ${sys.gpuUsagePercent || 0}% · ${maxTemp > 0 ? `${maxTemp}°C` : "待读取温度"}`;
+    if (pfApuSub) pfApuSub.textContent = `GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuTempC || "--"}° / GPU ${sys.gpuTempC || "--"}°C`;
 
     const pfBatVal = document.getElementById("pfBatVal");
     if (pfBatVal) {
@@ -402,7 +450,6 @@
 
     const fanRpmBadge = document.getElementById("fanRpmBadge");
     if (fanRpmBadge) {
-      const hw = sys.hardwareService || {};
       const pwmPct = hw.appliedFanPwm > 0 ? Math.round((hw.appliedFanPwm / 244) * 100) : 0;
       fanRpmBadge.textContent = hw.ecReady && hw.fanRpm > 0
         ? `${hw.fanRpm} RPM · PWM ${pwmPct}%`
@@ -411,7 +458,6 @@
 
     const pmReadback = document.getElementById("pmReadbackLine");
     if (pmReadback) {
-      const hw = sys.hardwareService || {};
       if (hw.hwStapmLimitWatts != null) {
         const sStr = hw.hwSlowLimitWatts != null ? hw.hwSlowLimitWatts.toFixed(1) : "--";
         const fStr = hw.hwFastLimitWatts != null ? hw.hwFastLimitWatts.toFixed(1) : "--";
@@ -419,18 +465,37 @@
       }
     }
 
-    const kpiApuW = document.getElementById("kpiApuW");
-    if (kpiApuW) kpiApuW.textContent = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W";
-    const kpiGpuLoad = document.getElementById("kpiGpuLoad");
-    if (kpiGpuLoad) kpiGpuLoad.textContent = `${sys.gpuUsagePercent || 0}%`;
-    const kpiCpuLoad = document.getElementById("kpiCpuLoad");
-    if (kpiCpuLoad) kpiCpuLoad.textContent = `${sys.cpuUsagePercent || 0}%`;
-    const kpiTemps = document.getElementById("kpiTemps");
-    if (kpiTemps) kpiTemps.textContent = maxTemp > 0 ? `${sys.gpuTempC || "--"} / ${sys.cpuTempC || "--"} °C` : "-- °C";
-    const kpiMem = document.getElementById("kpiMem");
-    if (kpiMem) kpiMem.textContent = sys.totalRamGb > 0 ? `${sys.usedRamGb} / ${sys.totalRamGb} GB` : "-- GB";
-    const kpiBat = document.getElementById("kpiBat");
-    if (kpiBat) kpiBat.textContent = formatPowerBadge(sys);
+    const setEl = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    setEl("kpiFps", fpsText);
+    setEl("kpiFpsSub", frameTimeText);
+    setEl("kpiApuW", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W");
+    setEl("kpiApuSub", `设定 ${state.snapshot?.settings?.currentTdpWatts || 40}W · ${sys.adlAvailable ? "ADL2 采样" : "待命"}`);
+    setEl("kpiGpuLoad", `${sys.gpuUsagePercent || 0}%`);
+    setEl("kpiGpuSub", `${sys.gfxClockMhz || 0} MHz · 显存频率 ${sys.memClockMhz || 0} MHz`);
+    setEl("kpiVram", `${vramUsedGb} / ${vramTotalGb} GB`);
+    setEl("kpiVramSub", `专用 ${sys.vramUsedMb || 0}MB · 共享 ${sys.sharedVramUsedMb || 0}MB (${sharedGb}G)`);
+    setEl("kpiCpuLoad", `${sys.cpuUsagePercent || 0}%`);
+    setEl("kpiCpuSub", sys.cpuClockMhz > 0 ? `${sys.cpuClockMhz} MHz` : (sys.cpuName || "AMD Ryzen"));
+    setEl("kpiCpuTemp", `CPU ${sys.cpuTempC || "--"}°C`);
+    setEl("kpiGpuTempSub", `GPU ${sys.gpuTempC || "--"}°C · 风扇 ${hw.fanRpm || 0} RPM`);
+    setEl("kpiMem", sys.totalRamGb > 0 ? `${sys.usedRamGb} / ${sys.totalRamGb} GB` : "-- GB");
+    setEl("kpiBat", formatPowerBadge(sys));
+    setEl("kpiBatSub", sys.estimatedChargerWatts != null ? `充电器输入 ≈ ${sys.estimatedChargerWatts.toFixed(1)}W` : "实时电池供电估算");
+
+    // QAM live tiles & monitor grid
+    setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
+    setEl("qamStripBat", formatPowerBadge(sys));
+    setEl("qamStripTherm", `C${sys.cpuTempC || "--"}° G${sys.gpuTempC || "--"}° · ${hw.fanRpm || 0}R`);
+    setEl("qamKpiFps", sys.currentFps > 0 ? `${sys.currentFps} FPS` : "-- FPS");
+    setEl("qamKpiApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W");
+    setEl("qamKpiGpu", `${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}M`);
+    setEl("qamKpiTemp", `C ${sys.cpuTempC || "--"}° / G ${sys.gpuTempC || "--"}°`);
+    setEl("qamKpiVram", `${vramUsedGb}/${vramTotalGb}G (+${sharedGb}G)`);
+    setEl("qamKpiMem", `${sys.usedRamGb || "--"}G · ${hw.fanRpm || 0}RPM`);
 
     const chartPower = document.getElementById("svgChartPowerTemp");
     if (chartPower) {
@@ -444,10 +509,15 @@
     if (qamSpark) {
       qamSpark.innerHTML = buildSvgChart(sys.apuWattsHistory || [], sys.gpuUsageHistory || [], 85, 100, "#2dd4bf", "#38bdf8", "APU W", "GPU %");
     }
+    const qamSpark2 = document.getElementById("qamOsdSparkline2");
+    if (qamSpark2) {
+      qamSpark2.innerHTML = buildSvgChart(sys.cpuUsageHistory || [], sys.tempHistory || [], 100, 100, "#a78bfa", "#fbbf24", "CPU %", "Temp °C");
+    }
     const qamPowerChip = document.getElementById("qamPowerChip");
     if (qamPowerChip) {
-      const rpm = sys.hardwareService?.fanRpm || 0;
-      qamPowerChip.textContent = `APU ${apuText} · ${maxTemp || "--"}°C · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}${rpm > 0 ? ` · ${rpm}RPM` : ""}`;
+      const rpm = hw.fanRpm || 0;
+      const fpsBadge = sys.currentFps > 0 ? `${sys.currentFps} FPS · ` : "";
+      qamPowerChip.textContent = `${fpsBadge}APU ${apuText} · C${sys.cpuTempC || "--"}°/G${sys.gpuTempC || "--"}° · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}${rpm > 0 ? ` · ${rpm}RPM` : ""}`;
     }
   }
 
@@ -503,9 +573,11 @@
 
   function syncGpdDraft(gpd) {
     if (!gpd) return;
+    const l4IsMacro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
+    const r4IsMacro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
     state.gpdDraft = {
-      l4Key: !gpd.connected || gpd.l4Mode === 2 ? -1 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0),
-      r4Key: !gpd.connected || gpd.r4Mode === 2 ? -1 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0),
+      l4Key: !gpd.connected || l4IsMacro ? -1 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0),
+      r4Key: !gpd.connected || r4IsMacro ? -1 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0),
       rumble: typeof gpd.rumbleLevel === "number" ? gpd.rumbleLevel : 1,
       leftDeadzone: typeof gpd.leftDeadzone === "number" ? gpd.leftDeadzone : 0,
       rightDeadzone: typeof gpd.rightDeadzone === "number" ? gpd.rightDeadzone : 0
@@ -523,6 +595,10 @@
     if (snap?.hardwareProfile?.deviceName) {
       const el = document.getElementById("deviceTag");
       if (el) el.textContent = "GPD WIN 5 · 8060S";
+    }
+    if (state.isDraggingRange) {
+      state.pendingSnapshot = snap;
+      return;
     }
     render();
   }
@@ -770,10 +846,13 @@
     }) : null;
 
     const daemonVer = hw.daemonVersion || 0;
-    const needsDaemonUpgrade = hw.serviceRunning && daemonVer < 2;
+    const needsV2Upgrade = hw.serviceRunning && daemonVer < 2;
+    const needsV3Upgrade = hw.serviceRunning && daemonVer < 3;
     const gpdConflictNote = hw.gpdServiceRunning
       ? "⚠ GPDToolService 并行运行中：HaloDeck 直接写入 SMU/EC，GPD Tools 只显示其自有内部缓存，不会自动刷新外部变更；建议暂停 GPDTools 以避免双端抢控。"
-      : "同步机制：HaloDeck 经签名 PawnIO 直写 SMU/EC（绝不读写 GPD Tools 私密 IPC），双方互不读取彼此缓存，请以 PM-Table / APU 实测功耗为准。";
+      : (needsV3Upgrade
+        ? "同步机制：HaloDeck 经 PawnIO 直控 SMU/EC（当前 v2 支持 8–120W 开放功耗与风扇曲线；升级至 v3 可解锁内核无钩子 ETW 帧率与 SMN 独立 CPU 温度）。"
+        : "同步机制：HaloDeck 经签名 PawnIO 直写 SMU/EC 并附带无钩子 ETW 帧率与 SMN CPU 温度采样，双方互不读取彼此缓存。");
 
     const serviceBanner = !hw.serviceRunning
       ? `
@@ -790,20 +869,20 @@
           </div>
         </div>`
       : `
-        <div class="hh-banner ${hw.gpdServiceRunning || needsDaemonUpgrade ? "warn" : ""}">
+        <div class="hh-banner ${hw.gpdServiceRunning || needsV2Upgrade ? "warn" : ""}">
           <div class="hh-banner-text">
             <strong>PawnIO 底层硬件直控已就绪 (v${daemonVer || 1}) · ${esc(hw.dmiBoard || "GPD WIN 5")}</strong>
             <span class="hh-banner-sub">${esc(gpdConflictNote)}</span>
           </div>
           <div class="hh-banner-actions">
-            ${needsDaemonUpgrade ? `<button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">升级重启硬件服务</button>` : ""}
+            ${needsV3Upgrade ? `<button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${needsV2Upgrade ? "升级重启硬件服务" : "升级硬件服务 v3 (解锁 FPS/CPU温)"}</button>` : ""}
             ${hw.gpdServiceExists ? `<button id="btnToggleGpdSvc" class="btn btn-sm" data-focusable="true">${hw.gpdServiceRunning ? "暂停 GPDTools 服务" : "恢复 GPDTools 服务"}</button>` : ""}
           </div>
         </div>`;
 
     const hwReadbackText = hw.hwStapmLimitWatts != null
       ? `PM 实读 (${hw.pmTableVersion || "SMU"})：SPL ${hw.hwStapmLimitWatts.toFixed(1)}W · sPPT ${hw.hwSlowLimitWatts != null ? hw.hwSlowLimitWatts.toFixed(1) : "--"}W · fPPT ${hw.hwFastLimitWatts != null ? hw.hwFastLimitWatts.toFixed(1) : "--"}W`
-      : (needsDaemonUpgrade
+      : (needsV2Upgrade
         ? `当前硬件服务 v1（仅回传目标 ${hw.appliedTdpWatts}W / 12–85W），升级服务后显示 RyzenSMU PM-Table 真实硬件读回`
         : `SMU 目标：SPL ${hw.appliedTdpWatts || curTdp}W${hw.appliedSlowWatts ? ` · sPPT ${hw.appliedSlowWatts}W · fPPT ${hw.appliedFastWatts}W` : ""}`);
 
@@ -1113,7 +1192,7 @@
                 </button>
                 <button class="toolbox-tile" data-toolbox="osk" data-focusable="true">
                   <span>屏幕键盘</span>
-                  <span class="tb-sub">TabTip</span>
+                  <span class="tb-sub">${settings.preferredOskMode === "xbox" && sys.gpdXboxKeyboardAvailable ? "Xbox 键盘" : settings.preferredOskMode === "osk" ? "传统 OSK" : "触摸键盘"}</span>
                 </button>
                 <button class="toolbox-tile" data-toolbox="screenshot" data-focusable="true">
                   <span>区域截屏</span>
@@ -1170,26 +1249,34 @@
   function renderMonitorView() {
     const snap = state.snapshot || {};
     const sys = snap.systemControl || {};
+    const hw = sys.hardwareService || {};
     const settings = snap.settings || {};
     const level = settings.overlayLevel ?? 0;
     const pos = settings.overlayPosition || "top-center";
     const opacity = settings.overlayOpacity ?? 0.86;
-    const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
+    const daemonVer = hw.daemonVersion || 0;
+    const vramUsedGb = ((sys.vramUsedMb || 0) / 1024).toFixed(1);
+    const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
+    const sharedGb = ((sys.sharedVramUsedMb || 0) / 1024).toFixed(1);
+    const fpsText = sys.currentFps > 0 ? `${sys.currentFps} FPS` : "待检测游戏";
+    const fpsSubText = sys.frameTimeMs > 0
+      ? `${sys.frameTimeMs.toFixed(1)} ms · ETW 无钩子`
+      : (daemonVer >= 3 ? "DX11 / DX12 / Vulkan 就绪" : "升级硬件服务 v3 解锁");
 
     const previewLines = level === 0
       ? ["悬浮窗已关闭（零资源占用，开启后鼠标完全穿透不拦截游戏点击）"]
       : level === 1
-        ? [`APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W · ${maxTemp || "--"}°C · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`]
+        ? [`${sys.currentFps > 0 ? `${sys.currentFps} FPS · ` : ""}APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W · C${sys.cpuTempC || "--"}°/G${sys.gpuTempC || "--"}° · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`]
         : level === 2
           ? [
-              `APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W (目标 ${settings.currentTdpWatts || 45}W)`,
-              `GPU ${sys.gpuUsagePercent || 0}% @ ${sys.gfxClockMhz || 0}MHz · ${sys.gpuTempC || "--"}°C`,
-              `CPU ${sys.cpuUsagePercent || 0}% · RAM ${sys.usedRamGb || "--"}/${sys.totalRamGb || "--"}GB`
+              `${sys.currentFps > 0 ? `${sys.currentFps} FPS | ` : ""}APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W (目标 ${settings.currentTdpWatts || 45}W)`,
+              `GPU ${sys.gpuUsagePercent || 0}% @ ${sys.gfxClockMhz || 0}MHz ${sys.gpuTempC || "--"}°C · VRAM ${vramUsedGb}G`,
+              `CPU ${sys.cpuUsagePercent || 0}% ${sys.cpuTempC || "--"}°C · RAM ${sys.usedRamGb || "--"}/${sys.totalRamGb || "--"}GB`
             ]
           : [
-              `${getActiveGame()?.title || "HaloDeck"} · 8060S`,
-              `APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W · GPU ${sys.gpuUsagePercent || 0}% · CPU ${sys.cpuUsagePercent || 0}%`,
-              `VRAM ${sys.vramUsedMb || "--"}MB · ${maxTemp || "--"}°C · ${formatPowerBadge(sys)}`
+              `${getActiveGame()?.title || "HaloDeck"} · ${fpsText}`,
+              `APU ${sys.apuPowerWatts?.toFixed(1) || "--"}W · GPU ${sys.gpuUsagePercent || 0}% (${sys.gpuTempC || "--"}°C) · CPU ${sys.cpuUsagePercent || 0}% (${sys.cpuTempC || "--"}°C)`,
+              `VRAM ${vramUsedGb}/${vramTotalGb}G (共享${sharedGb}G) · ${formatPowerBadge(sys)}`
             ];
 
     return `
@@ -1201,7 +1288,7 @@
               <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}`}</span>
             </div>
             <p style="font-size:11.5px;color:var(--text-secondary);margin:0 0 10px;">
-              纯原生 WPF WS_EX_TRANSPARENT 顶层透明窗口：不注入游戏进程、不触发任何反作弊、不抢游戏焦点、鼠标点击完全穿透。
+              纯原生 WPF WS_EX_TRANSPARENT 顶层透明窗口：结合内核无钩子 ETW 帧率采样，不注入游戏进程、不触发反作弊、鼠标点击完全穿透。
             </p>
             <div class="osd-level-pills">
               ${[
@@ -1251,34 +1338,44 @@
 
         <div class="mon-kpi-grid">
           <div class="mon-kpi-card">
+            <span class="pf-label">当前游戏帧率 (FPS)</span>
+            <span id="kpiFps" class="mon-kpi-val accent-blue">${esc(fpsText)}</span>
+            <span id="kpiFpsSub" class="mon-kpi-sub">${esc(fpsSubText)}</span>
+          </div>
+          <div class="mon-kpi-card">
             <span class="pf-label">APU 封装功耗</span>
             <span id="kpiApuW" class="mon-kpi-val">${sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W"}</span>
-            <span class="mon-kpi-sub">${sys.adlAvailable ? "AMD ADL2 实时采样" : "需 AMD 核显驱动"}</span>
+            <span id="kpiApuSub" class="mon-kpi-sub">设定 ${settings.currentTdpWatts || 40}W · ${sys.adlAvailable ? "ADL2 采样" : "需核显驱动"}</span>
           </div>
           <div class="mon-kpi-card">
             <span class="pf-label">GPU 占用与频率</span>
             <span id="kpiGpuLoad" class="mon-kpi-val">${sys.gpuUsagePercent || 0}%</span>
-            <span class="mon-kpi-sub">${sys.gfxClockMhz || 0} MHz · VRAM ${sys.vramUsedMb || "--"} MB</span>
+            <span id="kpiGpuSub" class="mon-kpi-sub">${sys.gfxClockMhz || 0} MHz · 显存频率 ${sys.memClockMhz || 0} MHz</span>
+          </div>
+          <div class="mon-kpi-card">
+            <span class="pf-label">GPU 显存 (专用 + 共享)</span>
+            <span id="kpiVram" class="mon-kpi-val">${vramUsedGb} / ${vramTotalGb} GB</span>
+            <span id="kpiVramSub" class="mon-kpi-sub">专用 ${sys.vramUsedMb || 0}MB · 共享 ${sys.sharedVramUsedMb || 0}MB (${sharedGb}G)</span>
           </div>
           <div class="mon-kpi-card">
             <span class="pf-label">CPU 占用与主频</span>
             <span id="kpiCpuLoad" class="mon-kpi-val">${sys.cpuUsagePercent || 0}%</span>
-            <span class="mon-kpi-sub">${sys.cpuClockMhz > 0 ? `${sys.cpuClockMhz} MHz` : esc(sys.cpuName || "AMD Ryzen")}</span>
+            <span id="kpiCpuSub" class="mon-kpi-sub">${sys.cpuClockMhz > 0 ? `${sys.cpuClockMhz} MHz` : esc(sys.cpuName || "AMD Ryzen")}</span>
           </div>
           <div class="mon-kpi-card">
-            <span class="pf-label">GPU / CPU 核心温度</span>
-            <span id="kpiTemps" class="mon-kpi-val">${maxTemp > 0 ? `${sys.gpuTempC || "--"} / ${sys.cpuTempC || "--"} °C` : "-- °C"}</span>
-            <span class="mon-kpi-sub">风扇 ${sys.hardwareService?.fanRpm || 0} RPM</span>
+            <span class="pf-label">CPU / GPU 独立温度</span>
+            <span id="kpiCpuTemp" class="mon-kpi-val">CPU ${sys.cpuTempC || "--"}°C</span>
+            <span id="kpiGpuTempSub" class="mon-kpi-sub">GPU ${sys.gpuTempC || "--"}°C · 风扇 ${hw.fanRpm || 0} RPM</span>
           </div>
           <div class="mon-kpi-card">
-            <span class="pf-label">系统内存占用</span>
+            <span class="pf-label">系统内存 (UMA)</span>
             <span id="kpiMem" class="mon-kpi-val">${sys.totalRamGb > 0 ? `${sys.usedRamGb} / ${sys.totalRamGb} GB` : "-- GB"}</span>
             <span class="mon-kpi-sub">提交上限 ${snap.memoryHealth?.commitLimitGb || "--"} GB</span>
           </div>
           <div class="mon-kpi-card">
-            <span class="pf-label">电源与电池</span>
+            <span class="pf-label">整机电源与电池</span>
             <span id="kpiBat" class="mon-kpi-val" style="font-size:15px;">${esc(formatPowerBadge(sys))}</span>
-            <span class="mon-kpi-sub">${sys.estimatedChargerWatts != null ? `充电器输入 ≈ ${sys.estimatedChargerWatts.toFixed(1)}W` : "实时电流采样"}</span>
+            <span id="kpiBatSub" class="mon-kpi-sub">${sys.estimatedChargerWatts != null ? `充电器输入 ≈ ${sys.estimatedChargerWatts.toFixed(1)}W` : "实时电池供电估算"}</span>
           </div>
         </div>
 
@@ -1288,7 +1385,7 @@
               <span class="hh-card-title">最近 60 秒 · APU 功耗 (W) & 温度 (°C)</span>
             </div>
             <div id="svgChartPowerTemp">
-              ${buildSvgChart(sys.apuWattsHistory || [], sys.tempHistory || [], 85, 100, "#2dd4bf", "#fbbf24", "APU W", "Temp °C")}
+              ${buildSvgChart(sys.apuWattsHistory || [], sys.tempHistory || [], 120, 100, "#2dd4bf", "#fbbf24", "APU W", "Temp °C")}
             </div>
           </div>
           <div class="chart-card">
@@ -1304,36 +1401,60 @@
     `;
   }
 
+  function ensureGpdControllerLoaded() {
+    if (state.gpdLoaded || state.gpdFetching) return;
+    state.gpdFetching = true;
+    setTimeout(async () => {
+      try {
+        const res = await rpc("getGpdController", { forceRefresh: false });
+        if (state.snapshot && res) {
+          state.snapshot.gpdController = res;
+          syncGpdDraft(res);
+        }
+      } catch {
+        // Non-fatal when device disconnected
+      } finally {
+        state.gpdLoaded = true;
+        state.gpdFetching = false;
+        if ((!IS_QAM && state.tab === "controls") || (IS_QAM && state.qamTab === "controls")) {
+          render();
+        }
+      }
+    }, 30);
+  }
+
   // ---------------- Console View 3: Controls, GPD Back Buttons & App Settings ----------------
   function renderControlsView() {
     const snap = state.snapshot || {};
+    const sys = snap.systemControl || {};
     const settings = snap.settings || {};
     const gpd = snap.gpdController || {};
     const draft = state.gpdDraft;
 
-    if (!state.gpdLoaded && !state.gpdFetching) {
-      state.gpdFetching = true;
-      setTimeout(async () => {
-        try {
-          const res = await rpc("getGpdController", { forceRefresh: false });
-          if (state.snapshot && res) {
-            state.snapshot.gpdController = res;
-            syncGpdDraft(res);
-          }
-        } catch {
-          // Non-fatal when device disconnected
-        } finally {
-          state.gpdLoaded = true;
-          state.gpdFetching = false;
-          if (state.tab === "controls" && !IS_QAM) render();
-        }
-      }, 40);
-    }
+    ensureGpdControllerLoaded();
 
     const qamButtons = settings.qamGamepadCombo?.buttons || ["BACK", "RB"];
     const osdButtons = settings.osdGamepadCombo?.buttons || ["BACK", "Y"];
     const mouseButtons = settings.mouseModeGamepadCombo?.buttons || ["BACK", "LB"];
     const insButtons = settings.insertGamepadCombo?.buttons || ["BACK", "START"];
+    const oskMode = settings.preferredOskMode || "xbox";
+    const interceptOsk = settings.interceptPhysicalOskButton !== false;
+    const enableBackHotkeys = settings.enableBackButtonHotkeys !== false;
+
+    const renderBackKeyGroups = (attrName, selectedVal) => `
+      <div class="gpd-key-group-label">手柄原生按键 (手柄模式直接参与游戏，支持 V2 固件)</div>
+      <div class="gpd-key-pill-grid">
+        ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
+          <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" ${attrName}="${opt.value}" data-focusable="true">${opt.label}</button>
+        `).join("")}
+      </div>
+      <div class="gpd-key-group-label">PC 游戏键 / HaloDeck 快捷功能 / 保留原宏</div>
+      <div class="gpd-key-pill-grid">
+        ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
+          <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" ${attrName}="${opt.value}" data-focusable="true">${opt.label}</button>
+        `).join("")}
+      </div>
+    `;
 
     return `
       <div class="page-scroll">
@@ -1342,7 +1463,7 @@
           <div class="hh-col">
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">GPD 手柄硬件固件设置 (VID_2F24&PID_0137 V2)</span>
+                <span class="hh-card-title">GPD 手柄硬件固件与原生背键 (Controller V2)</span>
                 <div style="display:flex;align-items:center;gap:6px;">
                   <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"}` : "未连接 GPD HID"}</span>
                   <button id="btnReadGpd" class="btn btn-sm" data-focusable="true">读取板载 Flash</button>
@@ -1350,25 +1471,27 @@
               </div>
 
               <div class="gpd-warn-note">
-                当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]。若需保留原有出厂多键宏，请保持「保留原宏/不变」；设为 F13 / F14 后可配合 HaloDeck 后台全局监听一键呼出侧边栏与性能悬浮窗。
+                当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]。在「手柄模式」下将 L4/R4 设为 <strong>手柄 L3 / R3 / A / B / LB / RB</strong> 等原生 XInput 键值写入 Flash 后，背键即可像原装手柄键一样直接参与游戏操控！
               </div>
 
-              <div class="hh-field" style="margin-bottom:8px;">
-                <label>L4 背键映射目标</label>
-                <div style="display:flex;flex-wrap:wrap;gap:5px;">
-                  ${GPD_BACK_KEY_OPTIONS.map((opt) => `
-                    <button class="pill-btn small ${draft.l4Key === opt.value ? "active" : ""}" data-gpd-l4="${opt.value}" data-focusable="true">${opt.label}</button>
-                  `).join("")}
+              <div class="hh-field" style="margin-bottom:10px;">
+                <label>一键应用场景预设 (先选后点击右下角「写入手柄 Flash」生效)</label>
+                <div class="gpd-preset-grid">
+                  ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
+                    const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
+                    return `<button class="pill-btn small ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.label.split("(")[0].trim())}</button>`;
+                  }).join("")}
                 </div>
               </div>
 
               <div class="hh-field" style="margin-bottom:10px;">
+                <label>L4 背键映射目标</label>
+                ${renderBackKeyGroups("data-gpd-l4", draft.l4Key)}
+              </div>
+
+              <div class="hh-field" style="margin-bottom:10px;">
                 <label>R4 背键映射目标</label>
-                <div style="display:flex;flex-wrap:wrap;gap:5px;">
-                  ${GPD_BACK_KEY_OPTIONS.map((opt) => `
-                    <button class="pill-btn small ${draft.r4Key === opt.value ? "active" : ""}" data-gpd-r4="${opt.value}" data-focusable="true">${opt.label}</button>
-                  `).join("")}
-                </div>
+                ${renderBackKeyGroups("data-gpd-r4", draft.r4Key)}
               </div>
 
               <div class="gpd-grid">
@@ -1393,8 +1516,16 @@
                 </div>
               </div>
 
+              <div class="cw-row" style="padding:8px 0;margin-bottom:8px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">启用 F13–F15 HaloDeck 全局热键</span>
+                  <span class="cw-row-sub">背键映射为手柄原生 L3/R3/A/B 时完全不冲突；若想把 F13–F15 直接绑定给游戏可关闭</span>
+                </div>
+                ${renderSwitch("swBackHotkeys", enableBackHotkeys)}
+              </div>
+
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                <span style="font-size:11px;color:var(--text-muted);">${esc(gpd.statusMessage || "无需常驻 GPDTools 进程，直通 HID Flash 读写")}</span>
+                <span style="font-size:11px;color:var(--text-muted);">${esc(gpd.statusMessage || "无需常驻 GPDTools 进程，直通 HID V2 Flash 读写")}</span>
                 <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>写入手柄 Flash</button>
               </div>
             </div>
@@ -1405,13 +1536,43 @@
                 ${renderSwitch("swMouseMode", !!settings.gamepadMouseModeEnabled)}
               </div>
               <p style="font-size:12px;color:var(--text-secondary);margin:0;">
-                开启后可直接用手柄操控 Windows 桌面：<strong>左摇杆</strong>移动光标 · <strong>A</strong> 左键 · <strong>B</strong> 右键 · <strong>X</strong> 中键 · <strong>右摇杆</strong>滚轮 · 按住 <strong>LB</strong> 精细减速 / <strong>RB</strong> 急速加速。当游戏运行且 HaloDeck 窗口未在前台时推荐用组合键随时开关。
+                开启后可直接用手柄操控 Windows 桌面：<strong>左摇杆</strong>移动光标 · <strong>A</strong> 左键 · <strong>B</strong> 右键 · <strong>X</strong> 中键 · <strong>右摇杆</strong>滚轮 · 按住 <strong>LB</strong> 精细减速 / <strong>RB</strong> 急速加速。
               </p>
             </div>
           </div>
 
-          <!-- Right: Global Hotkeys & App Preferences -->
+          <!-- Right: Xbox OSK Hook + Global Hotkeys & App Preferences -->
           <div class="hh-col">
+            <div class="hh-card">
+              <div class="hh-card-head">
+                <span class="hh-card-title">GPD Win 5 屏幕键盘与实体键盘键接管</span>
+                <span class="hh-card-badge ${sys.gpdXboxKeyboardAvailable ? "live" : ""}">${sys.gpdXboxKeyboardAvailable ? "已检测 Xbox 手柄键盘" : "系统触摸键盘"}</span>
+              </div>
+              <div class="cw-group">
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">接管机身实体屏幕键盘按钮 (Ctrl + Win + O)</span>
+                    <span class="cw-row-sub">按下 GPD Win 5 机身键盘键时不弹出老旧 osk.exe，改由 HaloDeck 唤出下方所选现代化键盘</span>
+                  </div>
+                  ${renderSwitch("swInterceptOsk", interceptOsk)}
+                </div>
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">首选虚拟键盘样式</span>
+                    <span class="cw-row-sub">推荐 Xbox 手柄键盘 (GPDKeyboard · 支持手柄直选打字)</span>
+                  </div>
+                  ${renderSegmented("data-osk-mode", [
+                    { value: "xbox", label: "Xbox 手柄键盘" },
+                    { value: "touch", label: "Win11 触摸" },
+                    { value: "osk", label: "传统 OSK" }
+                  ], oskMode, "compact")}
+                </div>
+              </div>
+              <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+                <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">立即呼出 / 收起屏幕键盘</button>
+              </div>
+            </div>
+
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">全局手柄组合键与键盘热键</span>
@@ -1480,7 +1641,7 @@
                 <div class="cw-row">
                   <div class="cw-row-copy">
                     <span class="cw-row-title">随 Windows 开机自启（最小化驻留托盘）</span>
-                    <span class="cw-row-sub">开箱即支持全局快捷侧栏、OSD、电源联动与自动注入</span>
+                    <span class="cw-row-sub">开箱即支持全局快捷侧栏、OSD、Xbox 屏幕键盘接管与自动注入</span>
                   </div>
                   ${renderSwitch("setStartup", !!settings.launchAtWindowsStartup)}
                 </div>
@@ -1987,6 +2148,10 @@
     const frozen = snap.frozenGames || [];
     const active = getActiveGame();
     const games = snap.games || [];
+    const daemonVer = hw.daemonVersion || 0;
+    const vramUsedGb = ((sys.vramUsedMb || 0) / 1024).toFixed(1);
+    const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
+    const sharedGb = ((sys.sharedVramUsedMb || 0) / 1024).toFixed(1);
 
     if (state.qamTab === "handheld") {
       const curTdp = settings.currentTdpWatts || 40;
@@ -2005,18 +2170,46 @@
       const hzOptions = (sys.supportedRefreshRates && sys.supportedRefreshRates.length)
         ? sys.supportedRefreshRates.map((h) => ({ value: String(h), label: `${h}Hz` }))
         : [{ value: "60", label: "60Hz" }, { value: "120", label: "120Hz" }];
+      const curRes = `${sys.screenWidth || 1920}x${sys.screenHeight || 1080}`;
+      const resOptions = [
+        { value: "1920x1080", label: "1080p" },
+        { value: "1600x900", label: "900p" },
+        { value: "1280x720", label: "720p" }
+      ];
+      const perGameProfiles = settings.perGameProfiles || {};
+      const gamePerf = active ? (perGameProfiles[active.id] || {
+        gameId: active.id,
+        gameName: active.title,
+        enabled: false,
+        tdpWatts: curTdp,
+        refreshRateHz: sys.refreshRateHz || 120
+      }) : null;
 
       return `
         <div class="qam-body">
           <div class="qam-section">
             <div class="qam-section-title">
               <span>掌机状态实时流</span>
-              <span id="qamPowerChip" class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">APU ${apuStr} · ${maxTemp || "--"}°C · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}${rpm > 0 ? ` · ${rpm}RPM` : ""}</span>
+              <span id="qamPowerChip" class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${sys.currentFps > 0 ? `${sys.currentFps} FPS · ` : ""}APU ${apuStr}</span>
+            </div>
+            <div class="qam-strip-grid">
+              <div class="qam-mini-kpi">
+                <span class="pf-label">APU 实测 / 目标</span>
+                <strong id="qamStripApu">${apuStr} / ${curTdp}W</strong>
+              </div>
+              <div class="qam-mini-kpi">
+                <span class="pf-label">电源与续航</span>
+                <strong id="qamStripBat">${esc(formatPowerBadge(sys))}</strong>
+              </div>
+              <div class="qam-mini-kpi">
+                <span class="pf-label">CPU/GPU 温度 · 风扇</span>
+                <strong id="qamStripTherm">C${sys.cpuTempC || "--"}° G${sys.gpuTempC || "--"}° · ${rpm}R</strong>
+              </div>
             </div>
             ${!hw.serviceRunning ? `
-              <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:6px;" data-focusable="true">一键启用 TDP / 风扇直控</button>
-            ` : ((hw.daemonVersion || 0) < 2 ? `
-              <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:6px;" data-focusable="true">升级硬件服务 (解锁 PM-Table / 120W)</button>
+              <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;margin-top:8px;" data-focusable="true">一键启用 TDP / 风扇直控</button>
+            ` : (daemonVer < 3 ? `
+              <button id="btnInstallHwSvc" class="btn btn-sm" style="width:100%;margin-top:8px;" data-focusable="true">${daemonVer < 2 ? "升级硬件服务 (解锁 PM-Table / 120W)" : "升级硬件服务 v3 (解锁 FPS / SMN CPU温度)"}</button>
             ` : "")}
           </div>
 
@@ -2025,15 +2218,37 @@
               <span>开放 APU 功耗 (8–120W)</span>
               <strong>${curTdp}W${hw.hwStapmLimitWatts != null ? ` (实读 ${hw.hwStapmLimitWatts.toFixed(0)}W)` : ""}</strong>
             </div>
-            <div class="qam-preset-row wrap">
+            <div class="qam-preset-row">
               ${customPresets.slice(0, 6).map((w) => `
-                <button class="pill-btn small ${curTdp === w ? "active" : ""}" data-tdp-watt="${w}" data-focusable="true">${w}W</button>
+                <button class="pill-btn qam-pill ${curTdp === w ? "active" : ""}" data-tdp-watt="${w}" data-focusable="true">${w}W</button>
               `).join("")}
             </div>
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-              <button id="btnTdpDec" class="step-btn" data-focusable="true">−2</button>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+              <button id="btnTdpDec" class="step-btn qam-step" data-focusable="true">−2W</button>
               <input id="tdpRangeInput" class="hh-range" type="range" min="8" max="120" step="1" value="${curTdp}" style="flex:1;" />
-              <button id="btnTdpInc" class="step-btn" data-focusable="true">+2</button>
+              <button id="btnTdpInc" class="step-btn qam-step" data-focusable="true">+2W</button>
+            </div>
+            <div class="cw-row qam-compact-row">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">插拔电自动切换 TDP</span>
+                <span class="cw-row-sub">离电 ${settings.batteryTdpWatts || 25}W · 插电 ${settings.acTdpWatts || 55}W</span>
+              </div>
+              ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
+            </div>
+            ${active && gamePerf ? `
+              <div class="cw-row qam-compact-row" style="margin-top:4px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">专属档案 · ${esc(active.title)}</span>
+                  <span class="cw-row-sub">${gamePerf.enabled ? `已启用 (${gamePerf.tdpWatts || curTdp}W)` : "点击开关绑定该游戏 TDP"}</span>
+                </div>
+                ${renderSwitch("swGamePerfEnabled", !!gamePerf.enabled)}
+              </div>` : ""}
+          </div>
+
+          <div class="qam-section">
+            <div class="qam-section-title">
+              <span>风扇控制 (GPD 双风扇 EC)</span>
+              <span id="fanRpmBadge" class="hh-card-badge ${hw.ecReady ? "live" : ""}">${rpm} RPM</span>
             </div>
             <div class="qam-fan-row">
               ${[
@@ -2041,49 +2256,63 @@
                 { value: "manual", label: "直接 %" },
                 { value: "curve", label: "温度曲线" }
               ].map((opt) => `
-                <button class="pill-btn small ${fanMode === opt.value ? "active" : ""}" data-fan-mode="${opt.value}" data-focusable="true">${opt.label}</button>
+                <button class="pill-btn qam-pill ${fanMode === opt.value ? "active" : ""}" data-fan-mode="${opt.value}" data-focusable="true">${opt.label}</button>
               `).join("")}
             </div>
-            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
-              <button id="btnFanPctDec" class="step-btn" data-focusable="true">−5%</button>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+              <button id="btnFanPctDec" class="step-btn qam-step" data-focusable="true">−5%</button>
               <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="1" value="${manualFanPct}" style="flex:1;" />
-              <span id="fanManualVal" style="font-size:11px;font-weight:700;min-width:34px;text-align:right;">${manualFanPct}%</span>
-              <button id="btnFanPctInc" class="step-btn" data-focusable="true">+5%</button>
+              <span id="fanManualVal" style="font-size:12px;font-weight:700;min-width:36px;text-align:right;">${manualFanPct}%</span>
+              <button id="btnFanPctInc" class="step-btn qam-step" data-focusable="true">+5%</button>
+            </div>
+            <div class="qam-fan-quick-row">
+              ${[35, 50, 65, 80, 100].map((p) => `
+                <button class="pill-btn qam-pill ${fanMode === "manual" && manualFanPct === p ? "active" : ""}" data-fan-quick-pct="${p}" data-focusable="true">${p}%</button>
+              `).join("")}
             </div>
             ${fanMode === "curve" ? `
               <div class="qam-curve-row">
-                <div class="qam-preset-row wrap" style="margin:6px 0 2px;">
+                <div class="qam-preset-row wrap" style="margin:6px 0 4px;">
                   ${fanCurves.map((c) => `
-                    <button class="pill-btn small ${activeCurve.id === c.id ? "active" : ""}" data-select-fan-curve="${esc(c.id)}" data-focusable="true">${esc(c.name.split(" ")[0])}</button>
+                    <button class="pill-btn qam-pill ${activeCurve.id === c.id ? "active" : ""}" data-select-fan-curve="${esc(c.id)}" data-focusable="true">${esc(c.name.split(" ")[0])}</button>
                   `).join("")}
                 </div>
-                <span style="font-size:10.5px;color:var(--text-secondary);">曲线实时目标：${curTempEval}°C → ${curveEvalPct}%</span>
+                <span style="font-size:11px;color:var(--text-secondary);">曲线实时目标：${curTempEval}°C → ${curveEvalPct}%</span>
               </div>` : ""}
           </div>
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>屏幕与音量</span>
-              <span style="font-size:11px;color:var(--text-secondary);">${sys.refreshRateHz || "--"}Hz · ${formatResShort(`${sys.screenWidth}x${sys.screenHeight}`)}</span>
+              <span>显示 · CPU 调度 · 亮度与音量</span>
+              <span style="font-size:11px;color:var(--text-secondary);">${sys.refreshRateHz || "--"}Hz · ${formatResShort(curRes)}</span>
             </div>
-            <div style="margin-bottom:8px;">
+            <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px;">
               ${renderSegmented("data-refresh-hz", hzOptions, String(sys.refreshRateHz || 120), "compact")}
+              ${renderSegmented("data-res-mode", resOptions, curRes, "compact")}
+              ${renderSegmented("data-cpu-boost", [
+                { value: "off", label: "关睿频" },
+                { value: "efficient", label: "平衡调度" },
+                { value: "aggressive", label: "满血睿频" }
+              ], sys.cpuBoostMode || "aggressive", "compact")}
             </div>
-            <div style="display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;flex-direction:column;gap:7px;">
               ${renderStepSlider({ idPrefix: "bright", value: sys.brightnessPercent ?? 70, displayText: sys.brightnessSupported ? `亮度 ${sys.brightnessPercent}%` : "不支持亮度", disabled: !sys.brightnessSupported })}
               ${renderStepSlider({ idPrefix: "vol", value: sys.volumePercent ?? 50, muted: !!sys.isMuted, muteBtnId: "btnToggleMute" })}
             </div>
           </div>
 
           <div class="qam-section">
-            <div class="qam-section-title"><span>快捷工具</span></div>
+            <div class="qam-section-title">
+              <span>掌机快捷工具</span>
+              <span style="font-size:11px;color:var(--text-muted);">${frozen.length > 0 ? `已冻结 ${frozen.length}` : "随点随用"}</span>
+            </div>
             <div class="qam-toolbox-mini">
-              <button class="pill-btn small ${frozen.length > 0 ? "active" : ""}" data-toolbox="toggle_fridge" data-focusable="true">游戏冰箱${frozen.length ? ` (${frozen.length})` : ""}</button>
-              <button id="btnToolboxMouse" class="pill-btn small ${settings.gamepadMouseModeEnabled ? "active" : ""}" data-focusable="true">手柄鼠标 ${settings.gamepadMouseModeEnabled ? "开" : "关"}</button>
-              <button class="pill-btn small" data-toolbox="show_desktop" data-focusable="true">返回桌面</button>
-              <button class="pill-btn small" data-toolbox="task_view" data-focusable="true">切换窗口</button>
-              <button class="pill-btn small" data-toolbox="osk" data-focusable="true">屏幕键盘</button>
-              <button id="btnKillGame" class="pill-btn small ${state.killArmed ? "btn-armed-danger" : ""}" data-focusable="true">${state.killArmed ? "确认强关?" : "强关游戏"}</button>
+              <button class="pill-btn qam-pill" data-toolbox="osk" data-focusable="true">${settings.preferredOskMode === "xbox" && sys.gpdXboxKeyboardAvailable ? "Xbox 屏幕键盘" : "屏幕键盘"}</button>
+              <button id="btnToolboxMouse" class="pill-btn qam-pill ${settings.gamepadMouseModeEnabled ? "active" : ""}" data-focusable="true">手柄鼠标 ${settings.gamepadMouseModeEnabled ? "开" : "关"}</button>
+              <button class="pill-btn qam-pill ${frozen.length > 0 ? "active" : ""}" data-toolbox="toggle_fridge" data-focusable="true">游戏冰箱${frozen.length ? ` (${frozen.length})` : ""}</button>
+              <button class="pill-btn qam-pill" data-toolbox="show_desktop" data-focusable="true">返回桌面</button>
+              <button class="pill-btn qam-pill" data-toolbox="task_view" data-focusable="true">切换窗口</button>
+              <button id="btnKillGame" class="pill-btn qam-pill ${state.killArmed ? "btn-armed-danger" : ""}" data-focusable="true">${state.killArmed ? "确认强关?" : "强关游戏"}</button>
             </div>
           </div>
         </div>
@@ -2093,39 +2322,72 @@
     if (state.qamTab === "osd") {
       const level = settings.overlayLevel ?? 0;
       const pos = settings.overlayPosition || "top-center";
-      const maxTemp = Math.max(sys.gpuTempC || 0, sys.cpuTempC || 0);
+      const opacity = settings.overlayOpacity ?? 0.86;
       return `
         <div class="qam-body">
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>性能悬浮窗级别 (0–4 档)</span>
+              <span>无钩子穿透式 OSD 档位 (0–4 档)</span>
               <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}`}</span>
             </div>
             <div class="osd-level-pills" style="margin-bottom:8px;">
               ${[0, 1, 2, 3, 4].map((v) => `
-                <button class="pill-btn small ${level === v ? "active" : ""}" data-osd-level="${v}" data-focusable="true">${v === 0 ? "关" : `${v}级`}</button>
+                <button class="pill-btn qam-pill ${level === v ? "active" : ""}" data-osd-level="${v}" data-focusable="true">${v === 0 ? "关" : `${v}级`}</button>
               `).join("")}
             </div>
-            ${renderSegmented("data-osd-pos", [
-              { value: "top-left", label: "左上" },
-              { value: "top-center", label: "顶中" },
-              { value: "top-right", label: "右上" }
-            ], pos, "compact")}
-          </div>
-
-          <div class="qam-section">
-            <div class="qam-section-title"><span>硬件实时摘要</span></div>
-            <div style="font-size:12px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px;">
-              <div>APU: <strong style="color:#fff;">${sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--"}</strong> · GPU <strong style="color:#fff;">${sys.gpuUsagePercent || 0}%</strong> (${sys.gfxClockMhz || 0}MHz)</div>
-              <div>CPU: <strong style="color:#fff;">${sys.cpuUsagePercent || 0}%</strong> · 最高温 <strong style="color:#fff;">${maxTemp || "--"}°C</strong> · 风扇 <strong style="color:#fff;">${hw.fanRpm || 0} RPM</strong></div>
-              <div>内存: <strong style="color:#fff;">${sys.usedRamGb || "--"}/${sys.totalRamGb || "--"} GB</strong> · ${esc(formatPowerBadge(sys))}</div>
+            <div style="display:flex;flex-direction:column;gap:7px;">
+              ${renderSegmented("data-osd-pos", [
+                { value: "top-left", label: "左上" },
+                { value: "top-center", label: "顶中" },
+                { value: "top-right", label: "右上" }
+              ], pos, "compact")}
+              ${renderSegmented("data-osd-opacity", [
+                { value: "0.55", label: "55%透" },
+                { value: "0.75", label: "75%透" },
+                { value: "0.88", label: "88%透" },
+                { value: "1", label: "100%" }
+              ], String(opacity >= 0.95 ? 1 : opacity >= 0.82 ? 0.88 : opacity >= 0.65 ? 0.75 : 0.55), "compact")}
             </div>
           </div>
 
           <div class="qam-section">
-            <div class="qam-section-title"><span>最近 60 秒 APU 功耗与 GPU 趋势</span></div>
-            <div id="qamOsdSparkline">
+            <div class="qam-section-title"><span>实时掌机核心指标</span></div>
+            <div class="qam-kpi-grid">
+              <div class="qam-kpi-card">
+                <span class="pf-label">当前帧率</span>
+                <strong id="qamKpiFps" class="accent-blue">${sys.currentFps > 0 ? `${sys.currentFps} FPS` : "-- FPS"}</strong>
+              </div>
+              <div class="qam-kpi-card">
+                <span class="pf-label">APU 功耗</span>
+                <strong id="qamKpiApu">${sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : "-- W"}</strong>
+              </div>
+              <div class="qam-kpi-card">
+                <span class="pf-label">GPU 负载/频率</span>
+                <strong id="qamKpiGpu">${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}M</strong>
+              </div>
+              <div class="qam-kpi-card">
+                <span class="pf-label">CPU / GPU 温度</span>
+                <strong id="qamKpiTemp">C ${sys.cpuTempC || "--"}° / G ${sys.gpuTempC || "--"}°</strong>
+              </div>
+              <div class="qam-kpi-card">
+                <span class="pf-label">GPU 显存 (专+享)</span>
+                <strong id="qamKpiVram">${vramUsedGb}/${vramTotalGb}G (+${sharedGb}G)</strong>
+              </div>
+              <div class="qam-kpi-card">
+                <span class="pf-label">UMA 内存 · 风扇</span>
+                <strong id="qamKpiMem">${sys.usedRamGb || "--"}G · ${hw.fanRpm || 0}RPM</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="qam-section">
+            <div class="qam-section-title"><span>60s 功耗与 GPU 负载曲线</span></div>
+            <div id="qamOsdSparkline" style="margin-bottom:8px;">
               ${buildSvgChart(sys.apuWattsHistory || [], sys.gpuUsageHistory || [], 85, 100, "#2dd4bf", "#38bdf8", "APU W", "GPU %")}
+            </div>
+            <div class="qam-section-title" style="margin-bottom:4px;"><span>60s CPU 负载与温度曲线</span></div>
+            <div id="qamOsdSparkline2">
+              ${buildSvgChart(sys.cpuUsageHistory || [], sys.tempHistory || [], 100, 100, "#a78bfa", "#fbbf24", "CPU %", "Temp °C")}
             </div>
           </div>
         </div>
@@ -2133,30 +2395,69 @@
     }
 
     if (state.qamTab === "controls") {
+      ensureGpdControllerLoaded();
       const gpd = snap.gpdController || {};
+      const draft = state.gpdDraft;
+      const oskMode = settings.preferredOskMode || "xbox";
+      const interceptOsk = settings.interceptPhysicalOskButton !== false;
+      const enableBackHotkeys = settings.enableBackButtonHotkeys !== false;
+
       return `
         <div class="qam-body">
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>手柄桌面鼠标模式</span>
-              ${renderSwitch("swQamMouseMode", !!settings.gamepadMouseModeEnabled)}
+              <span>GPD 背键模式一键切换 (Controller V2)</span>
+              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测 HID"}</span>
             </div>
-            <p style="font-size:11.5px;color:var(--text-secondary);margin:0;">
-              左摇杆移光标 · A左键 · B右键 · X中键 · 右摇杆滚轮 · LB降速 / RB加速。
-            </p>
+            <div class="gpd-warn-note" style="margin-bottom:8px;">
+              芯片当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]
+            </div>
+            <div class="qam-toolbox-mini" style="margin-bottom:8px;">
+              ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
+                const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
+                return `<button class="pill-btn qam-pill ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.label.split("(")[0].trim())}</button>`;
+              }).join("")}
+            </div>
+            <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:8px;" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>写入手柄 Flash (L4/R4 预设立即生效)</button>
+            <div class="cw-row qam-compact-row">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">F13–F15 全局热键监听</span>
+                <span class="cw-row-sub">设为 L3/R3/A/B 时不冲突；让给游戏可关闭</span>
+              </div>
+              ${renderSwitch("swBackHotkeys", enableBackHotkeys)}
+            </div>
           </div>
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>GPD 背键板载状态</span>
-              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? "V2 已连接" : "未检测到"}</span>
+              <span>Xbox 手柄屏幕键盘与实体键</span>
+              <span class="hh-card-badge ${sys.gpdXboxKeyboardAvailable ? "live" : ""}">${sys.gpdXboxKeyboardAvailable ? "Xbox 键盘就绪" : "触摸键盘"}</span>
             </div>
-            <div style="font-size:11.5px;color:var(--text-secondary);margin-bottom:8px;">
-              L4: ${esc(gpd.l4KeyLabel || "未知")} · R4: ${esc(gpd.r4KeyLabel || "未知")}
+            <button id="btnTestOsk" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:8px;" data-focusable="true">立即呼出 / 收起屏幕键盘</button>
+            <div class="cw-row qam-compact-row" style="margin-bottom:8px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">接管机身键盘按键 (Ctrl+Win+O)</span>
+                <span class="cw-row-sub">拦截传统老旧 Windows osk.exe</span>
+              </div>
+              ${renderSwitch("swInterceptOsk", interceptOsk)}
             </div>
-            <div style="display:flex;gap:6px;flex-direction:column;">
-              <button id="btnQamApplyRecGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>一键设推荐背键 (L4=F13侧栏 / R4=F14OSD)</button>
-              <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">向游戏发送 Insert（呼出 OptiScaler 菜单）</button>
+            ${renderSegmented("data-osk-mode", [
+              { value: "xbox", label: "Xbox 手柄键盘" },
+              { value: "touch", label: "Win11 触摸" }
+            ], oskMode === "touch" ? "touch" : "xbox", "compact")}
+          </div>
+
+          <div class="qam-section">
+            <div class="qam-section-title">
+              <span>手柄桌面鼠标与快捷操作</span>
+              ${renderSwitch("swQamMouseMode", !!settings.gamepadMouseModeEnabled)}
+            </div>
+            <p style="font-size:11.5px;color:var(--text-secondary);margin:0 0 8px;">
+              左摇杆移光标 · A左键 · B右键 · X中键 · 右摇杆滚轮 · LB降速 / RB加速。
+            </p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">发送 Insert 菜单</button>
+              <button id="btnQamToConsoleControls" class="btn btn-sm" data-focusable="true">完整键值映射</button>
             </div>
           </div>
         </div>
@@ -2208,16 +2509,16 @@
     const presets = snap.presets || [];
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
-      : "当前目标原生未注入（点击右上角切换目标进入完整游戏选择页）";
+      : "当前目标原生未注入（点击下方切换目标进入游戏选择页）";
 
     return `
       <div class="qam-body">
         <div id="qamStatusBanner" class="qam-target-card ${inj?.isInjected ? "injected" : "uninjected"}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-            <strong style="font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(active?.title || "未选择游戏")}</strong>
+            <strong style="font-size:13.5px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(active?.title || "未选择游戏")}</strong>
             <span class="hh-card-badge ${inj?.isInjected ? "live" : "warn"}">${inj?.isInjected ? "已注入" : "原生未注入"}</span>
           </div>
-          <span style="font-size:11px;color:var(--text-secondary);">${esc(statusText)}</span>
+          <span style="font-size:11.5px;color:var(--text-secondary);">${esc(statusText)}</span>
           <button id="btnQamOpenGamePicker" class="btn btn-sm" style="width:100%;margin-top:4px;justify-content:space-between;" data-focusable="true">
             <span>切换游戏 (${games.length})</span>
             <span>▸</span>
@@ -2228,10 +2529,10 @@
           <div class="qam-section-title"><span>预设与超分参数</span></div>
           <div class="qam-preset-row">
             ${presets.slice(0, 3).map((p) => `
-              <button class="pill-btn small ${state.selectedPresetId === p.id ? "active" : ""}" data-preset="${esc(p.id)}" data-focusable="true">${esc(p.name.split("·")[0].trim())}</button>
+              <button class="pill-btn qam-pill ${state.selectedPresetId === p.id ? "active" : ""}" data-preset="${esc(p.id)}" data-focusable="true">${esc(p.name.split("·")[0].trim())}</button>
             `).join("")}
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+          <div style="display:flex;flex-direction:column;gap:7px;margin-top:6px;">
             ${renderSegmented("data-sr-mode", [
               { value: "fsr4_int8", label: "FSR4" },
               { value: "fsr4_int8_lite", label: "4 Lite" },
@@ -2257,7 +2558,23 @@
           </div>
         </div>
 
-        <div style="display:flex;flex-direction:column;gap:6px;">
+        <div class="qam-section">
+          <div class="qam-section-title"><span>兼容增强与快速诊断</span></div>
+          <div class="cw-row qam-compact-row" style="margin-bottom:8px;">
+            <div class="cw-row-copy">
+              <span class="cw-row-title">FakeNVAPI 兼容层</span>
+              <span class="cw-row-sub">解锁 Reflex 低延迟与 DLSS-FG 转换通道</span>
+            </div>
+            ${renderSwitch("swFakenvapi", !!cfg.enableFakenvapi)}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button id="btnLaunchGame" class="btn btn-sm" data-focusable="true" ${!active ? "disabled" : ""}>启动游戏</button>
+            <button id="btnInspectLog" class="btn btn-sm" data-focusable="true" ${!active ? "disabled" : ""}>诊断与日志</button>
+          </div>
+          ${!snap.vrrWindowedEnabled ? `<button id="btnEnableVrr" class="btn btn-sm" style="width:100%;margin-top:6px;" data-focusable="true">一键开启 Win11 窗口化 VRR</button>` : ""}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:7px;">
           <button id="btnInject" class="btn btn-primary" data-focusable="true" ${!active || state.busy ? "disabled" : ""}>
             ${svgIcon("bolt")}
             <span>${inj?.isInjected ? "应用参数并重新注入" : "一键注入推荐配置"}</span>
@@ -2312,6 +2629,12 @@
     `;
   }
 
+  function getScrollRouteKey() {
+    return IS_QAM
+      ? `qam:${state.qamTab}:${state.qamOptiSubView}`
+      : `con:${state.tab}:${state.optiSubTab}`;
+  }
+
   // ---------------- Main Render & Event Wiring ----------------
   function render() {
     const active = getActiveGame();
@@ -2332,6 +2655,18 @@
     }
 
     const mainView = document.getElementById("mainView");
+    const routeKey = getScrollRouteKey();
+    const sameRoute = state.lastScrollRouteKey === routeKey;
+
+    if (mainView && sameRoute && mainView.children.length > 0) {
+      state.scrollPositions[routeKey] = {
+        mainView: mainView.scrollTop,
+        pageScroll: mainView.querySelector(".page-scroll")?.scrollTop || 0,
+        qamBody: mainView.querySelector(".qam-body")?.scrollTop || 0,
+        qamList: mainView.querySelector(".qam-game-list")?.scrollTop || 0
+      };
+    }
+
     if (mainView) {
       if (IS_QAM) {
         mainView.innerHTML = renderQamView();
@@ -2344,11 +2679,25 @@
       } else {
         mainView.innerHTML = renderOptiContainerView();
       }
+
+      const saved = sameRoute ? state.scrollPositions[routeKey] : null;
+      if (saved) {
+        mainView.scrollTop = saved.mainView;
+        const ps = mainView.querySelector(".page-scroll");
+        if (ps) ps.scrollTop = saved.pageScroll;
+        const qb = mainView.querySelector(".qam-body");
+        if (qb) qb.scrollTop = saved.qamBody;
+        const ql = mainView.querySelector(".qam-game-list");
+        if (ql) ql.scrollTop = saved.qamList;
+      } else {
+        mainView.scrollTop = 0;
+      }
+      state.lastScrollRouteKey = routeKey;
     }
 
     renderFooterLegend();
     bindViewEvents();
-    applySpatialFocus();
+    applySpatialFocus(false);
   }
 
   function armKillGame() {
@@ -2779,6 +3128,54 @@
       state.gpdDraft.rightDeadzone = Math.min(10, state.gpdDraft.rightDeadzone + 1);
       render();
     });
+    document.querySelectorAll("[data-gpd-preset]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const preset = GPD_BACK_PRESETS[el.dataset.gpdPreset];
+        if (!preset) return;
+        state.gpdDraft.l4Key = preset.l4;
+        state.gpdDraft.r4Key = preset.r4;
+        if (preset.enableHotkeys && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
+          await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
+        }
+        showToast(`已填入预设「${preset.label}」，请点「写入手柄 Flash」永久生效`, "info");
+        render();
+      });
+    });
+    document.getElementById("swBackHotkeys")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = !(s.enableBackButtonHotkeys !== false);
+      await rpc("saveSettings", { ...s, enableBackButtonHotkeys: next });
+      showToast(next ? "已开启 F13–F15 全局热键监听" : "已释放 F13–F15 热键（可直通游戏绑定）", "info");
+    });
+    document.getElementById("swInterceptOsk")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = !(s.interceptPhysicalOskButton !== false);
+      await rpc("saveSettings", { ...s, interceptPhysicalOskButton: next });
+      showToast(next ? "已开启机身键盘键 (Ctrl+Win+O) 接管" : "已恢复系统默认键盘键响应", "info");
+    });
+    document.querySelectorAll("[data-osk-mode]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const s = state.snapshot?.settings;
+        if (!s) return;
+        const mode = el.dataset.oskMode || "xbox";
+        await rpc("saveSettings", { ...s, preferredOskMode: mode });
+        const nameMap = { xbox: "Xbox 手柄键盘", touch: "Win11 触摸键盘", osk: "传统 OSK" };
+        showToast(`首选虚拟键盘已切换为「${nameMap[mode] || mode}」`, "info");
+      });
+    });
+    document.getElementById("btnTestOsk")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("runToolboxAction", { action: "osk", fromQam: IS_QAM });
+        showToast(res?.message || "已切换虚拟键盘", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+    document.getElementById("btnQamToConsoleControls")?.addEventListener("click", () => {
+      rpc("showConsole");
+    });
     document.getElementById("btnSaveGpd")?.addEventListener("click", async () => {
       try {
         const res = await rpc("saveGpdController", {
@@ -2793,25 +3190,6 @@
           syncGpdDraft(res);
         }
         showToast(res?.statusMessage || "已写入 GPD 手柄板载 Flash", "success");
-      } catch (err) {
-        showToast(err.message, "error");
-      }
-    });
-    document.getElementById("btnQamApplyRecGpd")?.addEventListener("click", async () => {
-      try {
-        const d = state.gpdDraft;
-        const res = await rpc("saveGpdController", {
-          l4Key: 0x0068,
-          r4Key: 0x0069,
-          rumble: d.rumble,
-          leftDeadzone: d.leftDeadzone,
-          rightDeadzone: d.rightDeadzone
-        });
-        if (res && state.snapshot) {
-          state.snapshot.gpdController = res;
-          syncGpdDraft(res);
-        }
-        showToast("已将 L4 设为 F13 侧栏、R4 设为 F14 OSD", "success");
       } catch (err) {
         showToast(err.message, "error");
       }
@@ -3338,7 +3716,7 @@
     });
   }
 
-  function applySpatialFocus() {
+  function applySpatialFocus(shouldScroll = false) {
     document.querySelectorAll(".gp-focused").forEach((el) => el.classList.remove("gp-focused"));
     const items = getFocusableItems();
     if (!items.length) return;
@@ -3346,10 +3724,13 @@
     if (state.focusIndex < 0) state.focusIndex = items.length - 1;
     const target = items[state.focusIndex];
     target.classList.add("gp-focused");
-    target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (shouldScroll) {
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }
 
   function moveSpatial(dir) {
+    state.lastInputModality = "gamepad";
     const items = getFocusableItems();
     if (!items.length) return;
 
@@ -3385,7 +3766,7 @@
       } else {
         state.focusIndex = dir === "DOWN" ? 0 : items.length - 1;
       }
-      applySpatialFocus();
+      applySpatialFocus(true);
       return;
     }
 
@@ -3418,10 +3799,11 @@
     const bestIdx = sameRowBest !== -1 ? sameRowBest : anyBest;
     if (bestIdx !== -1) state.focusIndex = bestIdx;
     else state.focusIndex = (state.focusIndex + (dir === "RIGHT" ? 1 : -1) + items.length) % items.length;
-    applySpatialFocus();
+    applySpatialFocus(true);
   }
 
   function handleGamepadAction(action) {
+    state.lastInputModality = "gamepad";
     const modal = document.getElementById("modalBackdrop");
     const modalOpen = modal && !modal.classList.contains("hidden");
 
@@ -3523,6 +3905,36 @@
     document.getElementById("modalBackdrop").classList.add("hidden");
     applySpatialFocus();
   });
+
+  window.addEventListener("pointerdown", (e) => {
+    state.lastInputModality = "pointer";
+    const t = e.target;
+    if (t && t.tagName === "INPUT" && t.type === "range") {
+      state.isDraggingRange = true;
+    }
+    const focusEl = t?.closest?.('[data-focusable="true"]');
+    if (focusEl) {
+      const items = getFocusableItems();
+      const idx = items.indexOf(focusEl);
+      if (idx >= 0) state.focusIndex = idx;
+    }
+  }, true);
+
+  window.addEventListener("wheel", () => {
+    state.lastInputModality = "pointer";
+  }, { passive: true, capture: true });
+
+  const endRangeDrag = () => {
+    if (!state.isDraggingRange) return;
+    state.isDraggingRange = false;
+    if (state.pendingSnapshot) {
+      const pending = state.pendingSnapshot;
+      state.pendingSnapshot = null;
+      applySnapshot(pending);
+    }
+  };
+  window.addEventListener("pointerup", endRangeDrag, true);
+  window.addEventListener("pointercancel", endRangeDrag, true);
 
   window.addEventListener("keydown", (e) => {
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;

@@ -87,9 +87,11 @@ public partial class OverlayHudWindow : Window
             RichPanel.Visibility = Visibility.Collapsed;
             SparklinePanel.Visibility = Visibility.Collapsed;
             RootCard.Padding = new Thickness(10, 5, 10, 5);
-            int maxT = Math.Max(sys.GpuTempC, sys.CpuTempC);
             string gameTag = runningGame is { IsCurrentlyRunning: true } ? $"{runningGame.Title} · " : "";
-            CompactLineText.Text = $"{gameTag}APU {sys.ApuPowerWatts}W · {maxT}°C · {sys.RefreshRateHz}Hz · {batStr}";
+            string fpsPart = sys.CurrentFps > 0
+                ? $"{sys.CurrentFps} FPS · "
+                : (runningGame is { IsCurrentlyRunning: true } ? "-- FPS · " : "");
+            CompactLineText.Text = $"{gameTag}{fpsPart}APU {sys.ApuPowerWatts}W · GPU {sys.GpuTempC}°/CPU {sys.CpuTempC}° · {batStr}";
         }
         else if (_level == 2)
         {
@@ -97,11 +99,13 @@ public partial class OverlayHudWindow : Window
             RichPanel.Visibility = Visibility.Collapsed;
             SparklinePanel.Visibility = Visibility.Collapsed;
             RootCard.Padding = new Thickness(12, 6, 12, 6);
+            string fpsPart = sys.CurrentFps > 0 ? $"{sys.CurrentFps} FPS | " : "";
             string fanPart = sys.HardwareService.EcReady && sys.HardwareService.FanRpm > 0
                 ? $" | FAN {sys.HardwareService.FanRpm}RPM"
                 : "";
+            double vramGb = sys.VramUsedMb / 1024.0;
             CompactLineText.Text =
-                $"APU {sys.ApuPowerWatts}W/{targetTdpWatts}W | GPU {sys.GpuUsagePercent}% {sys.GfxClockMhz}MHz {sys.GpuTempC}°C | CPU {sys.CpuUsagePercent}% {sys.CpuClockMhz}MHz | RAM {sys.UsedRamGb:F1}G{fanPart} | {batStr}";
+                $"{fpsPart}APU {sys.ApuPowerWatts}W/{targetTdpWatts}W | GPU {sys.GpuUsagePercent}% {sys.GpuTempC}°C VRAM {vramGb:F1}G | CPU {sys.CpuUsagePercent}% {sys.CpuTempC}°C{fanPart} | {batStr}";
         }
         else
         {
@@ -116,14 +120,24 @@ public partial class OverlayHudWindow : Window
             string injShort = runningGame?.Injection?.IsInjected == true ? " · OptiScaler 已注入" : "";
             HeaderTitleText.Text = title + injShort;
             HeaderRightText.Text = $"{sys.ScreenWidth}×{sys.ScreenHeight} @ {sys.RefreshRateHz}Hz";
+            FpsLineText.Text = sys.CurrentFps > 0
+                ? $"帧率: {sys.CurrentFps} FPS ({sys.FrameTimeMs:F1} ms)"
+                : (sys.HardwareService.DaemonVersion >= 3 ? "帧率: 待检测 DX/全屏渲染" : "帧率: 升级硬件服务 v3 解锁");
 
             string smuBadge = sys.HardwareService.SmuReady ? $" (设定 {targetTdpWatts}W)" : "";
             ApuLineText.Text = $"APU: {sys.ApuPowerWatts} W{smuBadge}";
             GpuLineText.Text = $"GPU: {sys.GpuUsagePercent}% · {sys.GfxClockMhz} MHz · {sys.GpuTempC}°C";
             CpuLineText.Text = $"CPU: {sys.CpuUsagePercent}% · {sys.CpuClockMhz} MHz · {sys.CpuTempC}°C";
 
-            string vramPart = sys.VramUsedMb > 0 ? $" · VRAM {(sys.VramUsedMb / 1024.0):F1}G" : "";
-            RamLineText.Text = $"内存: {sys.UsedRamGb:F1}/{sys.TotalRamGb:F0}G{vramPart}";
+            double vramUsedGb = sys.VramUsedMb / 1024.0;
+            double vramTotalGb = sys.VramTotalMb > 0 ? sys.VramTotalMb / 1024.0 : 16.0;
+            double sharedGb = sys.SharedVramUsedMb / 1024.0;
+            string vramPart = sys.VramUsedMb > 0 || sys.VramTotalMb > 0
+                ? $"VRAM {vramUsedGb:F1}/{vramTotalGb:F0}G (共享{sharedGb:F1}G)"
+                : $"RAM {sys.UsedRamGb:F1}/{sys.TotalRamGb:F0}G";
+            RamLineText.Text = sys.VramUsedMb > 0 || sys.VramTotalMb > 0
+                ? $"{vramPart} · RAM {sys.UsedRamGb:F1}G"
+                : vramPart;
             FanLineText.Text = sys.HardwareService.ServiceRunning && sys.HardwareService.EcReady
                 ? $"风扇: {sys.HardwareService.FanRpm} RPM ({sys.HardwareService.FanMode})"
                 : $"调度: {sys.CpuBoostMode}";

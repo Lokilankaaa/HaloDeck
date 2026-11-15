@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using HandheldOpti.Core.Models;
 
 namespace HandheldOpti.App.Native;
@@ -39,12 +41,18 @@ public sealed class InputHubService : IDisposable
     private double _mouseCarryX;
     private double _mouseCarryY;
     private double _wheelCarry;
+    private Dispatcher? _uiDispatcher;
+    private nint _keyboardHook;
+    private Win32Interop.LowLevelKeyboardProc? _keyboardHookProc;
+    private bool _ctrlWinOSwallowedDown;
+    private DateTime _lastOskTriggerAtUtc = DateTime.MinValue;
 
     public event Action? ToggleQamRequested;
     public event Action? ToggleConsoleRequested;
     public event Action? SendInsertToGameRequested;
     public event Action? CycleOsdRequested;
     public event Action? ToggleMouseModeRequested;
+    public event Action? ToggleOnScreenKeyboardRequested;
     public event Action<string>? UiGamepadAction;
     public event Action<int>? GamepadCountChanged;
     public event Action<List<string>>? GamepadComboRecorded;
@@ -84,14 +92,23 @@ public sealed class InputHubService : IDisposable
     {
         _settings = settings;
         GamepadMouseModeEnabled = settings.GamepadMouseModeEnabled;
-        RegisterGlobalHotkeys();
+        if (_uiDispatcher is not null && !_uiDispatcher.CheckAccess())
+        {
+            _uiDispatcher.BeginInvoke(RegisterGlobalHotkeys);
+        }
+        else
+        {
+            RegisterGlobalHotkeys();
+        }
     }
 
     public void AttachHotkeyWindow(nint hwnd)
     {
+        _uiDispatcher = Dispatcher.CurrentDispatcher;
         _hotkeyWindowHwnd = hwnd;
         _hwndSource = HwndSource.FromHwnd(hwnd);
         _hwndSource?.AddHook(WndProc);
+        EnsureKeyboardHookInstalled();
         RegisterGlobalHotkeys();
     }
 
@@ -124,9 +141,74 @@ public sealed class InputHubService : IDisposable
         TryRegisterHotkey(HotkeyOsdId, _settings.OsdHotkey);
 
         // Bare paddle bindings for GPD Win 5 L4/R4 (VK_F13=0x7C, VK_F14=0x7D, VK_F15=0x7E)
-        Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
-        Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id, Win32Interop.MOD_NOREPEAT, 0x7D);
-        Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id, Win32Interop.MOD_NOREPEAT, 0x7E);
+        if (_settings.EnableBackButtonHotkeys)
+        {
+            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
+            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id, Win32Interop.MOD_NOREPEAT, 0x7D);
+            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id, Win32Interop.MOD_NOREPEAT, 0x7E);
+        }
+    }
+
+    private void EnsureKeyboardHookInstalled()
+    {
+        if (_keyboardHook != 0) return;
+        _keyboardHookProc = KeyboardHookCallback;
+        nint mod = Win32Interop.GetModuleHandleW(null);
+        _keyboardHook = Win32Interop.SetWindowsHookExW(Win32Interop.WH_KEYBOARD_LL, _keyboardHookProc, mod, 0);
+    }
+
+    private void RemoveKeyboardHook()
+    {
+        if (_keyboardHook != 0)
+        {
+            Win32Interop.UnhookWindowsHookEx(_keyboardHook);
+            _keyboardHook = 0;
+        }
+        _keyboardHookProc = null;
+    }
+
+    private nint KeyboardHookCallback(int nCode, nint wParam, nint lParam)
+    {
+        if (nCode >= 0 && _settings.InterceptPhysicalOskButton && lParam != 0)
+        {
+            var kb = Marshal.PtrToStructure<Win32Interop.KBDLLHOOKSTRUCT>(lParam);
+            if (kb.vkCode == Win32Interop.VK_O &&
+                kb.dwExtraInfo != Win32Interop.SyntheticChordBreakExtraInfo &&
+                (kb.flags & Win32Interop.LLKHF_INJECTED) == 0)
+            {
+                int msg = wParam.ToInt32();
+                bool isDown = msg is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
+                bool isUp = msg is Win32Interop.WM_KEYUP or Win32Interop.WM_SYSKEYUP;
+
+                if (isDown)
+                {
+                    bool ctrlDown = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0;
+                    bool winDown = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
+                                   (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
+
+                    if (ctrlDown && winDown)
+                    {
+                        if (!_ctrlWinOSwallowedDown && (DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 320)
+                        {
+                            _lastOskTriggerAtUtc = DateTime.UtcNow;
+                            // Break LWin solo-tap Start Menu trigger before swallowing VK_O.
+                            Win32Interop.SendSyntheticChordBreak();
+                            _ = Task.Run(() => ToggleOnScreenKeyboardRequested?.Invoke());
+                        }
+                        _ctrlWinOSwallowedDown = true;
+                        return 1;
+                    }
+                }
+                else if (isUp && _ctrlWinOSwallowedDown)
+                {
+                    _ctrlWinOSwallowedDown = false;
+                    return 1;
+                }
+            }
+        }
+        return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
     }
 
     private void TryRegisterHotkey(int id, HotkeyBinding binding)
@@ -471,6 +553,7 @@ public sealed class InputHubService : IDisposable
     {
         ReleaseHeldMouseButtons();
         _cts.Cancel();
+        RemoveKeyboardHook();
         UnregisterGlobalHotkeys();
         _hwndSource?.RemoveHook(WndProc);
         _cts.Dispose();

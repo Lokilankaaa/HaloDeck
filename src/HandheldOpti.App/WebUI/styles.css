@@ -2035,9 +2035,15 @@ body.mode-qam .bottom-legend {
 
 .mon-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 14px;
+}
+
+@media (max-width: 920px) {
+  .mon-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .mon-kpi-card {
@@ -2051,10 +2057,15 @@ body.mode-qam .bottom-legend {
 }
 
 .mon-kpi-val {
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
   color: var(--text-primary, #f1f5f9);
   font-variant-numeric: tabular-nums;
+}
+
+.mon-kpi-val.accent-blue,
+.accent-blue {
+  color: #38bdf8;
 }
 
 .mon-kpi-sub {
@@ -2556,4 +2567,132 @@ body.mode-qam .bottom-legend {
 
 .qam-fan-row {
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  margin-bottom: 4px;
+}
+
+/* ==================== v0.3.2 Controller V2 XInput Keys + De-cramped Rich QAM ==================== */
+.gpd-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gpd-key-group-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #93c5fd;
+  margin: 4px 0 3px;
+}
+
+.gpd-key-pill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.qam-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+body.mode-qam .qam-section {
+  padding: 12px 13px;
+  margin-bottom: 0;
+  border-radius: 13px;
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(18, 25, 38, 0.88);
+}
+
+body.mode-qam .qam-section-title {
+  font-size: 12.5px;
+  margin-bottom: 9px;
+}
+
+.qam-pill {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.qam-step {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  border-radius: 8px;
+}
+
+.qam-strip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.qam-mini-kpi {
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 15, 25, 0.65);
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.qam-mini-kpi strong {
+  font-size: 11.5px;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qam-fan-quick-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.qam-compact-row {
+  padding: 6px 0 2px;
+}
+
+.qam-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.qam-kpi-card {
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 15, 25, 0.65);
+  padding: 8px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.qam-kpi-card strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qam-kpi-card strong.accent-blue {
+  color: #38bdf8;
 }

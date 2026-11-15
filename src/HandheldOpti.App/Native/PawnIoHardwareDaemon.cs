@@ -34,6 +34,10 @@ public sealed class HardwareDaemonStatus
     public int AppliedFanPwm { get; set; }
     public bool GpdServiceExists { get; set; }
     public bool GpdServiceRunning { get; set; }
+    public int CpuTempC { get; set; }
+    public int CurrentFps { get; set; }
+    public double FrameTimeMs { get; set; }
+    public int FpsPid { get; set; }
     public string LastError { get; set; } = string.Empty;
 }
 
@@ -44,7 +48,7 @@ public sealed class HardwareDaemonStatus
 /// </summary>
 public sealed class PawnIoHardwareDaemon : ServiceBase
 {
-    public const int CurrentDaemonVersion = 2;
+    public const int CurrentDaemonVersion = 3;
     public const string WindowsServiceName = "HaloDeckHardwareSvc";
     public const string PipeName = "HaloDeck.Hardware.v1";
 
@@ -94,9 +98,11 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private int _manualFanPercent = 55;
     private List<FanCurvePoint> _activeCurvePoints = FanCurveEvaluator.CreateDefaultCurves()[1].Points;
     private int _lastTempC = 48;
+    private int _lastSmuCpuTempC;
     private int _lastFanRpm;
     private int _appliedFanPwm;
     private DateTime _lastFanHeartbeatUtc = DateTime.UtcNow;
+    private EtwPresentFpsTracker? _fpsTracker;
 
     private delegate int PawnIoOpenDelegate(out nint handle);
     private delegate int PawnIoLoadDelegate(nint handle, byte[] blob, nuint size);
@@ -125,6 +131,8 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     {
         _cts = new CancellationTokenSource();
         InitializePawnIo();
+        _fpsTracker = new EtwPresentFpsTracker();
+        _fpsTracker.Start();
         _pipeTask = Task.Run(() => PipeServerLoopAsync(_cts.Token), _cts.Token);
         _watchdogTask = Task.Run(() => FanWatchdogLoopAsync(_cts.Token), _cts.Token);
     }
@@ -145,6 +153,13 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         try
         {
             _cts?.Cancel();
+        }
+        catch { }
+
+        try
+        {
+            _fpsTracker?.Dispose();
+            _fpsTracker = null;
         }
         catch { }
 
@@ -410,6 +425,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         switch (op)
         {
             case "status":
+            {
+                int targetPid = root.TryGetProperty("targetPid", out var pidProp) && pidProp.TryGetInt32(out int parsedPid)
+                    ? parsedPid
+                    : 0;
+                var fpsSample = _fpsTracker?.GetCurrentFps(targetPid) ?? (0, 0.0, 0);
+
                 lock (_hwLock)
                 {
                     if (_ecReady && _ecHandle != 0)
@@ -417,8 +438,20 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                         WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () => _lastFanRpm = ReadFanRpmInternal());
                     }
                     TryRefreshPmTableLocked(force: false);
-                    return new { ok = true, status = BuildStatusSnapshotLocked() };
+                    if (_smuReady && _smuHandle != 0)
+                    {
+                        WithNamedMutex(@"Global\Access_PCI", () =>
+                        {
+                            if (ReadSmuReg(0x00059800, out uint rawThm))
+                            {
+                                int t = ZenThermalDecoder.DecodeTctlTempC(rawThm);
+                                if (t > 0) _lastSmuCpuTempC = t;
+                            }
+                        });
+                    }
+                    return new { ok = true, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                 }
+            }
 
             case "set_tdp":
             {
@@ -492,7 +525,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         }
     }
 
-    private HardwareDaemonStatus BuildStatusSnapshotLocked()
+    private HardwareDaemonStatus BuildStatusSnapshotLocked(int currentFps = 0, double frameTimeMs = 0.0, int fpsPid = 0)
     {
         var (gpdExists, gpdRunning) = ProbeWindowsServiceState("GPDToolService");
         return new HardwareDaemonStatus
@@ -517,6 +550,10 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             AppliedFanPwm = _appliedFanPwm,
             GpdServiceExists = gpdExists,
             GpdServiceRunning = gpdRunning,
+            CpuTempC = _lastSmuCpuTempC,
+            CurrentFps = currentFps,
+            FrameTimeMs = frameTimeMs,
+            FpsPid = fpsPid,
             LastError = _lastError
         };
     }

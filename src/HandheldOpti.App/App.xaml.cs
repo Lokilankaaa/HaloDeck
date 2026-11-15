@@ -254,6 +254,20 @@ public partial class App : System.Windows.Application
             Dispatcher.InvokeAsync(() => _bridge.ToggleGamepadMouseMode());
         };
 
+        _inputHub.ToggleOnScreenKeyboardRequested += () =>
+        {
+            Dispatcher.InvokeAsync(async () =>
+            {
+                if (_qamWindow != null && _qamWindow.IsVisible)
+                {
+                    _qamWindow.HideAndRestoreGameFocus();
+                    UpdateUiActiveFlag();
+                    await Task.Delay(75);
+                }
+                _bridge?.TriggerPhysicalOskToggle();
+            });
+        };
+
         _bridge.OverlayHudUpdated += () =>
         {
             Dispatcher.Invoke(ApplyOverlayHudFromSettings);
@@ -501,7 +515,7 @@ public partial class App : System.Windows.Application
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"monitor\"]').click()");
             bool monitorDomOk = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('svg.sparkline-svg').length === 2");
+                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('svg.sparkline-svg').length === 2 && Boolean(document.getElementById('kpiFps')?.textContent?.trim()) && Boolean(document.getElementById('kpiVram')?.textContent?.trim()) && Boolean(document.getElementById('kpiCpuTemp')?.textContent?.trim())");
             await Task.Delay(250);
 
             int prevLevel = bridge.Settings.OverlayLevel;
@@ -524,16 +538,46 @@ public partial class App : System.Windows.Application
             });
             await CapturePngAsync(mainCore, outputDir, "v3_02_console_monitor.png");
 
-            // Tab 3: Controls, GPD V2 & Spatial Focus
+            // Tab 3: Controls, GPD V2, Xbox OSK, Spatial Focus & Scroll Preservation
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"controls\"]').click()");
             bool controlsReady = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-nav=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('btnReadGpd') && document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
+                "document.querySelector('.tab-btn[data-nav=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('btnReadGpd') && document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam') && document.getElementById('swInterceptOsk') && document.getElementById('swBackHotkeys')) && document.querySelectorAll('[data-osk-mode]').length === 3 && document.querySelectorAll('[data-gpd-preset]').length >= 4 && Boolean(document.querySelector('[data-gpd-l4=\"32783\"]')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
             await Task.Delay(200);
             await mainCore.ExecuteScriptAsync("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
             await Task.Delay(120);
             var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
-            Record("controlsAndSpatialFocus", controlsReady && focusCountStr == "1", new { controlsReady, focusCount = focusCountStr });
+
+            var scrollBeforeJson = await mainCore.ExecuteScriptAsync("""
+                (() => {
+                  const scroller = document.querySelector('.page-scroll');
+                  if (!scroller) return { maxScroll: 0, before: 0 };
+                  const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+                  if (maxScroll >= 60) scroller.scrollTop = Math.min(180, maxScroll);
+                  return { maxScroll, before: scroller.scrollTop };
+                })()
+                """);
+            using var scrollBeforeDoc = JsonDocument.Parse(scrollBeforeJson);
+            double maxControlsScroll = scrollBeforeDoc.RootElement.GetProperty("maxScroll").GetDouble();
+            double scrollBefore = scrollBeforeDoc.RootElement.GetProperty("before").GetDouble();
+            // Toggle swBackHotkeys twice so original state is restored while triggering two full RPC render cycles
+            await mainCore.ExecuteScriptAsync("document.getElementById('swBackHotkeys')?.click()");
+            await Task.Delay(180);
+            await mainCore.ExecuteScriptAsync("document.getElementById('swBackHotkeys')?.click()");
+            await Task.Delay(180);
+            var scrollAfterStr = await mainCore.ExecuteScriptAsync("document.querySelector('.page-scroll')?.scrollTop ?? 0");
+            double.TryParse(scrollAfterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var scrollAfter);
+            bool scrollPreservedOnClick = maxControlsScroll < 60 || Math.Abs(scrollAfter - scrollBefore) <= 20;
+
+            Record("controlsAndSpatialFocus", controlsReady && focusCountStr == "1" && scrollPreservedOnClick, new
+            {
+                controlsReady,
+                focusCount = focusCountStr,
+                scrollPreservedOnClick,
+                scrollBefore,
+                scrollAfter,
+                maxControlsScroll
+            });
             await CapturePngAsync(mainCore, outputDir, "v3_03_console_controls.png");
 
             // Tab 4: OptiScaler Suite (Tune, Library, Components)
@@ -658,7 +702,7 @@ public partial class App : System.Windows.Application
 
             // Return to Handheld Home & open QAM Overlay
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"handheld\"]').click()");
-            await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-tdp-preset]').length === 3");
+            await WaitUntilAsync(mainCore, "document.querySelectorAll('[data-tdp-watt]').length >= 3");
             await mainCore.ExecuteScriptAsync("document.getElementById('btnOpenQam').click()");
 
             var qamDeadline = DateTime.UtcNow.AddSeconds(8);
@@ -669,6 +713,7 @@ public partial class App : System.Windows.Application
 
             bool qamVisibleAndInit = qamWindow.IsVisible && qamWindow.WebViewInitialized;
             bool qamHandheldReady = false;
+            bool qamScrollPreserved = true;
             bool qamWidthOk = false;
             bool qamOsdOk = false;
             bool qamControlsOk = false;
@@ -684,23 +729,48 @@ public partial class App : System.Windows.Application
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
                 await CapturePngAsync(qamCore, outputDir, "v3_07_qam_handheld.png");
 
+                var qamScrollJson = await qamCore.ExecuteScriptAsync("""
+                    (() => {
+                      const mv = document.getElementById('mainView');
+                      if (!mv) return { maxScroll: 0, before: 0 };
+                      const maxScroll = Math.max(0, mv.scrollHeight - mv.clientHeight);
+                      if (maxScroll >= 60) mv.scrollTop = Math.min(120, maxScroll);
+                      return { maxScroll, before: mv.scrollTop };
+                    })()
+                    """);
+                using var qamScrollDoc = JsonDocument.Parse(qamScrollJson);
+                double qamMaxScroll = qamScrollDoc.RootElement.GetProperty("maxScroll").GetDouble();
+                double qamScrollBefore = qamScrollDoc.RootElement.GetProperty("before").GetDouble();
+                if (qamMaxScroll >= 60)
+                {
+                    await qamCore.ExecuteScriptAsync("document.getElementById('swPowerLinkage')?.click()");
+                    await Task.Delay(180);
+                    await qamCore.ExecuteScriptAsync("document.getElementById('swPowerLinkage')?.click()");
+                    await Task.Delay(180);
+                    var qamAfterStr = await qamCore.ExecuteScriptAsync("document.getElementById('mainView')?.scrollTop ?? 0");
+                    double.TryParse(qamAfterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var qamScrollAfter);
+                    qamScrollPreserved = Math.Abs(qamScrollAfter - qamScrollBefore) <= 20;
+                    await qamCore.ExecuteScriptAsync("const mv = document.getElementById('mainView'); if (mv) mv.scrollTop = 0;");
+                }
+
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]').click()");
                 qamOsdOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg'))");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg')) && Boolean(document.getElementById('qamKpiFps')?.textContent?.trim()) && Boolean(document.getElementById('qamKpiVram')?.textContent?.trim()) && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
                 await Task.Delay(200);
                 await CapturePngAsync(qamCore, outputDir, "v3_08_qam_osd.png");
 
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
                 qamControlsOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode'))");
-                await Task.Delay(150);
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && document.querySelectorAll('[data-gpd-preset]').length >= 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                await Task.Delay(200);
+                await CapturePngAsync(qamCore, outputDir, "v3_08b_qam_controls.png");
 
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]').click()");
                 qamOptiOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && Boolean(document.getElementById('btnQamOpenGamePicker')) && document.querySelectorAll('.qam-game-switcher').length === 0 && document.querySelectorAll('[data-preset]').length >= 3");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && Boolean(document.getElementById('btnQamOpenGamePicker')) && document.querySelectorAll('.qam-game-switcher').length === 0 && document.querySelectorAll('[data-preset]').length >= 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
                 await Task.Delay(200);
                 await CapturePngAsync(qamCore, outputDir, "v3_09_qam_opti.png");
 
@@ -726,10 +796,11 @@ public partial class App : System.Windows.Application
                 await Task.Delay(80);
             }
             bool qamClosed = !qamWindow.IsVisible;
-            Record("qamHandheldFirstAndClose", qamVisibleAndInit && qamHandheldReady && qamWidthOk && qamOsdOk && qamControlsOk && qamOptiOk && qamClosed, new
+            Record("qamHandheldFirstAndClose", qamVisibleAndInit && qamHandheldReady && qamScrollPreserved && qamWidthOk && qamOsdOk && qamControlsOk && qamOptiOk && qamClosed, new
             {
                 qamVisibleAndInit,
                 qamHandheldReady,
+                qamScrollPreserved,
                 qamWidthOk,
                 qamOsdOk,
                 qamControlsOk,

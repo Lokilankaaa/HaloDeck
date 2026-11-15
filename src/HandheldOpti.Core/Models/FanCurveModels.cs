@@ -203,3 +203,29 @@ public static class FanCurveEvaluator
         return clamped;
     }
 }
+
+public static class ZenThermalDecoder
+{
+    private const uint ThmTconCurTmpRangeSel = 1u << 19;
+
+    /// <summary>
+    /// Decodes AMD Zen SMU/SMN THM_TCON_CUR_TMP (0x00059800) register into whole degrees Celsius.
+    /// Bits [31:21] carry temperature in 0.125C increments; bit 19 subtracts 49C when set.
+    /// </summary>
+    public static int DecodeTctlTempC(uint rawReg)
+    {
+        if (rawReg == 0 || rawReg == uint.MaxValue)
+        {
+            return 0;
+        }
+
+        double tempC = (rawReg >> 21) * 0.125;
+        if ((rawReg & ThmTconCurTmpRangeSel) != 0)
+        {
+            tempC -= 49.0;
+        }
+
+        int rounded = (int)Math.Round(tempC);
+        return rounded is >= 5 and <= 125 ? rounded : 0;
+    }
+}

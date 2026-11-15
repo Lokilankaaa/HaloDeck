@@ -7,6 +7,7 @@ public sealed class GpdControllerConfig
     public bool Connected { get; set; }
     public string FirmwareX { get; set; } = string.Empty;
     public string FirmwareK { get; set; } = string.Empty;
+    public int EmulationMode { get; set; }
     public int L4Mode { get; set; }
     public int L4Slots { get; set; }
     public ushort L4KeyCode { get; set; }
@@ -49,6 +50,7 @@ public static class GpdV2PacketCodec
 {
     public const int ConfigBufferSize = 1024;
     public const int HeaderSize = 12;
+    public const int ReportSize = 64;
 
     // Back-button offsets inside configData (= configBuf + HeaderSize)
     private const int L4ModeOffset = 160;
@@ -62,6 +64,7 @@ public static class GpdV2PacketCodec
     private const int RumbleOffset = 944;
     private const int LeftDeadzoneOffset = 949;
     private const int RightDeadzoneOffset = 951;
+    private const int EmulationModeOffset = 959;
 
     private static readonly IReadOnlyDictionary<ushort, string> KnownHidLabels = new Dictionary<ushort, string>
     {
@@ -96,14 +99,74 @@ public static class GpdV2PacketCodec
         [0x000C] = "I"
     };
 
-    public static string DescribeHidKey(ushort code, int mode, int slots)
+    private static readonly Dictionary<ushort, string> V2ExtendedKeyLabels = new()
     {
-        if (mode == 2)
+        [0x0000] = "未映射",
+        // XInput native gamepad buttons (libOpenWinControls XinputV2UsageIDMap)
+        [0x8000] = "手柄 ↑ (D-Pad Up)",
+        [0x8001] = "手柄 ↓ (D-Pad Down)",
+        [0x8002] = "手柄 ← (D-Pad Left)",
+        [0x8003] = "手柄 → (D-Pad Right)",
+        [0x8004] = "手柄 Start",
+        [0x8005] = "手柄 Select",
+        [0x8006] = "Xbox / Guide 键",
+        [0x8007] = "手柄 A",
+        [0x8008] = "手柄 B",
+        [0x8009] = "手柄 X",
+        [0x800A] = "手柄 Y",
+        [0x800B] = "手柄 LB (L1)",
+        [0x800C] = "手柄 RB (R1)",
+        [0x800D] = "手柄 LT (L2)",
+        [0x800E] = "手柄 RT (R2)",
+        [0x800F] = "手柄 L3 (左摇杆按下)",
+        [0x8010] = "手柄 R3 (右摇杆按下)",
+        // Common PC game action & hotkeys (USB HID Usage Page 0x07)
+        [0x0004] = "A",
+        [0x0005] = "B",
+        [0x0006] = "C",
+        [0x0008] = "E (互动)",
+        [0x0009] = "F (互动)",
+        [0x000A] = "G",
+        [0x0010] = "M (地图)",
+        [0x0014] = "Q",
+        [0x0015] = "R (换弹)",
+        [0x0019] = "V (近战)",
+        [0x0028] = "Enter",
+        [0x0029] = "Esc",
+        [0x002B] = "Tab",
+        [0x002C] = "Space (跳跃/确认)",
+        [0x003A] = "F1",
+        [0x003B] = "F2",
+        [0x003C] = "F3",
+        [0x003D] = "F4",
+        [0x0044] = "F11",
+        [0x0045] = "F12",
+        [0x0049] = "Insert (菜单)",
+        [0x0068] = "F13 (HaloDeck 侧栏)",
+        [0x0069] = "F14 (HaloDeck OSD)",
+        [0x006A] = "F15 (OptiScaler 菜单)",
+        [0x00E0] = "LCtrl",
+        [0x00E1] = "LShift (冲刺)",
+        [0x00E2] = "LAlt"
+    };
+
+    public static string ResolveKeyLabel(ushort code)
+    {
+        if (V2ExtendedKeyLabels.TryGetValue(code, out var ext))
         {
-            string first = KnownHidLabels.TryGetValue(code, out var lbl) ? lbl : $"0x{code:X4}";
-            return $"组合宏 ({slots}槽: {first}...)";
+            return ext;
         }
         return KnownHidLabels.TryGetValue(code, out var label) ? label : $"HID 0x{code:X4}";
+    }
+
+    public static string DescribeHidKey(ushort code, int mode, int slots)
+    {
+        if (mode is 2 or 6)
+        {
+            string first = ResolveKeyLabel(code);
+            return $"多键组合宏 ({slots}槽: {first}...)";
+        }
+        return ResolveKeyLabel(code);
     }
 
     public static ushort ComputeChecksum(ReadOnlySpan<byte> configBuf)
@@ -158,6 +221,7 @@ public static class GpdV2PacketCodec
             Connected = true,
             FirmwareX = fwX,
             FirmwareK = fwK,
+            EmulationMode = data[EmulationModeOffset],
             L4Mode = l4Mode,
             L4Slots = l4Slots,
             L4KeyCode = l4Key,
@@ -202,20 +266,110 @@ public static class GpdV2PacketCodec
     private static void WriteSingleBackButton(Span<byte> configBuf, int modeDataOffset, int slotsDataOffset, int slot1U16Pos, ushort hidCode)
     {
         var data = configBuf.Slice(HeaderSize);
-        data[modeDataOffset] = 0; // Single key pass-through mode
+        // Mode 0 is Single key pass-through (supports both HID and XInput 0x8000..0x8018 codes).
+        data[modeDataOffset] = 0;
         data[slotsDataOffset] = hidCode == 0 ? (byte)0 : (byte)1;
 
         int slotByteStart = HeaderSize + slot1U16Pos * 2;
         BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart, 2), hidCode);
         BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 2, 2), 0); // startDelayMs
-        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 4, 2), hidCode == 0 ? (ushort)0 : (ushort)50); // holdDurationMs
+        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 4, 2), 0); // holdDurationMs = 0 for live hold pass-through
 
-        // Clear remaining 3 slots cleanly
-        for (int s = 1; s < 4; s++)
+        // Clear all remaining 31 key slots cleanly (32 slots total per V2 back button)
+        for (int s = 1; s < 32; s++)
         {
             int pos = slotByteStart + s * 6;
-            configBuf.Slice(pos, 6).Clear();
+            if (pos + 6 <= configBuf.Length)
+            {
+                configBuf.Slice(pos, 6).Clear();
+            }
         }
+    }
+
+    public static readonly byte[] V2Init1Payload =
+    [
+        0xa2, 0xa3, 0xa0, 0xa1, 0xa6, 0xa7, 0xa4, 0xa5, 0xba, 0xbb, 0xb8, 0xb9, 0xbe, 0xbf, 0xbc, 0xbd,
+        0xb2, 0xb3, 0xb0, 0xb1, 0xb6, 0xb7, 0xb4, 0xb5, 0x8a, 0x8b, 0x88, 0x89, 0x8e, 0x8f, 0x8c, 0x8d,
+        0x82, 0x83, 0x80, 0x81, 0x86, 0x87, 0x84, 0x85, 0x9a, 0x9b, 0x98, 0x99, 0x9e, 0x9f, 0x9c, 0x9d,
+        0x92, 0x93, 0x90, 0x91, 0x96, 0x97, 0x94, 0x95
+    ];
+
+    public static readonly byte[] V2Init2Payload = [0xd0, 0x07, 0x00, 0x00];
+
+    public static ushort ComputeBytesSum(ReadOnlySpan<byte> data)
+    {
+        int sum = 0;
+        for (int i = 0; i < data.Length; i++)
+        {
+            sum += data[i];
+        }
+        return unchecked((ushort)sum);
+    }
+
+    public static void UpdateConfigHeaderChecksum(Span<byte> configBuf)
+    {
+        if (configBuf.Length < ConfigBufferSize) return;
+        ushort sum = ComputeBytesSum(configBuf.Slice(HeaderSize, ConfigBufferSize - HeaderSize));
+        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(4, 2), sum);
+        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(8, 2), (ushort)(sum ^ 0xFFFF));
+    }
+
+    public static byte[] BuildV2Init1Report()
+    {
+        var pkt = new byte[ReportSize];
+        pkt[0] = 0x01;
+        pkt[1] = 0x21;
+        pkt[2] = (byte)V2Init1Payload.Length;
+        V2Init1Payload.CopyTo(pkt, 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(6, 2), ComputeBytesSum(V2Init1Payload));
+        return pkt;
+    }
+
+    public static byte[] BuildV2Init2Report()
+    {
+        var pkt = new byte[ReportSize];
+        pkt[0] = 0x01;
+        pkt[1] = 0x2B;
+        pkt[2] = (byte)V2Init2Payload.Length;
+        V2Init2Payload.CopyTo(pkt, 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(6, 2), ComputeBytesSum(V2Init2Payload));
+        return pkt;
+    }
+
+    public static byte[] BuildV2SimpleCommand(byte cmd, byte bytesCount = 0, bool withMagic4 = false)
+    {
+        var pkt = new byte[ReportSize];
+        pkt[0] = 0x01;
+        pkt[1] = cmd;
+        pkt[2] = bytesCount;
+        if (withMagic4)
+        {
+            pkt[6] = 0x04;
+            pkt[9] = 0x04;
+        }
+        return pkt;
+    }
+
+    public static byte[] BuildV2WritePageReport(ushort byteOffset, ReadOnlySpan<byte> chunk)
+    {
+        int count = Math.Min(chunk.Length, 56);
+        var pkt = new byte[ReportSize];
+        pkt[0] = 0x01;
+        pkt[1] = 0x43;
+        pkt[2] = (byte)count;
+        BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(4, 2), byteOffset);
+        BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(6, 2), ComputeBytesSum(chunk[..count]));
+        chunk[..count].CopyTo(pkt.AsSpan(8));
+        return pkt;
+    }
+
+    public static bool IsValidV2Response(ReadOnlySpan<byte> resp)
+    {
+        if (resp.Length < ReportSize) return false;
+        if (resp[8] == 0xE2) return false;
+        ushort expected = BinaryPrimitives.ReadUInt16LittleEndian(resp.Slice(6, 2));
+        ushort actual = ComputeBytesSum(resp.Slice(8, ReportSize - 8));
+        return expected == actual;
     }
 
     public static byte[] BuildCommandReport(byte cmd, byte pageLo = 0, byte pageHi = 0)

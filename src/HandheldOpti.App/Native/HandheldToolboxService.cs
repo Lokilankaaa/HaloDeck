@@ -19,6 +19,8 @@ public sealed class FrozenGameRecord
 public sealed class HandheldToolboxService : IDisposable
 {
     private const uint ProcessSuspendResume = 0x0800;
+    public const string GpdKeyboardExePath = @"C:\Program Files\GPD\GPDKeyboard.exe";
+    public static bool IsGpdXboxKeyboardAvailable => File.Exists(GpdKeyboardExePath);
 
     [DllImport("ntdll.dll")]
     private static extern int NtSuspendProcess(nint processHandle);
@@ -44,7 +46,7 @@ public sealed class HandheldToolboxService : IDisposable
         }
     }
 
-    public string ExecuteAction(string action, int targetPid = 0, string? targetGameName = null, bool hasAntiCheat = false)
+    public string ExecuteAction(string action, int targetPid = 0, string? targetGameName = null, bool hasAntiCheat = false, string preferredOskMode = "xbox")
     {
         switch ((action ?? string.Empty).Trim().ToLowerInvariant())
         {
@@ -57,7 +59,7 @@ public sealed class HandheldToolboxService : IDisposable
                 return "已打开多任务视图 (Win + Tab)";
 
             case "osk":
-                return LaunchTouchKeyboard();
+                return ToggleOnScreenKeyboard(preferredOskMode);
 
             case "screenshot":
                 Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "ms-screenclip:", UseShellExecute = true });
@@ -255,6 +257,81 @@ public sealed class HandheldToolboxService : IDisposable
     {
         [PreserveSig]
         int Toggle(nint hwnd);
+    }
+
+    public static string ToggleOnScreenKeyboard(string preferredMode = "xbox")
+    {
+        string mode = (preferredMode ?? "xbox").Trim().ToLowerInvariant();
+        if (mode is not ("xbox" or "touch" or "osk"))
+        {
+            mode = "xbox";
+        }
+
+        // Always dismiss legacy osk.exe if user prefers Xbox/Touch keyboard.
+        if (mode != "osk")
+        {
+            TryCloseWindowByClass("OSKMainClass");
+        }
+
+        if (mode == "xbox" && IsGpdXboxKeyboardAvailable)
+        {
+            nint gpdHwnd = Win32Interop.FindWindowW("GPDVirtualKeyboardClass", null);
+            if (gpdHwnd != 0 && Win32Interop.IsWindowVisible(gpdHwnd))
+            {
+                if (TryCloseWindowByClass("GPDVirtualKeyboardClass"))
+                {
+                    return "已关闭 GPD / Xbox 手柄屏幕键盘";
+                }
+            }
+
+            try
+            {
+                // GPDKeyboard.exe embeds uiAccess="true" and requires UseShellExecute=true.
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = GpdKeyboardExePath,
+                    WorkingDirectory = Path.GetDirectoryName(GpdKeyboardExePath) ?? string.Empty,
+                    UseShellExecute = true
+                });
+                return "已呼出 GPD / Xbox 手柄屏幕键盘";
+            }
+            catch
+            {
+                // Fall back to Windows Touch Keyboard below if elevation/shell rejects launch.
+            }
+        }
+
+        if (mode == "osk")
+        {
+            nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
+            if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
+            {
+                TryCloseWindowByClass("OSKMainClass");
+                return "已关闭传统 Windows 屏幕键盘";
+            }
+
+            Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
+            return "已启动传统 Windows 屏幕键盘 (osk.exe)";
+        }
+
+        return LaunchTouchKeyboard();
+    }
+
+    private static bool TryCloseWindowByClass(string className)
+    {
+        try
+        {
+            nint hwnd = Win32Interop.FindWindowW(className, null);
+            if (hwnd != 0)
+            {
+                return Win32Interop.PostMessageW(hwnd, Win32Interop.WM_CLOSE, 0, 0);
+            }
+        }
+        catch
+        {
+            // Ignore cross-integrity PostMessage rejections
+        }
+        return false;
     }
 
     public static string LaunchTouchKeyboard()

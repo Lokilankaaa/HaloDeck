@@ -224,9 +224,18 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
+    private int ResolveTargetRenderPid()
+    {
+        if (_runningGame is { IsCurrentlyRunning: true, RunningPid: > 0 and var pid })
+        {
+            return pid;
+        }
+        return Win32Interop.GetForegroundProcessSnapshot()?.ProcessId ?? 0;
+    }
+
     public SystemControlState PushSystemTelemetryTick()
     {
-        var sys = _systemControl.GetState();
+        var sys = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
         _latestSystemState = sys;
         BroadcastEvent("systemTelemetry", sys);
         return sys;
@@ -464,7 +473,7 @@ public sealed class WebUiBridge : IDisposable
     private object BuildSnapshot()
     {
         var activeGame = _runningGame ?? _cachedGames.FirstOrDefault();
-        var sysState = _systemControl.GetState();
+        var sysState = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
         _latestSystemState = sysState;
         return new
         {
@@ -1299,10 +1308,24 @@ public sealed class WebUiBridge : IDisposable
 
         ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
         _inputHub.GamepadMouseModeEnabled = _settings.GamepadMouseModeEnabled;
+        _inputHub.UpdateSettings(_settings);
         OverlayHudUpdated?.Invoke();
         BroadcastSystemState(sys);
         BroadcastStateSnapshot();
         return new { ok = true, settings = _settings, systemControl = sys, message = "已重新载入 settings.json 并同步电源与风扇配置" };
+    }
+
+    public void TriggerPhysicalOskToggle()
+    {
+        try
+        {
+            string msg = HandheldToolboxService.ToggleOnScreenKeyboard(_settings.PreferredOskMode);
+            BroadcastEvent("toast", new { kind = "info", message = msg });
+        }
+        catch (Exception ex)
+        {
+            BroadcastEvent("toast", new { kind = "warn", message = $"屏幕键盘切换失败: {ex.Message}" });
+        }
     }
 
     private object SetOverlayHud(JsonElement payload)
@@ -1457,7 +1480,7 @@ public sealed class WebUiBridge : IDisposable
             await Task.Delay(95).ConfigureAwait(false);
         }
 
-        string msg = _toolbox.ExecuteAction(action, pid, gameName, hasAntiCheat);
+        string msg = _toolbox.ExecuteAction(action, pid, gameName, hasAntiCheat, _settings.PreferredOskMode);
         BroadcastStateSnapshot();
         return new { ok = true, message = msg, frozenGames = _toolbox.GetFrozenGames() };
 

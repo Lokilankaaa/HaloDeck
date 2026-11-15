@@ -76,6 +76,10 @@ public sealed class AppSettings
     public HotkeyBinding ConsoleHotkey { get; set; } = new() { Modifiers = 0x0002 | 0x0004, VirtualKey = 0x4F, DisplayText = "Ctrl + Shift + O" };
     public HotkeyBinding OsdHotkey { get; set; } = new() { Modifiers = 0x0001 | 0x0002, VirtualKey = 0x4D, DisplayText = "Ctrl + Alt + M" };
 
+    public bool InterceptPhysicalOskButton { get; set; } = true;
+    public string PreferredOskMode { get; set; } = "xbox"; // "xbox" | "touch" | "osk"
+    public bool EnableBackButtonHotkeys { get; set; } = true;
+
     public Dictionary<string, GamePerformanceProfile> PerGameProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> ExcludedGameIds { get; set; } = new();
     public List<string> DisabledCustomDlls { get; set; } = new();

@@ -19,13 +19,17 @@ public sealed class HardwareServiceClient
 
     private HardwareDaemonStatus _cachedStatus = new();
     private DateTime _lastStatusAtUtc = DateTime.MinValue;
+    private int _lastTargetPid;
 
-    public HardwareDaemonStatus GetStatus(bool forceRefresh = false)
+    public HardwareDaemonStatus GetStatus(bool forceRefresh = false, int targetPid = 0)
     {
-        if (!forceRefresh && (DateTime.UtcNow - _lastStatusAtUtc) < TimeSpan.FromMilliseconds(1400))
+        if (!forceRefresh &&
+            targetPid == _lastTargetPid &&
+            (DateTime.UtcNow - _lastStatusAtUtc) < TimeSpan.FromMilliseconds(950))
         {
             return _cachedStatus;
         }
+        _lastTargetPid = targetPid;
 
         var (installed, running) = PawnIoHardwareDaemon.ProbeWindowsServiceState(PawnIoHardwareDaemon.WindowsServiceName);
         var (gpdExists, gpdRunning) = PawnIoHardwareDaemon.ProbeWindowsServiceState("GPDToolService");
@@ -44,7 +48,7 @@ public sealed class HardwareServiceClient
             return _cachedStatus;
         }
 
-        var (ok, _, status) = SendPipeRequest(new { op = "status" });
+        var (ok, _, status) = SendPipeRequest(new { op = "status", targetPid });
         if (ok && status is not null)
         {
             status.ServiceInstalled = true;
@@ -69,7 +73,7 @@ public sealed class HardwareServiceClient
 
     public (bool Ok, string Error, HardwareDaemonStatus Status) SetTdp(int stapmWatts, int? slowWatts = null, int? fastWatts = null)
     {
-        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion;
+        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < 2;
         int w = v1Daemon ? Math.Clamp(stapmWatts, 12, 85) : Math.Clamp(stapmWatts, 8, 120);
         int slow = Math.Clamp(slowWatts ?? w, 8, 130);
         int fast = Math.Clamp(fastWatts ?? Math.Min(140, Math.Max(slow, w + 2)), 8, 140);
@@ -86,7 +90,7 @@ public sealed class HardwareServiceClient
         int tempC,
         IEnumerable<FanCurvePoint>? curvePoints = null)
     {
-        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion;
+        bool v1Daemon = _cachedStatus.ServiceRunning && _cachedStatus.DaemonVersion < 2;
         string normalized = (mode ?? "auto").Trim().ToLowerInvariant();
         if (v1Daemon && normalized == "curve")
         {

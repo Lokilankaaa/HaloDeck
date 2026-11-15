@@ -45,12 +45,20 @@ public sealed class SystemControlState
     public int MemClockMhz { get; set; }
     public int CpuClockMhz { get; set; }
     public int GpuTempC { get; set; }
+    public int GpuSocTempC { get; set; }
     public int CpuTempC { get; set; }
     public int VramUsedMb { get; set; }
+    public int VramTotalMb { get; set; }
+    public int SharedVramUsedMb { get; set; }
+    public int SharedVramTotalMb { get; set; }
+    public int CurrentFps { get; set; }
+    public double FrameTimeMs { get; set; }
     public int[] ApuWattsHistory { get; set; } = Array.Empty<int>();
     public int[] GpuUsageHistory { get; set; } = Array.Empty<int>();
     public int[] CpuUsageHistory { get; set; } = Array.Empty<int>();
     public int[] TempHistory { get; set; } = Array.Empty<int>();
+    public int[] FpsHistory { get; set; } = Array.Empty<int>();
+    public bool GpdXboxKeyboardAvailable { get; set; }
 
     // PawnIO Hardware Daemon Status (Strix Halo TDP + GPD Dual-Fan EC)
     public HardwareDaemonStatus HardwareService { get; set; } = new();
@@ -99,6 +107,7 @@ public sealed class SystemControlService : IDisposable
     private DateTime _fullCapCachedAtUtc = DateTime.MinValue;
     private bool _cachedBrightnessSupported;
     private int _cachedBrightnessPercent = 70;
+    private int _cachedThermalZoneTempC;
     private bool _cachedIsCharging;
     private double? _cachedBatteryWatts;
     private double _cachedRemainingWh;
@@ -114,12 +123,13 @@ public sealed class SystemControlService : IDisposable
         SampleCpuUsagePercent();
     }
 
-    public SystemControlState GetState(bool includeHardwareRefresh = false)
+    public SystemControlState GetState(bool includeHardwareRefresh = false, int targetPid = 0)
     {
         var state = new SystemControlState
         {
             CpuName = _cpuName,
-            CpuUsagePercent = SampleCpuUsagePercent()
+            CpuUsagePercent = SampleCpuUsagePercent(),
+            GpdXboxKeyboardAvailable = HandheldToolboxService.IsGpdXboxKeyboardAvailable
         };
 
         PopulateMemoryStats(state);
@@ -130,8 +140,11 @@ public sealed class SystemControlService : IDisposable
         state.CpuBoostMode = ReadCpuBoostMode(state.IsAcOnline);
         state.CpuMaxFreqMhz = ReadCpuMaxFreqMhz(state.IsAcOnline);
 
+        var hw = _hwClient.GetStatus(includeHardwareRefresh, targetPid);
+        state.HardwareService = hw;
+
         var amd = _telemetry.Sample();
-        _telemetry.RecordHistoryPoint(amd, state.CpuUsagePercent);
+        _telemetry.RecordHistoryPoint(amd, state.CpuUsagePercent, hw.CurrentFps);
         state.AdlAvailable = amd.Available;
         state.ApuPowerWatts = amd.ApuPowerWatts;
         state.GpuUsagePercent = amd.GpuUsagePercent;
@@ -139,17 +152,26 @@ public sealed class SystemControlService : IDisposable
         state.MemClockMhz = amd.MemClockMhz;
         state.CpuClockMhz = amd.CpuClockMhz;
         state.GpuTempC = amd.GpuTempC;
-        state.CpuTempC = amd.CpuTempC;
+        state.GpuSocTempC = amd.SocTempC;
+        // Independent CPU Tctl temperature priority: SMU 0x59800 -> ADL2 CPU sensor -> ACPI ThermalZone -> SoC fallback
+        state.CpuTempC = hw.CpuTempC > 0
+            ? hw.CpuTempC
+            : (amd.CpuTempDirect ? amd.CpuTempC : (_cachedThermalZoneTempC > 0 ? _cachedThermalZoneTempC : amd.SocTempC));
         state.VramUsedMb = amd.VramUsedMb;
+        state.VramTotalMb = amd.VramTotalMb;
+        state.SharedVramUsedMb = amd.SharedVramUsedMb;
+        state.SharedVramTotalMb = amd.SharedVramTotalMb;
+        state.CurrentFps = hw.CurrentFps;
+        state.FrameTimeMs = hw.FrameTimeMs;
 
         var (apuHist, gpuHist, cpuHist, tempHist) = _telemetry.GetHistoryArrays();
         state.ApuWattsHistory = apuHist;
         state.GpuUsageHistory = gpuHist;
         state.CpuUsageHistory = cpuHist;
         state.TempHistory = tempHist;
+        state.FpsHistory = _telemetry.GetFpsHistory();
 
         PopulatePowerFlowEstimates(state);
-        state.HardwareService = _hwClient.GetStatus(includeHardwareRefresh);
 
         return state;
     }
@@ -705,6 +727,33 @@ public sealed class SystemControlService : IDisposable
             {
                 // Ignore full capacity WMI fallback
             }
+        }
+
+        try
+        {
+            using var tzSearcher = new ManagementObjectSearcher(@"root\CIMV2", "SELECT HighPrecisionTemperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
+            int hottestC = 0;
+            foreach (ManagementBaseObject obj in tzSearcher.Get())
+            {
+                using (obj)
+                {
+                    if (obj["HighPrecisionTemperature"] is null) continue;
+                    uint raw = Convert.ToUInt32(obj["HighPrecisionTemperature"]);
+                    if (raw is >= 2880 and <= 3950)
+                    {
+                        int c = (int)Math.Round(raw / 10.0 - 273.15);
+                        if (c > hottestC) hottestC = c;
+                    }
+                }
+            }
+            if (hottestC > 0)
+            {
+                _cachedThermalZoneTempC = hottestC;
+            }
+        }
+        catch
+        {
+            // Ignore ThermalZone WMI fallback
         }
 
         _wmiCachedAtUtc = DateTime.UtcNow;
