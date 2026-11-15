@@ -135,7 +135,7 @@ public sealed class HandheldV032Tests
         {
             var store = new SettingsStore(tempDir);
 
-            // Unknown mode normalizes to "xbox"
+            // Legacy "xbox", "touch", and unknown modes normalize to GPD Tool 1.66's "tabtip"
             var raw = new AppSettings
             {
                 InterceptPhysicalOskButton = false,
@@ -145,18 +145,25 @@ public sealed class HandheldV032Tests
             store.Save(raw);
             var loadedDefaultOsk = store.Load();
             Assert.False(loadedDefaultOsk.InterceptPhysicalOskButton);
-            Assert.Equal("xbox", loadedDefaultOsk.PreferredOskMode);
+            Assert.Equal("tabtip", loadedDefaultOsk.PreferredOskMode);
             Assert.False(loadedDefaultOsk.EnableBackButtonHotkeys);
 
-            // Valid uppercase mode normalizes cleanly and persists
-            raw.PreferredOskMode = "TOUCH";
+            foreach (var legacyMode in new[] { "xbox", "TOUCH" })
+            {
+                raw.PreferredOskMode = legacyMode;
+                store.Save(raw);
+                Assert.Equal("tabtip", store.Load().PreferredOskMode);
+            }
+
+            // Explicit "osk" mode still roundtrips cleanly
+            raw.PreferredOskMode = "OSK";
             raw.InterceptPhysicalOskButton = true;
             raw.EnableBackButtonHotkeys = true;
             store.Save(raw);
 
             var reloaded = store.Load();
             Assert.True(reloaded.InterceptPhysicalOskButton);
-            Assert.Equal("touch", reloaded.PreferredOskMode);
+            Assert.Equal("osk", reloaded.PreferredOskMode);
             Assert.True(reloaded.EnableBackButtonHotkeys);
         }
         finally

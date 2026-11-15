@@ -46,6 +46,7 @@ public sealed class InputHubService : IDisposable
     private Win32Interop.LowLevelKeyboardProc? _keyboardHookProc;
     private bool _ctrlWinOSwallowedDown;
     private DateTime _lastOskTriggerAtUtc = DateTime.MinValue;
+    private int _oskReleaseDispatchPending;
 
     public event Action? ToggleQamRequested;
     public event Action? ToggleConsoleRequested;
@@ -172,9 +173,13 @@ public sealed class InputHubService : IDisposable
         if (nCode >= 0 && _settings.InterceptPhysicalOskButton && lParam != 0)
         {
             var kb = Marshal.PtrToStructure<Win32Interop.KBDLLHOOKSTRUCT>(lParam);
-            if (kb.vkCode == Win32Interop.VK_O &&
-                kb.dwExtraInfo != Win32Interop.SyntheticChordBreakExtraInfo &&
-                (kb.flags & Win32Interop.LLKHF_INJECTED) == 0)
+            if (kb.dwExtraInfo == Win32Interop.SyntheticChordBreakExtraInfo ||
+                (kb.flags & Win32Interop.LLKHF_INJECTED) != 0)
+            {
+                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            }
+
+            if (kb.vkCode == Win32Interop.VK_O)
             {
                 int msg = wParam.ToInt32();
                 bool isDown = msg is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
@@ -190,14 +195,43 @@ public sealed class InputHubService : IDisposable
 
                     if (ctrlDown && winDown)
                     {
-                        if (!_ctrlWinOSwallowedDown && (DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 320)
+                        if (!_ctrlWinOSwallowedDown)
                         {
-                            _lastOskTriggerAtUtc = DateTime.UtcNow;
+                            _ctrlWinOSwallowedDown = true;
                             // Break LWin solo-tap Start Menu trigger before swallowing VK_O.
                             Win32Interop.SendSyntheticChordBreak();
-                            _ = Task.Run(() => ToggleOnScreenKeyboardRequested?.Invoke());
+
+                            if ((DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 300 &&
+                                Interlocked.CompareExchange(ref _oskReleaseDispatchPending, 1, 0) == 0)
+                            {
+                                _lastOskTriggerAtUtc = DateTime.UtcNow;
+                                _ = Task.Run(async () =>
+                                {
+                                    try
+                                    {
+                                        // Match GPD Tool 1.66: wait for physical Ctrl+Win+O keys to release + 50ms settle
+                                        for (int elapsed = 0; elapsed < 600; elapsed += 15)
+                                        {
+                                            bool anyHeld =
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_O) & 0x8000) != 0 ||
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0 ||
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
+                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
+                                            if (!anyHeld) break;
+                                            await Task.Delay(15).ConfigureAwait(false);
+                                        }
+                                        await Task.Delay(50).ConfigureAwait(false);
+                                        ToggleOnScreenKeyboardRequested?.Invoke();
+                                    }
+                                    finally
+                                    {
+                                        Interlocked.Exchange(ref _oskReleaseDispatchPending, 0);
+                                    }
+                                });
+                            }
                         }
-                        _ctrlWinOSwallowedDown = true;
                         return 1;
                     }
                 }

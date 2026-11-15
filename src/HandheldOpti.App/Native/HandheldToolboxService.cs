@@ -20,7 +20,7 @@ public sealed class HandheldToolboxService : IDisposable
 {
     private const uint ProcessSuspendResume = 0x0800;
     public const string GpdKeyboardExePath = @"C:\Program Files\GPD\GPDKeyboard.exe";
-    public static bool IsGpdXboxKeyboardAvailable => File.Exists(GpdKeyboardExePath);
+    public static bool IsGpdXboxKeyboardAvailable => File.Exists(GetTabTipExePath());
 
     [DllImport("ntdll.dll")]
     private static extern int NtSuspendProcess(nint processHandle);
@@ -46,7 +46,14 @@ public sealed class HandheldToolboxService : IDisposable
         }
     }
 
-    public string ExecuteAction(string action, int targetPid = 0, string? targetGameName = null, bool hasAntiCheat = false, string preferredOskMode = "xbox")
+    public string ExecuteAction(
+        string action,
+        int targetPid = 0,
+        string? targetGameName = null,
+        bool hasAntiCheat = false,
+        string preferredOskMode = "tabtip",
+        bool fromUiClick = false,
+        bool? forceCloseOsk = null)
     {
         switch ((action ?? string.Empty).Trim().ToLowerInvariant())
         {
@@ -59,7 +66,7 @@ public sealed class HandheldToolboxService : IDisposable
                 return "已打开多任务视图 (Win + Tab)";
 
             case "osk":
-                return ToggleOnScreenKeyboard(preferredOskMode);
+                return ToggleOnScreenKeyboard(preferredOskMode, fromUiClick, forceCloseOsk);
 
             case "screenshot":
                 Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "ms-screenclip:", UseShellExecute = true });
@@ -249,6 +256,18 @@ public sealed class HandheldToolboxService : IDisposable
         string.Equals(name, "HaloDeck", StringComparison.OrdinalIgnoreCase);
 
     private static readonly Guid ClsidUiHostNoLaunch = new("4CE576FA-83DC-4F88-951C-9D0782B4E376");
+    private static readonly Guid ClsidFrameworkInputPane = new("D5120AA3-46BA-44C5-822D-CA8092C1FC72");
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+
+        public bool IsVisible => (Right - Left) > 0 && (Bottom - Top) > 0;
+    }
 
     [ComImport]
     [Guid("37C994E7-432B-4834-A2F7-DCE1F13B834B")]
@@ -259,62 +278,278 @@ public sealed class HandheldToolboxService : IDisposable
         int Toggle(nint hwnd);
     }
 
-    public static string ToggleOnScreenKeyboard(string preferredMode = "xbox")
+    [ComImport]
+    [Guid("226C537B-1E76-4D9E-A760-33DB29922F18")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFrameworkInputPaneHandler
     {
-        string mode = (preferredMode ?? "xbox").Trim().ToLowerInvariant();
-        if (mode is not ("xbox" or "touch" or "osk"))
+        [PreserveSig]
+        int Showing(ref NativeRect prcInputPaneScreenLocation, [MarshalAs(UnmanagedType.Bool)] bool fEnsureFocusedElementInView);
+
+        [PreserveSig]
+        int Hiding([MarshalAs(UnmanagedType.Bool)] bool fEnsureFocusedElementInView);
+    }
+
+    [ComImport]
+    [Guid("5752238B-24F0-495A-82F1-2FD593056796")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFrameworkInputPane
+    {
+        [PreserveSig]
+        int Advise([MarshalAs(UnmanagedType.IUnknown)] object pWindow, IFrameworkInputPaneHandler pHandler, out uint pdwCookie);
+
+        [PreserveSig]
+        int AdviseWithHWND(nint hwnd, IFrameworkInputPaneHandler pHandler, out uint pdwCookie);
+
+        [PreserveSig]
+        int Unadvise(uint dwCookie);
+
+        [PreserveSig]
+        int Location(out NativeRect prcInputPaneScreenLocation);
+    }
+
+    [ClassInterface(ClassInterfaceType.None)]
+    private sealed class InputPaneSink : IFrameworkInputPaneHandler
+    {
+        public int Showing(ref NativeRect prcInputPaneScreenLocation, bool fEnsureFocusedElementInView)
         {
-            mode = "xbox";
+            _autoHideConsumed = false;
+            return 0;
         }
 
-        // Always dismiss legacy osk.exe if user prefers Xbox/Touch keyboard.
-        if (mode != "osk")
+        public int Hiding(bool fEnsureFocusedElementInView)
         {
-            TryCloseWindowByClass("OSKMainClass");
+            Interlocked.Exchange(ref _lastInputPaneHiddenTicks, Environment.TickCount64);
+            return 0;
         }
+    }
 
-        if (mode == "xbox" && IsGpdXboxKeyboardAvailable)
+    private static IFrameworkInputPane? _watchedPane;
+    private static uint _watchCookie;
+    private static InputPaneSink? _watchSink;
+    private static long _lastInputPaneHiddenTicks;
+    private static volatile bool _autoHideConsumed = true;
+    private static int _oskToggleGate;
+
+    public static void AttachInputPaneWatcher(nint hwnd)
+    {
+        try
         {
-            nint gpdHwnd = Win32Interop.FindWindowW("GPDVirtualKeyboardClass", null);
-            if (gpdHwnd != 0 && Win32Interop.IsWindowVisible(gpdHwnd))
+            DetachInputPaneWatcher();
+            if (hwnd == 0) return;
+
+            var comType = Type.GetTypeFromCLSID(ClsidFrameworkInputPane, throwOnError: false);
+            if (comType is null) return;
+
+            var obj = Activator.CreateInstance(comType);
+            if (obj is IFrameworkInputPane pane)
             {
-                if (TryCloseWindowByClass("GPDVirtualKeyboardClass"))
+                var sink = new InputPaneSink();
+                if (pane.AdviseWithHWND(hwnd, sink, out uint cookie) >= 0)
                 {
-                    return "已关闭 GPD / Xbox 手柄屏幕键盘";
+                    _watchedPane = pane;
+                    _watchSink = sink;
+                    _watchCookie = cookie;
+                    return;
                 }
             }
 
+            if (obj is not null && Marshal.IsComObject(obj))
+            {
+                try { Marshal.FinalReleaseComObject(obj); } catch { }
+            }
+        }
+        catch
+        {
+            // Non-fatal: QueryTabTipVisible() still queries IFrameworkInputPane::Location directly
+        }
+    }
+
+    public static void DetachInputPaneWatcher()
+    {
+        try
+        {
+            if (_watchedPane is not null)
+            {
+                if (_watchCookie != 0)
+                {
+                    try { _watchedPane.Unadvise(_watchCookie); } catch { }
+                }
+                if (Marshal.IsComObject(_watchedPane))
+                {
+                    try { Marshal.FinalReleaseComObject(_watchedPane); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore shutdown cleanup errors
+        }
+        finally
+        {
+            _watchedPane = null;
+            _watchSink = null;
+            _watchCookie = 0;
+        }
+    }
+
+    public static bool QueryTabTipVisible()
+    {
+        bool visible = false;
+        RunSta(() =>
+        {
+            object? obj = null;
             try
             {
-                // GPDKeyboard.exe embeds uiAccess="true" and requires UseShellExecute=true.
-                Process.Start(new ProcessStartInfo
+                var t = Type.GetTypeFromCLSID(ClsidFrameworkInputPane, throwOnError: false);
+                if (t is null) return;
+
+                obj = Activator.CreateInstance(t);
+                if (obj is IFrameworkInputPane pane && pane.Location(out var rc) >= 0)
                 {
-                    FileName = GpdKeyboardExePath,
-                    WorkingDirectory = Path.GetDirectoryName(GpdKeyboardExePath) ?? string.Empty,
-                    UseShellExecute = true
-                });
-                return "已呼出 GPD / Xbox 手柄屏幕键盘";
+                    visible = rc.IsVisible;
+                }
             }
             catch
             {
-                // Fall back to Windows Touch Keyboard below if elevation/shell rejects launch.
+                visible = false;
             }
-        }
-
-        if (mode == "osk")
-        {
-            nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
-            if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
+            finally
             {
-                TryCloseWindowByClass("OSKMainClass");
-                return "已关闭传统 Windows 屏幕键盘";
+                if (obj is not null && Marshal.IsComObject(obj))
+                {
+                    try { Marshal.FinalReleaseComObject(obj); } catch { }
+                }
             }
+        });
+        return visible;
+    }
 
-            Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
-            return "已启动传统 Windows 屏幕键盘 (osk.exe)";
+    public static bool ShouldCloseOnUiClick()
+    {
+        if (QueryTabTipVisible())
+        {
+            return true;
         }
 
-        return LaunchTouchKeyboard();
+        nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
+        if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
+        {
+            return true;
+        }
+
+        if (!_autoHideConsumed)
+        {
+            long elapsed = Environment.TickCount64 - Interlocked.Read(ref _lastInputPaneHiddenTicks);
+            if (elapsed is >= 0 and < 650)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static string ToggleOnScreenKeyboard(string preferredMode = "tabtip", bool fromUiClick = false, bool? forceClose = null)
+    {
+        if (Interlocked.CompareExchange(ref _oskToggleGate, 1, 0) != 0)
+        {
+            return "屏幕键盘切换中";
+        }
+
+        try
+        {
+            string mode = (preferredMode ?? "tabtip").Trim().ToLowerInvariant();
+            if (mode == "osk")
+            {
+                nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
+                if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
+                {
+                    Win32Interop.PostMessageW(oskHwnd, Win32Interop.WM_SYSCOMMAND, Win32Interop.SC_CLOSE, 0);
+                    Win32Interop.PostMessageW(oskHwnd, Win32Interop.WM_CLOSE, 0, 0);
+                    return "已收起传统屏幕键盘";
+                }
+
+                Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
+                return "已启动传统 Windows 屏幕键盘 (osk.exe)";
+            }
+
+            // Dismiss any legacy osk.exe before driving Windows 11 native TabTip/Gamepad Keyboard.
+            TryCloseWindowByClass("OSKMainClass");
+
+            bool shouldClose = forceClose ?? (fromUiClick ? ShouldCloseOnUiClick() : QueryTabTipVisible());
+            if (shouldClose)
+            {
+                _autoHideConsumed = true;
+                if (QueryTabTipVisible())
+                {
+                    // Step 1: Standalone Ctrl tap closes Windows 11 Gamepad keyboard layout reliably (matches GPD Tool 1.66)
+                    Win32Interop.SendStandaloneCtrlTap();
+                    if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 175))
+                    {
+                        // Step 2: Standard/docked Touch keyboard layout toggles closed via ITipInvocation
+                        TryInvokeTabTipComToggle();
+                        if (!WaitUntilTabTipState(expectedVisible: false, timeoutMs: 210))
+                        {
+                            TryCloseWindowByClass("IPTip_Main_Window");
+                        }
+                    }
+                }
+
+                Interlocked.Exchange(ref _lastInputPaneHiddenTicks, Environment.TickCount64);
+                return "已收起屏幕键盘";
+            }
+
+            _autoHideConsumed = false;
+            EnsureTabTipProcessStarted();
+            TryInvokeTabTipComToggle();
+            if (!WaitUntilTabTipState(expectedVisible: true, timeoutMs: 280))
+            {
+                string tabTipPath = GetTabTipExePath();
+                if (File.Exists(tabTipPath))
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo { FileName = tabTipPath, UseShellExecute = true });
+                        WaitUntilTabTipState(expectedVisible: true, timeoutMs: 250);
+                    }
+                    catch
+                    {
+                        // Ignore shell fallback failure
+                    }
+                }
+            }
+
+            return "已呼出屏幕键盘";
+        }
+        finally
+        {
+            Thread.Sleep(80);
+            Interlocked.Exchange(ref _oskToggleGate, 0);
+        }
+    }
+
+    private static bool WaitUntilTabTipState(bool expectedVisible, int timeoutMs)
+    {
+        for (int elapsed = 0; elapsed < timeoutMs; elapsed += 35)
+        {
+            if (QueryTabTipVisible() == expectedVisible)
+            {
+                return true;
+            }
+            Thread.Sleep(35);
+        }
+        return QueryTabTipVisible() == expectedVisible;
+    }
+
+    private static string GetTabTipExePath()
+    {
+        string? common64 = Environment.GetEnvironmentVariable("CommonProgramW6432");
+        if (string.IsNullOrWhiteSpace(common64))
+        {
+            common64 = Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles);
+        }
+        return Path.Combine(common64, @"microsoft shared\ink\TabTip.exe");
     }
 
     private static bool TryCloseWindowByClass(string className)
@@ -324,6 +559,7 @@ public sealed class HandheldToolboxService : IDisposable
             nint hwnd = Win32Interop.FindWindowW(className, null);
             if (hwnd != 0)
             {
+                Win32Interop.PostMessageW(hwnd, Win32Interop.WM_SYSCOMMAND, Win32Interop.SC_CLOSE, 0);
                 return Win32Interop.PostMessageW(hwnd, Win32Interop.WM_CLOSE, 0, 0);
             }
         }
@@ -334,26 +570,7 @@ public sealed class HandheldToolboxService : IDisposable
         return false;
     }
 
-    public static string LaunchTouchKeyboard()
-    {
-        EnsureTabTipProcessStarted();
-
-        if (TryInvokeTabTipComToggle())
-        {
-            return "已通过 Windows COM (ITipInvocation) 切换触摸屏幕键盘";
-        }
-
-        try
-        {
-            Win32Interop.SendWinCtrlChord(0x4F); // Win + Ctrl + O
-            return "已触发 Win + Ctrl + O 辅助屏幕键盘";
-        }
-        catch
-        {
-            Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
-            return "已启动传统屏幕键盘 (osk.exe)";
-        }
-    }
+    public static string LaunchTouchKeyboard() => ToggleOnScreenKeyboard("tabtip");
 
     private static void EnsureTabTipProcessStarted()
     {
@@ -364,9 +581,7 @@ public sealed class HandheldToolboxService : IDisposable
                 return;
             }
 
-            string tabTip = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
-                @"microsoft shared\ink\TabTip.exe");
+            string tabTip = GetTabTipExePath();
             if (File.Exists(tabTip))
             {
                 Process.Start(new ProcessStartInfo { FileName = tabTip, UseShellExecute = true });
@@ -382,8 +597,7 @@ public sealed class HandheldToolboxService : IDisposable
     private static bool TryInvokeTabTipComToggle()
     {
         bool ok = false;
-        var done = new ManualResetEventSlim(false);
-        var thread = new Thread(() =>
+        RunSta(() =>
         {
             object? host = null;
             try
@@ -408,6 +622,28 @@ public sealed class HandheldToolboxService : IDisposable
                 {
                     try { Marshal.FinalReleaseComObject(host); } catch { }
                 }
+            }
+        });
+        return ok;
+    }
+
+    private static void RunSta(Action action)
+    {
+        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+        {
+            action();
+            return;
+        }
+
+        using var done = new ManualResetEventSlim(false);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+            finally
+            {
                 done.Set();
             }
         });
@@ -415,7 +651,6 @@ public sealed class HandheldToolboxService : IDisposable
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         done.Wait(1500);
-        return ok;
     }
 
     public void Dispose()

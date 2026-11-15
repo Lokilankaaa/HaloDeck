@@ -58,8 +58,8 @@
   ];
 
   const GPD_BACK_KEYBOARD_OPTIONS = [
-    { value: -1, label: "保留原宏" },
-    { value: 0x0000, label: "解除映射" },
+    { value: -1, label: "保留原厂设置" },
+    { value: 0x0000, label: "关闭背键" },
     { value: 0x002C, label: "Space 跳跃" },
     { value: 0x00E1, label: "Shift 冲刺" },
     { value: 0x00E0, label: "Ctrl 下蹲" },
@@ -68,18 +68,27 @@
     { value: 0x0015, label: "R 换弹" },
     { value: 0x002B, label: "Tab" },
     { value: 0x0029, label: "Esc" },
-    { value: 0x0068, label: "F13 (侧栏)" },
-    { value: 0x0069, label: "F14 (OSD)" },
-    { value: 0x006A, label: "F15 (菜单)" },
-    { value: 0x0049, label: "Insert (超分)" }
+    { value: 0x0068, label: "F13 (呼出侧栏)" },
+    { value: 0x0069, label: "F14 (切换帧率窗)" },
+    { value: 0x006A, label: "F15 (超分菜单)" },
+    { value: 0x0049, label: "Insert (超分菜单)" }
   ];
 
   const GPD_BACK_PRESETS = {
-    fps_l3r3: { l4: 0x800F, r4: 0x8010, label: "FPS 摇杆直通 (L4=手柄L3 / R4=手柄R3)" },
-    act_ab: { l4: 0x8007, r4: 0x8008, label: "动作闪避跳跃 (L4=手柄A / R4=手柄B)" },
-    shoulder_lbrb: { l4: 0x800B, r4: 0x800C, label: "肩键扩展 (L4=手柄LB / R4=手柄RB)" },
-    halodeck_fn: { l4: 0x0068, r4: 0x0069, label: "HaloDeck 快捷键 (L4=F13侧栏 / R4=F14 OSD)", enableHotkeys: true }
+    fps_l3r3: { l4: 0x800F, r4: 0x8010, shortLabel: "摇杆按下 (L3 / R3)", label: "摇杆按下 (L4=手柄L3 / R4=手柄R3)" },
+    act_ab: { l4: 0x8007, r4: 0x8008, shortLabel: "跳跃与闪避 (A / B)", label: "跳跃与闪避 (L4=手柄A / R4=手柄B)" },
+    shoulder_lbrb: { l4: 0x800B, r4: 0x800C, shortLabel: "肩键扩展 (LB / RB)", label: "肩键扩展 (L4=手柄LB / R4=手柄RB)" },
+    halodeck_fn: { l4: 0x0068, r4: 0x0069, shortLabel: "侧栏与帧率窗", label: "侧栏与帧率窗 (L4=侧栏 / R4=帧率窗)", enableHotkeys: true }
   };
+
+  function resolveBackKeyLabel(code) {
+    if (typeof code !== "number" || code < 0) return "保留原厂设置";
+    if (code === 0) return "关闭背键";
+    const match = GPD_BACK_GAMEPAD_OPTIONS.find((o) => o.value === code) ||
+      GPD_BACK_KEYBOARD_OPTIONS.find((o) => o.value === code);
+    if (match) return match.label;
+    return `HID 0x${code.toString(16).toUpperCase().padStart(4, "0")}`;
+  }
 
   const state = {
     tab: "handheld",
@@ -93,6 +102,7 @@
     _userModifiedConfig: false,
     config: { ...DEFAULT_CONFIG },
     advancedOpen: false,
+    controlsAdvancedOpen: false,
     searchQuery: "",
     libraryFilter: "all",
     focusIndex: 0,
@@ -1424,9 +1434,23 @@
   }
 
   // ---------------- Console View 3: Controls, GPD Back Buttons & App Settings ----------------
+  function hasPendingGpdChanges(gpd, draft) {
+    if (!gpd?.connected) return false;
+    const l4Macro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
+    const r4Macro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
+    const origL4 = l4Macro ? -1 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0);
+    const origR4 = r4Macro ? -1 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0);
+    return (
+      draft.l4Key !== origL4 ||
+      draft.r4Key !== origR4 ||
+      draft.rumble !== (gpd.rumbleLevel ?? 1) ||
+      draft.leftDeadzone !== (gpd.leftDeadzone ?? 0) ||
+      draft.rightDeadzone !== (gpd.rightDeadzone ?? 0)
+    );
+  }
+
   function renderControlsView() {
     const snap = state.snapshot || {};
-    const sys = snap.systemControl || {};
     const settings = snap.settings || {};
     const gpd = snap.gpdController || {};
     const draft = state.gpdDraft;
@@ -1437,152 +1461,111 @@
     const osdButtons = settings.osdGamepadCombo?.buttons || ["BACK", "Y"];
     const mouseButtons = settings.mouseModeGamepadCombo?.buttons || ["BACK", "LB"];
     const insButtons = settings.insertGamepadCombo?.buttons || ["BACK", "START"];
-    const oskMode = settings.preferredOskMode || "xbox";
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
-    const enableBackHotkeys = settings.enableBackButtonHotkeys !== false;
-
-    const renderBackKeyGroups = (attrName, selectedVal) => `
-      <div class="gpd-key-group-label">手柄原生按键 (手柄模式直接参与游戏，支持 V2 固件)</div>
-      <div class="gpd-key-pill-grid">
-        ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
-          <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" ${attrName}="${opt.value}" data-focusable="true">${opt.label}</button>
-        `).join("")}
-      </div>
-      <div class="gpd-key-group-label">PC 游戏键 / HaloDeck 快捷功能 / 保留原宏</div>
-      <div class="gpd-key-pill-grid">
-        ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
-          <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" ${attrName}="${opt.value}" data-focusable="true">${opt.label}</button>
-        `).join("")}
-      </div>
-    `;
+    const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
     return `
       <div class="page-scroll">
         <div class="controls-layout">
-          <!-- Left: GPD V2 Hardware Flash + Desktop Mouse Mode -->
+          <!-- Left: Simplified Back Buttons & Rumble + Desktop Mouse Mode -->
           <div class="hh-col">
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">GPD 手柄硬件固件与原生背键 (Controller V2)</span>
+                <span class="hh-card-title">背键与震动 (L4 / R4)</span>
                 <div style="display:flex;align-items:center;gap:6px;">
-                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"}` : "未连接 GPD HID"}</span>
-                  <button id="btnReadGpd" class="btn btn-sm" data-focusable="true">读取板载 Flash</button>
+                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}` : "未检测到手柄"}</span>
+                  <button id="btnReadGpd" class="btn btn-sm" data-focusable="true">刷新</button>
                 </div>
               </div>
 
-              <div class="gpd-warn-note">
-                当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]。在「手柄模式」下将 L4/R4 设为 <strong>手柄 L3 / R3 / A / B / LB / RB</strong> 等原生 XInput 键值写入 Flash 后，背键即可像原装手柄键一样直接参与游戏操控！
-              </div>
-
               <div class="hh-field" style="margin-bottom:10px;">
-                <label>一键应用场景预设 (先选后点击右下角「写入手柄 Flash」生效)</label>
+                <label>快速场景预设（选定后点击右下角「应用到手柄」写入 Flash）</label>
                 <div class="gpd-preset-grid">
                   ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
                     const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
-                    return `<button class="pill-btn small ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.label.split("(")[0].trim())}</button>`;
+                    return `<button class="pill-btn small ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
                   }).join("")}
                 </div>
               </div>
 
-              <div class="hh-field" style="margin-bottom:10px;">
-                <label>L4 背键映射目标</label>
-                ${renderBackKeyGroups("data-gpd-l4", draft.l4Key)}
-              </div>
-
-              <div class="hh-field" style="margin-bottom:10px;">
-                <label>R4 背键映射目标</label>
-                ${renderBackKeyGroups("data-gpd-r4", draft.r4Key)}
-              </div>
-
-              <div class="gpd-grid">
-                <div class="hh-field">
-                  <label>马达震动强度</label>
-                  ${renderSegmented("data-gpd-rumble", [
-                    { value: "0", label: "关闭" },
-                    { value: "1", label: "弱震" },
-                    { value: "2", label: "强震" }
-                  ], String(draft.rumble), "compact")}
+              <div class="backkey-slot-list">
+                <div class="backkey-slot-row">
+                  <div class="backkey-slot-meta">
+                    <strong>L4 左背键</strong>
+                    <span>手柄模式下直接作为游戏按键或快捷触发</span>
+                  </div>
+                  <div class="comp-actions">
+                    <span class="pill-badge">${esc(resolveBackKeyLabel(draft.l4Key))}</span>
+                    <button id="btnPickL4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
+                  </div>
                 </div>
-                <div class="hh-field">
-                  <label>左 / 右摇杆中心死区补偿 (-10..10)</label>
-                  <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-                    <button id="btnGpdLdzDec" class="step-btn" data-focusable="true">L−</button>
-                    <span style="font-size:12px;font-variant-numeric:tabular-nums;">左 ${draft.leftDeadzone}</span>
-                    <button id="btnGpdLdzInc" class="step-btn" data-focusable="true">L+</button>
-                    <button id="btnGpdRdzDec" class="step-btn" data-focusable="true">R−</button>
-                    <span style="font-size:12px;font-variant-numeric:tabular-nums;">右 ${draft.rightDeadzone}</span>
-                    <button id="btnGpdRdzInc" class="step-btn" data-focusable="true">R+</button>
+                <div class="backkey-slot-row">
+                  <div class="backkey-slot-meta">
+                    <strong>R4 右背键</strong>
+                    <span>手柄模式下直接作为游戏按键或快捷触发</span>
+                  </div>
+                  <div class="comp-actions">
+                    <span class="pill-badge">${esc(resolveBackKeyLabel(draft.r4Key))}</span>
+                    <button id="btnPickR4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
                   </div>
                 </div>
               </div>
 
-              <div class="cw-row" style="padding:8px 0;margin-bottom:8px;">
+              <div class="cw-row" style="padding:10px 0 6px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">启用 F13–F15 HaloDeck 全局热键</span>
-                  <span class="cw-row-sub">背键映射为手柄原生 L3/R3/A/B 时完全不冲突；若想把 F13–F15 直接绑定给游戏可关闭</span>
+                  <span class="cw-row-title">马达震动</span>
                 </div>
-                ${renderSwitch("swBackHotkeys", enableBackHotkeys)}
+                ${renderSegmented("data-gpd-rumble", [
+                  { value: "0", label: "关闭" },
+                  { value: "1", label: "弱" },
+                  { value: "2", label: "强" }
+                ], String(draft.rumble), "compact")}
               </div>
 
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                <span style="font-size:11px;color:var(--text-muted);">${esc(gpd.statusMessage || "无需常驻 GPDTools 进程，直通 HID V2 Flash 读写")}</span>
-                <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>写入手柄 Flash</button>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">
+                <span style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">当前芯片：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]</span>
+                <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>${dirtyGpd ? "应用修改到手柄" : "应用到手柄"}</button>
               </div>
             </div>
 
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">XInput 手柄桌面鼠标模式</span>
+                <span class="hh-card-title">手柄桌面鼠标</span>
                 ${renderSwitch("swMouseMode", !!settings.gamepadMouseModeEnabled)}
               </div>
               <p style="font-size:12px;color:var(--text-secondary);margin:0;">
-                开启后可直接用手柄操控 Windows 桌面：<strong>左摇杆</strong>移动光标 · <strong>A</strong> 左键 · <strong>B</strong> 右键 · <strong>X</strong> 中键 · <strong>右摇杆</strong>滚轮 · 按住 <strong>LB</strong> 精细减速 / <strong>RB</strong> 急速加速。
+                左摇杆移光标 · A 左键 · B 右键 · 右摇杆滚轮 · LB 减速 / RB 加速。
               </p>
             </div>
           </div>
 
-          <!-- Right: Xbox OSK Hook + Global Hotkeys & App Preferences -->
+          <!-- Right: Win11/Xbox Touch Keyboard + Essential Shortcuts + Collapsible Advanced -->
           <div class="hh-col">
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">GPD Win 5 屏幕键盘与实体键盘键接管</span>
-                <span class="hh-card-badge ${sys.gpdXboxKeyboardAvailable ? "live" : ""}">${sys.gpdXboxKeyboardAvailable ? "已检测 Xbox 手柄键盘" : "系统触摸键盘"}</span>
+                <span class="hh-card-title">屏幕键盘 (Win11 / Xbox 手柄布局)</span>
+                <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出 / 收起键盘</button>
               </div>
               <div class="cw-group">
                 <div class="cw-row">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">接管机身实体屏幕键盘按钮 (Ctrl + Win + O)</span>
-                    <span class="cw-row-sub">按下 GPD Win 5 机身键盘键时不弹出老旧 osk.exe，改由 HaloDeck 唤出下方所选现代化键盘</span>
+                    <span class="cw-row-title">接管机身屏幕键盘按键</span>
+                    <span class="cw-row-sub">按机身键盘键直接呼出或收起 Win11 屏幕键盘（首次呼出后可在键盘左上角齿轮切为『游戏手柄』布局），不再弹出老旧传统键盘。</span>
                   </div>
                   ${renderSwitch("swInterceptOsk", interceptOsk)}
                 </div>
-                <div class="cw-row">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">首选虚拟键盘样式</span>
-                    <span class="cw-row-sub">推荐 Xbox 手柄键盘 (GPDKeyboard · 支持手柄直选打字)</span>
-                  </div>
-                  ${renderSegmented("data-osk-mode", [
-                    { value: "xbox", label: "Xbox 手柄键盘" },
-                    { value: "touch", label: "Win11 触摸" },
-                    { value: "osk", label: "传统 OSK" }
-                  ], oskMode, "compact")}
-                </div>
-              </div>
-              <div style="display:flex;justify-content:flex-end;margin-top:8px;">
-                <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">立即呼出 / 收起屏幕键盘</button>
               </div>
             </div>
 
             <div class="hh-card">
               <div class="hh-card-head">
-                <span class="hh-card-title">全局手柄组合键与键盘热键</span>
+                <span class="hh-card-title">常用快捷呼出与启动</span>
                 <span class="hh-card-badge">后台托盘全局生效</span>
               </div>
               <div class="hotkey-list">
                 <div class="hotkey-row">
                   <div>
-                    <div class="cw-row-title">呼出 / 隐藏右侧快捷侧栏 (QAM)</div>
-                    <div class="cw-row-sub">亦响应背键 F13</div>
+                    <div class="cw-row-title">呼出快捷侧栏</div>
                   </div>
                   <div class="comp-actions">
                     ${renderKeycaps(qamButtons)}
@@ -1592,8 +1575,7 @@
 
                 <div class="hotkey-row">
                   <div>
-                    <div class="cw-row-title">循环切换穿透式性能 OSD (0–4 档)</div>
-                    <div class="cw-row-sub">亦响应背键 F14</div>
+                    <div class="cw-row-title">切换帧率悬浮窗</div>
                   </div>
                   <div class="comp-actions">
                     ${renderKeycaps(osdButtons)}
@@ -1603,65 +1585,79 @@
 
                 <div class="hotkey-row">
                   <div>
-                    <div class="cw-row-title">一键开关手柄桌面鼠标模式</div>
-                  </div>
-                  <div class="comp-actions">
-                    ${renderKeycaps(mouseButtons)}
-                    <button id="btnRecordMouseCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "mouse" ? "请按下手柄..." : "录制"}</button>
-                  </div>
-                </div>
-
-                <div class="hotkey-row">
-                  <div>
-                    <div class="cw-row-title">向游戏发送 Insert（呼出超分插件菜单）</div>
-                    <div class="cw-row-sub">亦响应背键 F15</div>
+                    <div class="cw-row-title">呼出超分菜单</div>
                   </div>
                   <div class="comp-actions">
                     ${renderKeycaps(insButtons)}
                     <button id="btnRecordInsCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "insert" ? "请按下手柄..." : "录制"}</button>
                   </div>
                 </div>
-
-                <div class="hotkey-row">
-                  <div class="cw-row-title">全局键盘热键（侧栏 / OSD / Insert）</div>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                    <button id="btnHotkeyQam" class="btn btn-sm" data-focusable="true">侧栏: ${esc(settings.qamHotkey?.displayText || "Ctrl+Alt+O")}</button>
-                    <button id="btnHotkeyOsd" class="btn btn-sm" data-focusable="true">OSD: ${esc(settings.osdHotkey?.displayText || "Ctrl+Alt+M")}</button>
-                    <button id="btnHotkeyIns" class="btn btn-sm" data-focusable="true">菜单: ${esc(settings.insertHotkey?.displayText || "Ctrl+Alt+I")}</button>
-                  </div>
-                </div>
               </div>
-            </div>
 
-            <div class="hh-card">
-              <div class="hh-card-head">
-                <span class="hh-card-title">启动行为与系统优化</span>
-              </div>
-              <div class="cw-group">
+              <div class="cw-group" style="margin-top:8px;">
                 <div class="cw-row">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">随 Windows 开机自启（最小化驻留托盘）</span>
-                    <span class="cw-row-sub">开箱即支持全局快捷侧栏、OSD、Xbox 屏幕键盘接管与自动注入</span>
+                    <span class="cw-row-title">开机自启（最小化驻留托盘）</span>
                   </div>
                   ${renderSwitch("setStartup", !!settings.launchAtWindowsStartup)}
                 </div>
                 <div class="cw-row">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">控制台默认全屏启动</span>
-                    <span class="cw-row-sub">掌机纯手柄使用体验更接近 SteamOS</span>
+                    <span class="cw-row-title">默认全屏控制台</span>
                   </div>
                   ${renderSwitch("setFullscreenBoot", !!settings.launchConsoleFullscreen)}
                 </div>
                 <div class="cw-row">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">后台静默检测运行中游戏并自动注入 OptiScaler</span>
+                    <span class="cw-row-title">后台自动注入 OptiScaler</span>
                   </div>
-                  <div class="comp-actions">
-                    <button id="btnRunAutoInject" class="btn btn-sm" data-focusable="true">立即扫描一次</button>
-                    ${renderSwitch("setAutoInject", !!settings.backgroundAutoInjectEnabled)}
-                  </div>
+                  ${renderSwitch("setAutoInject", !!settings.backgroundAutoInjectEnabled)}
                 </div>
               </div>
+
+              <button id="btnToggleControlsAdv" class="btn btn-sm" style="width:100%;margin-top:10px;" data-focusable="true">
+                ${state.controlsAdvancedOpen ? "收起高级按键与死区设置 ▴" : "展开高级按键与死区设置 ▾"}
+              </button>
+
+              ${state.controlsAdvancedOpen ? `
+                <div class="cw-group" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);">
+                  <div class="cw-row">
+                    <div class="cw-row-copy">
+                      <span class="cw-row-title">左 / 右摇杆中心死区补偿 (-10..10)</span>
+                      <span class="cw-row-sub">调整后需点击左侧「应用到手柄」生效</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:5px;">
+                      <button id="btnGpdLdzDec" class="step-btn" data-focusable="true">L−</button>
+                      <span style="font-size:11.5px;min-width:34px;text-align:center;">左 ${draft.leftDeadzone}</span>
+                      <button id="btnGpdLdzInc" class="step-btn" data-focusable="true">L+</button>
+                      <button id="btnGpdRdzDec" class="step-btn" data-focusable="true">R−</button>
+                      <span style="font-size:11.5px;min-width:34px;text-align:center;">右 ${draft.rightDeadzone}</span>
+                      <button id="btnGpdRdzInc" class="step-btn" data-focusable="true">R+</button>
+                    </div>
+                  </div>
+                  <div class="hotkey-row">
+                    <div class="cw-row-title">桌面鼠标组合键</div>
+                    <div class="comp-actions">
+                      ${renderKeycaps(mouseButtons)}
+                      <button id="btnRecordMouseCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "mouse" ? "请按下手柄..." : "录制"}</button>
+                    </div>
+                  </div>
+                  <div class="hotkey-row">
+                    <div class="cw-row-title">全局键盘快捷键</div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button id="btnHotkeyQam" class="btn btn-sm" data-focusable="true">侧栏: ${esc(settings.qamHotkey?.displayText || "Ctrl+Alt+O")}</button>
+                      <button id="btnHotkeyOsd" class="btn btn-sm" data-focusable="true">OSD: ${esc(settings.osdHotkey?.displayText || "Ctrl+Alt+M")}</button>
+                      <button id="btnHotkeyIns" class="btn btn-sm" data-focusable="true">菜单: ${esc(settings.insertHotkey?.displayText || "Ctrl+Alt+I")}</button>
+                    </div>
+                  </div>
+                  <div class="cw-row">
+                    <div class="cw-row-copy">
+                      <span class="cw-row-title">立即扫描一次运行中游戏并注入</span>
+                    </div>
+                    <button id="btnRunAutoInject" class="btn btn-sm" data-focusable="true">立即扫描</button>
+                  </div>
+                </div>
+              ` : ""}
             </div>
           </div>
         </div>
@@ -2398,66 +2394,64 @@
       ensureGpdControllerLoaded();
       const gpd = snap.gpdController || {};
       const draft = state.gpdDraft;
-      const oskMode = settings.preferredOskMode || "xbox";
       const interceptOsk = settings.interceptPhysicalOskButton !== false;
-      const enableBackHotkeys = settings.enableBackButtonHotkeys !== false;
+      const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
       return `
         <div class="qam-body">
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>GPD 背键模式一键切换 (Controller V2)</span>
-              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测 HID"}</span>
+              <span>背键快捷切换</span>
+              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测手柄"}</span>
             </div>
             <div class="gpd-warn-note" style="margin-bottom:8px;">
-              芯片当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]
+              当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]
             </div>
             <div class="qam-toolbox-mini" style="margin-bottom:8px;">
               ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
                 const activePreset = draft.l4Key === p.l4 && draft.r4Key === p.r4;
-                return `<button class="pill-btn qam-pill ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.label.split("(")[0].trim())}</button>`;
+                return `<button class="pill-btn qam-pill ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
               }).join("")}
             </div>
-            <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:8px;" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>写入手柄 Flash (L4/R4 预设立即生效)</button>
-            <div class="cw-row qam-compact-row">
-              <div class="cw-row-copy">
-                <span class="cw-row-title">F13–F15 全局热键监听</span>
-                <span class="cw-row-sub">设为 L3/R3/A/B 时不冲突；让给游戏可关闭</span>
-              </div>
-              ${renderSwitch("swBackHotkeys", enableBackHotkeys)}
+            <div class="backkey-slot-list compact" style="margin-bottom:8px;">
+              <button id="btnPickL4" class="backkey-slot-row btn-like" data-focusable="true">
+                <strong>L4 左背键</strong>
+                <span class="pill-badge">${esc(resolveBackKeyLabel(draft.l4Key))} ▸</span>
+              </button>
+              <button id="btnPickR4" class="backkey-slot-row btn-like" data-focusable="true">
+                <strong>R4 右背键</strong>
+                <span class="pill-badge">${esc(resolveBackKeyLabel(draft.r4Key))} ▸</span>
+              </button>
             </div>
+            <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="width:100%;" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>${dirtyGpd ? "应用修改到手柄" : "应用到手柄"}</button>
           </div>
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>Xbox 手柄屏幕键盘与实体键</span>
-              <span class="hh-card-badge ${sys.gpdXboxKeyboardAvailable ? "live" : ""}">${sys.gpdXboxKeyboardAvailable ? "Xbox 键盘就绪" : "触摸键盘"}</span>
+              <span>屏幕键盘</span>
+              <span class="hh-card-badge live">Win11 / Xbox</span>
             </div>
-            <button id="btnTestOsk" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:8px;" data-focusable="true">立即呼出 / 收起屏幕键盘</button>
-            <div class="cw-row qam-compact-row" style="margin-bottom:8px;">
+            <button id="btnTestOsk" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:8px;" data-focusable="true">呼出 / 收起屏幕键盘</button>
+            <div class="cw-row qam-compact-row">
               <div class="cw-row-copy">
-                <span class="cw-row-title">接管机身键盘按键 (Ctrl+Win+O)</span>
-                <span class="cw-row-sub">拦截传统老旧 Windows osk.exe</span>
+                <span class="cw-row-title">接管机身键盘键</span>
+                <span class="cw-row-sub">改用 Win11 触摸/手柄布局，屏蔽老旧键盘</span>
               </div>
               ${renderSwitch("swInterceptOsk", interceptOsk)}
             </div>
-            ${renderSegmented("data-osk-mode", [
-              { value: "xbox", label: "Xbox 手柄键盘" },
-              { value: "touch", label: "Win11 触摸" }
-            ], oskMode === "touch" ? "touch" : "xbox", "compact")}
           </div>
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>手柄桌面鼠标与快捷操作</span>
+              <span>手柄鼠标与快捷操作</span>
               ${renderSwitch("swQamMouseMode", !!settings.gamepadMouseModeEnabled)}
             </div>
             <p style="font-size:11.5px;color:var(--text-secondary);margin:0 0 8px;">
-              左摇杆移光标 · A左键 · B右键 · X中键 · 右摇杆滚轮 · LB降速 / RB加速。
+              左摇杆移光标 · A 左键 · B 右键 · 右摇杆滚轮 · LB 降速 / RB 加速。
             </p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
               <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">发送 Insert 菜单</button>
-              <button id="btnQamToConsoleControls" class="btn btn-sm" data-focusable="true">完整键值映射</button>
+              <button id="btnQamToConsoleControls" class="btn btn-sm" data-focusable="true">更多按键设置</button>
             </div>
           </div>
         </div>
@@ -3088,23 +3082,17 @@
           syncGpdDraft(res);
           state.gpdLoaded = true;
         }
-        showToast(res?.statusMessage || "已读取 GPD 手柄板载 Flash", res?.connected ? "success" : "warn");
+        showToast(res?.statusMessage || "已刷新 GPD 手柄配置", res?.connected ? "success" : "warn");
         render();
       } catch (err) {
         showToast(err.message, "error");
       }
     });
-    document.querySelectorAll("[data-gpd-l4]").forEach((el) => {
-      el.addEventListener("click", () => {
-        state.gpdDraft.l4Key = Number(el.dataset.gpdL4);
-        render();
-      });
-    });
-    document.querySelectorAll("[data-gpd-r4]").forEach((el) => {
-      el.addEventListener("click", () => {
-        state.gpdDraft.r4Key = Number(el.dataset.gpdR4);
-        render();
-      });
+    document.getElementById("btnPickL4")?.addEventListener("click", () => openBackKeyPickerModal("l4"));
+    document.getElementById("btnPickR4")?.addEventListener("click", () => openBackKeyPickerModal("r4"));
+    document.getElementById("btnToggleControlsAdv")?.addEventListener("click", () => {
+      state.controlsAdvancedOpen = !state.controlsAdvancedOpen;
+      render();
     });
     document.querySelectorAll("[data-gpd-rumble]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -3137,16 +3125,9 @@
         if (preset.enableHotkeys && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
           await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
         }
-        showToast(`已填入预设「${preset.label}」，请点「写入手柄 Flash」永久生效`, "info");
+        showToast(`已选中预设「${preset.shortLabel || preset.label}」，请点「应用到手柄」生效`, "info");
         render();
       });
-    });
-    document.getElementById("swBackHotkeys")?.addEventListener("click", async () => {
-      const s = state.snapshot?.settings;
-      if (!s) return;
-      const next = !(s.enableBackButtonHotkeys !== false);
-      await rpc("saveSettings", { ...s, enableBackButtonHotkeys: next });
-      showToast(next ? "已开启 F13–F15 全局热键监听" : "已释放 F13–F15 热键（可直通游戏绑定）", "info");
     });
     document.getElementById("swInterceptOsk")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
@@ -3155,20 +3136,10 @@
       await rpc("saveSettings", { ...s, interceptPhysicalOskButton: next });
       showToast(next ? "已开启机身键盘键 (Ctrl+Win+O) 接管" : "已恢复系统默认键盘键响应", "info");
     });
-    document.querySelectorAll("[data-osk-mode]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const s = state.snapshot?.settings;
-        if (!s) return;
-        const mode = el.dataset.oskMode || "xbox";
-        await rpc("saveSettings", { ...s, preferredOskMode: mode });
-        const nameMap = { xbox: "Xbox 手柄键盘", touch: "Win11 触摸键盘", osk: "传统 OSK" };
-        showToast(`首选虚拟键盘已切换为「${nameMap[mode] || mode}」`, "info");
-      });
-    });
     document.getElementById("btnTestOsk")?.addEventListener("click", async () => {
       try {
         const res = await rpc("runToolboxAction", { action: "osk", fromQam: IS_QAM });
-        showToast(res?.message || "已切换虚拟键盘", "info");
+        showToast(res?.message || "已切换屏幕键盘", "info");
       } catch (err) {
         showToast(err.message, "error");
       }
@@ -3178,6 +3149,11 @@
     });
     document.getElementById("btnSaveGpd")?.addEventListener("click", async () => {
       try {
+        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A].includes(state.gpdDraft.l4Key) ||
+          [0x0068, 0x0069, 0x006A].includes(state.gpdDraft.r4Key);
+        if (usesHaloDeckFn && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
+          await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
+        }
         const res = await rpc("saveGpdController", {
           l4Key: state.gpdDraft.l4Key >= 0 ? state.gpdDraft.l4Key : null,
           r4Key: state.gpdDraft.r4Key >= 0 ? state.gpdDraft.r4Key : null,
@@ -3189,7 +3165,7 @@
           state.snapshot.gpdController = res;
           syncGpdDraft(res);
         }
-        showToast(res?.statusMessage || "已写入 GPD 手柄板载 Flash", "success");
+        showToast(res?.statusMessage || "已应用背键与震动到手柄", "success");
       } catch (err) {
         showToast(err.message, "error");
       }
@@ -3680,6 +3656,45 @@
     } catch (err) {
       showToast(err.message, "error");
     }
+  }
+
+  function openBackKeyPickerModal(slot) {
+    const slotTitle = slot === "l4" ? "L4 左背键" : "R4 右背键";
+    const selectedVal = slot === "l4" ? state.gpdDraft.l4Key : state.gpdDraft.r4Key;
+    document.getElementById("modalTitle").textContent = `选择${slotTitle}映射功能`;
+    document.getElementById("modalSubtitle").textContent = "选中后请点击「应用到手柄」写入手柄 Flash，手柄模式下立即生效";
+    const body = document.getElementById("modalBody");
+    body.innerHTML = `
+      <div class="backkey-picker-section">
+        <div class="gpd-key-group-label">手柄按键（手柄模式下直接参与游戏）</div>
+        <div class="backkey-picker-grid">
+          ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
+            <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
+          `).join("")}
+        </div>
+      </div>
+      <div class="backkey-picker-section">
+        <div class="gpd-key-group-label">快捷功能与常用键盘键</div>
+        <div class="backkey-picker-grid">
+          ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
+            <button class="pill-btn small ${selectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
+          `).join("")}
+        </div>
+      </div>
+    `;
+    body.querySelectorAll("[data-pick-back-key]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = Number(btn.dataset.pickBackKey);
+        if (btn.dataset.pickSlot === "l4") state.gpdDraft.l4Key = val;
+        else state.gpdDraft.r4Key = val;
+        document.getElementById("modalBackdrop").classList.add("hidden");
+        render();
+        applySpatialFocus();
+      });
+    });
+    document.getElementById("modalBackdrop").classList.remove("hidden");
+    state.focusIndex = 0;
+    applySpatialFocus();
   }
 
   async function startRecordCombo(target) {

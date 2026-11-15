@@ -15,6 +15,8 @@ internal static class Win32Interop
     public const int WM_SYSKEYDOWN = 0x0104;
     public const int WM_SYSKEYUP = 0x0105;
     public const uint WM_CLOSE = 0x0010;
+    public const uint WM_SYSCOMMAND = 0x0112;
+    public const nint SC_CLOSE = 0xF060;
     public const uint LLKHF_INJECTED = 0x10;
 
     public const ushort VK_CONTROL = 0x11;
@@ -354,6 +356,16 @@ internal static class Win32Interop
         {
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = 0xFF, dwExtraInfo = SyntheticChordBreakExtraInfo } } },
             new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = 0xFF, dwFlags = KEYEVENTF_KEYUP, dwExtraInfo = SyntheticChordBreakExtraInfo } } }
+        };
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void SendStandaloneCtrlTap()
+    {
+        var inputs = new INPUT[]
+        {
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = VK_CONTROL, dwExtraInfo = SyntheticChordBreakExtraInfo } } },
+            new() { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP, dwExtraInfo = SyntheticChordBreakExtraInfo } } }
         };
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }

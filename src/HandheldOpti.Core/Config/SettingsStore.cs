@@ -115,7 +115,7 @@ public sealed class SettingsStore
 
         settings.ActiveFanCurveId = FanCurveEvaluator.ResolveActiveCurve(settings.FanCurves, settings.ActiveFanCurveId).Id;
 
-        string rawOsk = (settings.PreferredOskMode ?? "xbox").Trim().ToLowerInvariant();
-        settings.PreferredOskMode = rawOsk is "xbox" or "touch" or "osk" ? rawOsk : "xbox";
+        string rawOsk = (settings.PreferredOskMode ?? "tabtip").Trim().ToLowerInvariant();
+        settings.PreferredOskMode = rawOsk == "osk" ? "osk" : "tabtip";
     }
 }

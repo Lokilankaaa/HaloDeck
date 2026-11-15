@@ -77,7 +77,7 @@ public sealed class AppSettings
     public HotkeyBinding OsdHotkey { get; set; } = new() { Modifiers = 0x0001 | 0x0002, VirtualKey = 0x4D, DisplayText = "Ctrl + Alt + M" };
 
     public bool InterceptPhysicalOskButton { get; set; } = true;
-    public string PreferredOskMode { get; set; } = "xbox"; // "xbox" | "touch" | "osk"
+    public string PreferredOskMode { get; set; } = "tabtip"; // "tabtip" | "osk"
     public bool EnableBackButtonHotkeys { get; set; } = true;
 
     public Dictionary<string, GamePerformanceProfile> PerGameProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);

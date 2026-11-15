@@ -2696,3 +2696,72 @@ body.mode-qam .qam-section-title {
 .qam-kpi-card strong.accent-blue {
   color: #38bdf8;
 }
+
+/* ==================== v0.3.3 Simplified Back-Key Slot List & Picker Modal ==================== */
+.backkey-slot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.backkey-slot-list.compact {
+  gap: 6px;
+}
+
+.backkey-slot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(10, 15, 25, 0.62);
+}
+
+.backkey-slot-row.btn-like {
+  width: 100%;
+  color: #f8fafc;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.backkey-slot-row.btn-like:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(18, 28, 46, 0.78);
+}
+
+.backkey-slot-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.backkey-slot-meta strong {
+  font-size: 12.5px;
+  color: #f8fafc;
+}
+
+.backkey-slot-meta span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.backkey-picker-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.backkey-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 6px;
+}
+
+body.mode-qam .modal-backdrop {
+  padding: 12px;
+}

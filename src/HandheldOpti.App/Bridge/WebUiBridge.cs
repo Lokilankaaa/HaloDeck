@@ -1319,7 +1319,7 @@ public sealed class WebUiBridge : IDisposable
     {
         try
         {
-            string msg = HandheldToolboxService.ToggleOnScreenKeyboard(_settings.PreferredOskMode);
+            string msg = HandheldToolboxService.ToggleOnScreenKeyboard(_settings.PreferredOskMode, fromUiClick: false);
             BroadcastEvent("toast", new { kind = "info", message = msg });
         }
         catch (Exception ex)
@@ -1474,13 +1474,22 @@ public sealed class WebUiBridge : IDisposable
             hasAntiCheat = false;
         }
 
-        if (fromQam && action is "osk" or "show_desktop" or "task_view" or "screenshot")
+        bool? forceCloseOsk = action == "osk" ? HandheldToolboxService.ShouldCloseOnUiClick() : null;
+
+        if (fromQam && ((action == "osk" && forceCloseOsk != true) || action is "show_desktop" or "task_view" or "screenshot"))
         {
             InvokeUiAction(() => RequestHideQam?.Invoke());
             await Task.Delay(95).ConfigureAwait(false);
         }
 
-        string msg = _toolbox.ExecuteAction(action, pid, gameName, hasAntiCheat, _settings.PreferredOskMode);
+        string msg = _toolbox.ExecuteAction(
+            action,
+            pid,
+            gameName,
+            hasAntiCheat,
+            _settings.PreferredOskMode,
+            fromUiClick: action == "osk",
+            forceCloseOsk: forceCloseOsk);
         BroadcastStateSnapshot();
         return new { ok = true, message = msg, frozenGames = _toolbox.GetFrozenGames() };
 

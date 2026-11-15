@@ -106,6 +106,7 @@ public partial class App : System.Windows.Application
         };
         _hiddenHotkeyHost = new HwndSource(hostParams);
         _inputHub.AttachHotkeyWindow(_hiddenHotkeyHost.Handle);
+        HandheldToolboxService.AttachInputPaneWatcher(_hiddenHotkeyHost.Handle);
 
         if (verifyStartup)
         {
@@ -393,6 +394,7 @@ public partial class App : System.Windows.Application
     private void ShutdownApplicationWithCode(int exitCode)
     {
         _pollTimer?.Stop();
+        HandheldToolboxService.DetachInputPaneWatcher();
         _inputHub?.Dispose();
         _hiddenHotkeyHost?.Dispose();
         _overlayHudWindow?.Close();
@@ -538,40 +540,63 @@ public partial class App : System.Windows.Application
             });
             await CapturePngAsync(mainCore, outputDir, "v3_02_console_monitor.png");
 
-            // Tab 3: Controls, GPD V2, Xbox OSK, Spatial Focus & Scroll Preservation
+            // Tab 3: Simplified Controls, Back-Key Picker Modal, TabTip OSK, Spatial Focus & Scroll Preservation
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"controls\"]').click()");
             bool controlsReady = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-nav=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('btnReadGpd') && document.getElementById('setAutoInject') && document.getElementById('btnHotkeyQam') && document.getElementById('swInterceptOsk') && document.getElementById('swBackHotkeys')) && document.querySelectorAll('[data-osk-mode]').length === 3 && document.querySelectorAll('[data-gpd-preset]').length >= 4 && Boolean(document.querySelector('[data-gpd-l4=\"32783\"]')) && document.querySelectorAll('.keycap-pill').length >= 4 && document.querySelectorAll('.gp-focused').length === 1");
+                "document.querySelector('.tab-btn[data-nav=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('btnReadGpd') && document.getElementById('btnPickL4') && document.getElementById('btnPickR4') && document.getElementById('btnSaveGpd') && document.getElementById('swInterceptOsk') && document.getElementById('btnTestOsk') && document.getElementById('setAutoInject') && document.getElementById('btnToggleControlsAdv')) && document.querySelectorAll('[data-gpd-preset]').length === 4 && document.querySelectorAll('[data-gpd-l4]').length === 0 && document.querySelectorAll('.keycap-pill').length >= 3 && document.querySelectorAll('.gp-focused').length === 1");
             await Task.Delay(200);
             await mainCore.ExecuteScriptAsync("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
             await Task.Delay(120);
             var focusCountStr = await mainCore.ExecuteScriptAsync("document.querySelectorAll('.gp-focused').length");
+
+            // Test back-key picker modal: open L4 picker, select 手柄 L3 (32783), close automatically, then restore 保留原厂设置 (-1)
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnPickL4')?.click()");
+            bool pickerOpened = await WaitUntilAsync(
+                mainCore,
+                "!document.getElementById('modalBackdrop').classList.contains('hidden') && Boolean(document.querySelector('[data-pick-back-key=\"32783\"]'))");
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-pick-back-key=\"32783\"]')?.click()");
+            bool pickerClosed = await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnPickL4')?.click()");
+            await WaitUntilAsync(mainCore, "!document.getElementById('modalBackdrop').classList.contains('hidden') && Boolean(document.querySelector('[data-pick-back-key=\"-1\"]'))");
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-pick-back-key=\"-1\"]')?.click()");
+            await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
+            bool modalPickerOk = pickerOpened && pickerClosed;
+
+            // Expand advanced section so .page-scroll has vertical scroll headroom, test scroll preservation across swInterceptOsk toggles, then collapse for clean screenshot
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleControlsAdv')?.click()");
+            bool advExpanded = await WaitUntilAsync(mainCore, "Boolean(document.getElementById('btnHotkeyQam'))");
+            await Task.Delay(150);
 
             var scrollBeforeJson = await mainCore.ExecuteScriptAsync("""
                 (() => {
                   const scroller = document.querySelector('.page-scroll');
                   if (!scroller) return { maxScroll: 0, before: 0 };
                   const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-                  if (maxScroll >= 60) scroller.scrollTop = Math.min(180, maxScroll);
+                  if (maxScroll >= 40) scroller.scrollTop = Math.min(160, maxScroll);
                   return { maxScroll, before: scroller.scrollTop };
                 })()
                 """);
             using var scrollBeforeDoc = JsonDocument.Parse(scrollBeforeJson);
             double maxControlsScroll = scrollBeforeDoc.RootElement.GetProperty("maxScroll").GetDouble();
             double scrollBefore = scrollBeforeDoc.RootElement.GetProperty("before").GetDouble();
-            // Toggle swBackHotkeys twice so original state is restored while triggering two full RPC render cycles
-            await mainCore.ExecuteScriptAsync("document.getElementById('swBackHotkeys')?.click()");
+            await mainCore.ExecuteScriptAsync("document.getElementById('swInterceptOsk')?.click()");
             await Task.Delay(180);
-            await mainCore.ExecuteScriptAsync("document.getElementById('swBackHotkeys')?.click()");
+            await mainCore.ExecuteScriptAsync("document.getElementById('swInterceptOsk')?.click()");
             await Task.Delay(180);
             var scrollAfterStr = await mainCore.ExecuteScriptAsync("document.querySelector('.page-scroll')?.scrollTop ?? 0");
             double.TryParse(scrollAfterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var scrollAfter);
-            bool scrollPreservedOnClick = maxControlsScroll < 60 || Math.Abs(scrollAfter - scrollBefore) <= 20;
+            bool scrollPreservedOnClick = maxControlsScroll < 40 || Math.Abs(scrollAfter - scrollBefore) <= 20;
 
-            Record("controlsAndSpatialFocus", controlsReady && focusCountStr == "1" && scrollPreservedOnClick, new
+            await mainCore.ExecuteScriptAsync("document.getElementById('btnToggleControlsAdv')?.click()");
+            await WaitUntilAsync(mainCore, "!document.getElementById('btnHotkeyQam')");
+            await Task.Delay(180);
+
+            Record("controlsAndSpatialFocus", controlsReady && modalPickerOk && advExpanded && focusCountStr == "1" && scrollPreservedOnClick, new
             {
                 controlsReady,
+                modalPickerOk,
+                advExpanded,
                 focusCount = focusCountStr,
                 scrollPreservedOnClick,
                 scrollBefore,
@@ -763,7 +788,7 @@ public partial class App : System.Windows.Application
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
                 qamControlsOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && document.querySelectorAll('[data-gpd-preset]').length >= 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && Boolean(document.getElementById('btnPickL4')) && Boolean(document.getElementById('btnPickR4')) && Boolean(document.getElementById('btnTestOsk')) && document.querySelectorAll('[data-gpd-preset]').length === 4 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
                 await Task.Delay(200);
                 await CapturePngAsync(qamCore, outputDir, "v3_08b_qam_controls.png");
 
@@ -807,6 +832,48 @@ public partial class App : System.Windows.Application
                 qamOptiOk,
                 qamActualWidth = Math.Round(qamWindow.ActualWidth, 1),
                 qamClosed
+            });
+
+            // Live OSK open + close toggle verification via GPD Tool 1.66 TabTip/IFrameworkInputPane flow
+            if (HandheldToolboxService.QueryTabTipVisible())
+            {
+                await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false, forceClose: true));
+                await Task.Delay(150);
+            }
+            string oskOpenMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false, forceClose: false));
+            bool oskOpened = false;
+            var oskOpenDeadline = DateTime.UtcNow.AddMilliseconds(1200);
+            while (DateTime.UtcNow < oskOpenDeadline)
+            {
+                if (HandheldToolboxService.QueryTabTipVisible())
+                {
+                    oskOpened = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+
+            string oskCloseMsg = await Task.Run(() => HandheldToolboxService.ToggleOnScreenKeyboard("tabtip", fromUiClick: false));
+            bool oskClosedOnSecondToggle = false;
+            var oskCloseDeadline = DateTime.UtcNow.AddMilliseconds(1200);
+            while (DateTime.UtcNow < oskCloseDeadline)
+            {
+                if (!HandheldToolboxService.QueryTabTipVisible())
+                {
+                    oskClosedOnSecondToggle = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+
+            bool noGpdKeyboardSpawned = Process.GetProcessesByName("GPDKeyboard").Length == 0;
+            Record("oskTabTipOpenAndClose", oskOpened && oskClosedOnSecondToggle && noGpdKeyboardSpawned, new
+            {
+                oskOpened,
+                oskClosedOnSecondToggle,
+                noGpdKeyboardSpawned,
+                oskOpenMsg,
+                oskCloseMsg
             });
 
             var mainErrStr = await mainCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
