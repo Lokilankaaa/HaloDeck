@@ -18,8 +18,13 @@ public sealed class RunningGameTracker
 {
     private static readonly HashSet<string> IgnoredProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
+        "HaloDeck",
+        "HaloDeck.App",
         "HandheldOpti.App",
         "HandheldOpti",
+        "GPDTool",
+        "GPDKeyboard",
+        "GPDKeyboardTools",
         "explorer",
         "ShellExperienceHost",
         "SearchHost",

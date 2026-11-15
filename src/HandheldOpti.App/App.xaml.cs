@@ -39,18 +39,18 @@ public partial class App : System.Windows.Application
         bool verifyGui = verifyGuiIdx >= 0;
         string verifyGuiOutDir = (verifyGui && verifyGuiIdx + 1 < e.Args.Length && !e.Args[verifyGuiIdx + 1].StartsWith("--", StringComparison.Ordinal))
             ? e.Args[verifyGuiIdx + 1]
-            : Path.Combine(Path.GetTempPath(), "HandheldOptiGuiVerify");
+            : Path.Combine(Path.GetTempPath(), "HaloDeckGuiVerify");
         bool startMinimized = e.Args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
         bool startQam = e.Args.Any(a => string.Equals(a, "--qam", StringComparison.OrdinalIgnoreCase));
 
         if (!verifyStartup && !verifyComponents && !verifyGui)
         {
-            _singleInstanceMutex = new Mutex(true, "HandheldOpti.SingleInstance.Mutex", out bool isNew);
+            _singleInstanceMutex = new Mutex(true, "HaloDeck.SingleInstance.Mutex", out bool isNew);
             if (!isNew)
             {
                 System.Windows.MessageBox.Show(
-                    "HandheldOpti 已在后台运行，可通过右下角托盘图标或组合键 (Select + RB / Ctrl+Alt+O) 呼出。",
-                    "HandheldOpti",
+                    "HaloDeck 已在后台运行，可通过右下角托盘图标或组合键 (Select + RB / Ctrl+Alt+O) 呼出。",
+                    "HaloDeck",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 Shutdown(0);
@@ -95,7 +95,7 @@ public partial class App : System.Windows.Application
         _qamWindow = new QamWindow(_bridge);
 
         // Hidden HWND host ensures global RegisterHotKey works even while both windows are hidden in tray
-        var hostParams = new HwndSourceParameters("HandheldOptiHotkeyHost")
+        var hostParams = new HwndSourceParameters("HaloDeckHotkeyHost")
         {
             Width = 0,
             Height = 0,
@@ -132,6 +132,10 @@ public partial class App : System.Windows.Application
             _pollCounter++;
             bool runAutoInject = _pollCounter % 15 == 0;
             _bridge.PollRunningAndAutoInjectTick(runAutoInject);
+            if (_pollCounter % 3 == 0 && ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true)))
+            {
+                _bridge.PushSystemTelemetryTick();
+            }
             UpdateUiActiveFlag();
         };
         _pollTimer.Start();
@@ -244,6 +248,7 @@ public partial class App : System.Windows.Application
 
         _bridge.RequestShowConsole += ShowOrActivateMainConsole;
         _bridge.RequestToggleFullscreen += () => _mainWindow.ToggleFullscreen();
+        _bridge.RequestRepositionQam += () => Dispatcher.Invoke(() => _qamWindow?.RepositionOnRightEdge());
         _bridge.RequestMinimizeToTray += () =>
         {
             _mainWindow.Hide();
@@ -311,7 +316,7 @@ public partial class App : System.Windows.Application
             if (_bridge is not null) _ = _bridge.SendInsertKeyToGameAsync();
         });
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-        menu.Items.Add("退出 HandheldOpti", null, (_, _) => Dispatcher.Invoke(ShutdownApplication));
+        menu.Items.Add("退出 HaloDeck", null, (_, _) => Dispatcher.Invoke(ShutdownApplication));
 
         Icon appTrayIcon = (!string.IsNullOrWhiteSpace(Environment.ProcessPath) && File.Exists(Environment.ProcessPath))
             ? (Icon.ExtractAssociatedIcon(Environment.ProcessPath) ?? SystemIcons.Application)
@@ -320,7 +325,7 @@ public partial class App : System.Windows.Application
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
             Icon = appTrayIcon,
-            Text = "HandheldOpti · GPD Win 5 自动 OptiScaler",
+            Text = "HaloDeck · GPD Win 5 掌机全能中控",
             Visible = true,
             ContextMenuStrip = menu
         };
@@ -487,6 +492,15 @@ public partial class App : System.Windows.Application
                 Record("diagnosticModal", true, "skipped (no games discovered)");
             }
 
+            // Tab 1b: System Control Center
+            await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"system\"]').click()");
+            bool sysReady = await WaitUntilAsync(
+                mainCore,
+                "document.querySelector('.tab-btn[data-tab=\"system\"]')?.classList.contains('active') && document.querySelectorAll('[data-refresh-hz]').length >= 1 && document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2");
+            await Task.Delay(250);
+            Record("consoleSystemTab", sysReady, new { sysReady });
+            await CapturePngAsync(mainCore, outputDir, "v2_01c_console_system.png");
+
             // Tab 2: Library 2:3 poster shelf + Steam artwork verification
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-tab=\"library\"]').click()");
             bool libReady = await WaitUntilAsync(
@@ -556,6 +570,7 @@ public partial class App : System.Windows.Application
             bool qamVisibleAndInit = qamWindow.IsVisible && qamWindow.WebViewInitialized;
             bool qamDomReady = false;
             bool qamWidthOk = false;
+            bool qamSystemOk = false;
             bool qamRailAndGamesOk = false;
             int qamErrCount = 0;
 
@@ -563,10 +578,18 @@ public partial class App : System.Windows.Application
             {
                 qamDomReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('.qam-rail-btn').length === 3 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && Boolean(document.getElementById('qamStatusBanner')) && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.querySelectorAll('.gp-focused').length === 1");
                 await Task.Delay(250);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
                 await CapturePngAsync(qamCore, outputDir, "v2_05_qam_tune.png");
+
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"system\"]').click()");
+                qamSystemOk = await WaitUntilAsync(
+                    qamCore,
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"system\"]')?.classList.contains('active') && document.querySelectorAll('[data-refresh-hz]').length >= 1");
+                await Task.Delay(200);
+                await CapturePngAsync(qamCore, outputDir, "v2_05b_qam_system.png");
+                Record("qamSystemTab", qamSystemOk, new { qamSystemOk });
 
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"games\"]').click()");
                 qamRailAndGamesOk = await WaitUntilAsync(
@@ -587,11 +610,12 @@ public partial class App : System.Windows.Application
                 await Task.Delay(80);
             }
             bool qamClosed = !qamWindow.IsVisible;
-            Record("qamOverlayRailAndClose", qamVisibleAndInit && qamDomReady && qamWidthOk && qamRailAndGamesOk && qamClosed, new
+            Record("qamOverlayRailAndClose", qamVisibleAndInit && qamDomReady && qamWidthOk && qamSystemOk && qamRailAndGamesOk && qamClosed, new
             {
                 qamVisibleAndInit,
                 qamDomReady,
                 qamWidthOk,
+                qamSystemOk,
                 qamRailAndGamesOk,
                 qamActualWidth = Math.Round(qamWindow.ActualWidth, 1),
                 qamClosed

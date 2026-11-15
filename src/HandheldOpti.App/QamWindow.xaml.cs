@@ -78,6 +78,8 @@ public partial class QamWindow : Window
         }
     }
 
+    public void RepositionOnRightEdge() => PositionOnRightEdge();
+
     private void PositionOnRightEdge()
     {
         const double panelWidth = 440;

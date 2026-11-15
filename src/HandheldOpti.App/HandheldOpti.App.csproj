@@ -8,8 +8,10 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>latest</LangVersion>
-    <AssemblyName>HandheldOpti</AssemblyName>
-    <Version>0.1.1</Version>
+    <AssemblyName>HaloDeck</AssemblyName>
+    <Product>HaloDeck</Product>
+    <Company>HaloDeck</Company>
+    <Version>0.2.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -19,6 +21,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

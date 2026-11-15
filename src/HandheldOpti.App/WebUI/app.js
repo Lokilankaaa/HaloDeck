@@ -10,8 +10,8 @@
   document.body.classList.toggle("mode-qam", IS_QAM);
   document.body.classList.toggle("mode-console", !IS_QAM);
 
-  const CONSOLE_TABS = ["tune", "library", "components", "shortcuts"];
-  const QAM_TABS = ["tune", "compat", "games"];
+  const CONSOLE_TABS = ["tune", "system", "library", "components", "shortcuts"];
+  const QAM_TABS = ["tune", "system", "compat", "games"];
 
   const DEFAULT_CONFIG = {
     proxyDllName: "auto",
@@ -101,8 +101,66 @@
       if (!data.target || data.target === expectedTarget) {
         handleGamepadAction(data.action);
       }
+    } else if (name === "systemTelemetry" && data) {
+      if (state.snapshot) state.snapshot.systemControl = data;
+      patchLiveTelemetryDom(data);
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
+    }
+  }
+
+  function formatPowerBadge(sys) {
+    if (!sys) return "--%";
+    if (!sys.hasBattery) return "AC 直连 (无电池)";
+    const watts = typeof sys.batteryPowerWatts === "number" && sys.batteryPowerWatts > 0
+      ? ` ${sys.batteryPowerWatts.toFixed(1)}W`
+      : "";
+    if (sys.isAcOnline) {
+      return sys.isCharging ? `${sys.batteryPercent}% 充电${watts}` : `${sys.batteryPercent}% AC`;
+    }
+    return `${sys.batteryPercent}%${watts ? ` ·${watts}` : " 电池"}`;
+  }
+
+  function formatResShort(resStr) {
+    if (!resStr) return "1080p";
+    if (resStr.startsWith("1920x")) return "1080p";
+    if (resStr.startsWith("1600x")) return "900p";
+    if (resStr.startsWith("1280x")) return "720p";
+    return resStr;
+  }
+
+  function patchLiveTelemetryDom(sys) {
+    if (!sys) return;
+    const topLabel = document.getElementById("topSysLabel");
+    if (topLabel) {
+      topLabel.textContent = `${formatResShort(`${sys.screenWidth}x${sys.screenHeight}`)} · ${sys.refreshRateHz || "--"}Hz · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`;
+    }
+
+    const qamQuick = document.getElementById("btnQamJumpSys");
+    if (qamQuick) {
+      qamQuick.textContent = `${sys.refreshRateHz || "--"}Hz · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}`;
+      qamQuick.classList.toggle("warn", (sys.refreshRateHz || 60) <= 60);
+    }
+
+    const powerVal = document.getElementById("sysPowerSummary");
+    if (powerVal) powerVal.textContent = formatPowerBadge(sys);
+
+    const powerSub = document.getElementById("sysPowerSub");
+    if (powerSub) {
+      powerSub.textContent = sys.hasBattery && sys.batteryRemainingWh > 0
+        ? `剩余容量 ${sys.batteryRemainingWh.toFixed(1)} Wh`
+        : (sys.isAcOnline ? "外接电源供电中" : "便携电池供电");
+    }
+
+    const cpuVal = document.getElementById("sysCpuLoadVal");
+    if (cpuVal) cpuVal.textContent = `${sys.cpuUsagePercent ?? 0}%`;
+
+    const ramVal = document.getElementById("sysRamVal");
+    if (ramVal && sys.totalRamGb > 0) ramVal.textContent = `${sys.usedRamGb} / ${sys.totalRamGb} GB`;
+
+    const dispVal = document.getElementById("sysDisplaySummary");
+    if (dispVal && sys.screenWidth > 0) {
+      dispVal.textContent = `${sys.screenWidth}×${sys.screenHeight} @ ${sys.refreshRateHz}Hz`;
     }
   }
 
@@ -160,6 +218,7 @@
     state.snapshot = snap;
     syncConfigFromActiveGame(snap);
     updateControllerChip(snap?.connectedControllers || 0);
+    patchLiveTelemetryDom(snap?.systemControl);
     if (snap?.hardwareProfile?.deviceName) {
       const el = document.getElementById("deviceTag");
       if (el) el.textContent = "GPD WIN 5 · 8060S";
@@ -324,6 +383,22 @@
       <button id="${id}" class="cw-switch ${checked ? "on" : ""}" role="switch" aria-checked="${checked}" data-focusable="true">
         <span class="cw-switch-thumb"></span>
       </button>
+    `;
+  }
+
+  function renderStepSlider({ idPrefix, value, displayText = null, disabled = false, muted = false, muteBtnId = null }) {
+    const pct = Math.max(0, Math.min(100, Number(value) || 0));
+    const text = displayText || (muted ? "静音" : `${pct}%`);
+    return `
+      <div class="step-slider">
+        <button id="${idPrefix}Dec" class="step-btn" data-focusable="true" ${disabled ? "disabled" : ""} aria-label="减小">−</button>
+        <div class="step-track" data-slider-track="${esc(idPrefix)}" role="slider" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+          <div class="step-fill" style="width:${muted ? 0 : pct}%;"></div>
+          <span class="step-val">${esc(text)}</span>
+        </div>
+        <button id="${idPrefix}Inc" class="step-btn" data-focusable="true" ${disabled ? "disabled" : ""} aria-label="增大">+</button>
+        ${muteBtnId ? `<button id="${muteBtnId}" class="step-btn ${muted ? "active" : ""}" data-focusable="true" title="静音切换">${muted ? "静音" : "🔊"}</button>` : ""}
+      </div>
     `;
   }
 
@@ -592,6 +667,173 @@
     `;
   }
 
+  function renderSystemView() {
+    const snap = state.snapshot;
+    const sys = snap?.systemControl || {
+      cpuName: "AMD RYZEN AI MAX+ 388 w/ Radeon 8060S",
+      cpuUsagePercent: 0,
+      totalRamGb: snap?.memoryHealth?.totalRamGb || 0,
+      usedRamGb: snap?.memoryHealth?.totalRamGb
+        ? Math.max(0, Number((snap.memoryHealth.totalRamGb - (snap.memoryHealth.availRamGb || 0)).toFixed(1)))
+        : 0,
+      screenWidth: 1920,
+      screenHeight: 1080,
+      refreshRateHz: 60,
+      supportedRefreshRates: [60, 120],
+      supportedResolutions: ["1920x1080", "1600x900", "1280x720"],
+      brightnessSupported: false,
+      brightnessPercent: 70,
+      volumePercent: 50,
+      isMuted: false,
+      cpuBoostMode: "aggressive",
+      isAcOnline: true,
+      hasBattery: true,
+      isCharging: false,
+      batteryPercent: 100,
+      batteryPowerWatts: null,
+      batteryRemainingWh: 0
+    };
+
+    const hzOptions = (sys.supportedRefreshRates?.length ? sys.supportedRefreshRates : [60, 120])
+      .map((hz) => ({ value: String(hz), label: `${hz}Hz` }));
+    const resOptions = (sys.supportedResolutions?.length ? sys.supportedResolutions : ["1920x1080", "1600x900", "1280x720"])
+      .map((r) => ({ value: r, label: formatResShort(r) }));
+    const currentRes = `${sys.screenWidth || 1920}x${sys.screenHeight || 1080}`;
+
+    return `
+      <div class="tune-layout">
+        <!-- Left Telemetry Column -->
+        <aside class="tune-left">
+          <div class="target-card" style="padding:14px;">
+            <div class="section-label" style="margin-bottom:4px;">
+              <span>Strix Halo 硬件遥测</span>
+              <span class="pill-badge blue">${sys.isAcOnline ? "AC 外接电源" : "电池模式"}</span>
+            </div>
+            <div style="font-size:12.5px;font-weight:700;color:var(--text-primary);margin-bottom:2px;">${esc(sys.cpuName)}</div>
+            <div class="sys-telemetry-grid">
+              <div class="sys-stat-box">
+                <span class="sys-stat-label">电源与电池</span>
+                <span id="sysPowerSummary" class="sys-stat-value">${esc(formatPowerBadge(sys))}</span>
+                <span id="sysPowerSub" class="sys-stat-sub">${sys.hasBattery && sys.batteryRemainingWh > 0 ? `剩余容量 ${sys.batteryRemainingWh.toFixed(1)} Wh` : (sys.isAcOnline ? "外接供电" : "电池供电")}</span>
+              </div>
+              <div class="sys-stat-box">
+                <span class="sys-stat-label">屏幕输出</span>
+                <span id="sysDisplaySummary" class="sys-stat-value">${sys.screenWidth}×${sys.screenHeight} @ ${sys.refreshRateHz}Hz</span>
+                <span class="sys-stat-sub">${sys.refreshRateHz <= 60 ? "建议 120Hz 匹配 VRR 插帧" : "高刷顺滑状态"}</span>
+              </div>
+              <div class="sys-stat-box">
+                <span class="sys-stat-label">CPU 占用率</span>
+                <span id="sysCpuLoadVal" class="sys-stat-value">${sys.cpuUsagePercent ?? 0}%</span>
+                <span class="sys-stat-sub">Zen 5 · 8060S APU</span>
+              </div>
+              <div class="sys-stat-box">
+                <span class="sys-stat-label">统一内存已用</span>
+                <span id="sysRamVal" class="sys-stat-value">${sys.usedRamGb} / ${sys.totalRamGb} GB</span>
+                <span class="sys-stat-sub">含显存共享池</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="target-card" style="padding:12px;">
+            <div class="section-label" style="margin-bottom:4px;">
+              <span>显示同步与背键提示</span>
+            </div>
+            <div class="cw-row" style="padding:6px 0;min-height:36px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">Win11 窗口化 VRR 优化</span>
+                <span class="cw-row-sub">${snap?.vrrWindowedEnabled ? "已开启 DXGI 翻转升级与 VRR 优化" : "建议开启以确保无边框 120Hz VRR 生效"}</span>
+              </div>
+              ${snap?.vrrWindowedEnabled
+                ? `<span class="pill-badge blue">已开启</span>`
+                : `<button id="btnSysEnableVrr" class="btn btn-sm" data-focusable="true">一键开启</button>`}
+            </div>
+            <div class="cw-row-sub" style="margin-top:4px;line-height:1.45;">
+              L4/R4 物理背键映射会写入手柄板载芯片：用官方键鼠助手写一次组合键（如 <strong style="color:var(--text-primary);">Ctrl+Alt+O</strong> 呼出侧栏）后即可彻底关闭后台助手。
+            </div>
+          </div>
+
+          <div style="margin-top:auto;display:flex;gap:8px;">
+            <button id="btnSysGoTune" class="btn btn-primary" style="flex:1;" data-focusable="true">返回超分调优注入</button>
+            <button id="btnSysRefresh" class="btn btn-sm" data-focusable="true">刷新遥测</button>
+          </div>
+        </aside>
+
+        <!-- Right System Controls Column -->
+        <section class="tune-right">
+          <div>
+            <div class="section-label">
+              <span>显示器刷新率与掌机分辨率</span>
+              <span>切换即生效，侧边栏自动贴合新分辨率</span>
+            </div>
+            <div class="cw-group">
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">屏幕刷新率 (Refresh Rate)</span>
+                  <span class="cw-row-sub">${sys.refreshRateHz <= 60 ? "当前处于 60Hz，开 XeFG 120 帧建议先切 120Hz" : `当前 ${sys.refreshRateHz}Hz 高刷新率输出`}</span>
+                </div>
+                ${renderSegmented("data-refresh-hz", hzOptions, String(sys.refreshRateHz), "compact")}
+              </div>
+
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">系统全局分辨率</span>
+                  <span class="cw-row-sub">900p / 720p 可显著降低 GPU 像素负载并延长续航</span>
+                </div>
+                ${renderSegmented("data-res-mode", resOptions, currentRes, "compact")}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-label">
+              <span>亮度、音量与 Zen 5 处理器策略</span>
+              <span>零内核驱动依赖 · Windows 原生直控</span>
+            </div>
+            <div class="cw-group">
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">内置屏幕亮度</span>
+                  <span class="cw-row-sub">${sys.brightnessSupported ? "支持 WMI 面板背光直控（步进 10%）" : "当前外接显示器或驱动未上报内置背光接口"}</span>
+                </div>
+                ${renderStepSlider({
+                  idPrefix: "bright",
+                  value: sys.brightnessPercent,
+                  displayText: sys.brightnessSupported ? `${sys.brightnessPercent}%` : "外接屏",
+                  disabled: !sys.brightnessSupported
+                })}
+              </div>
+
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">系统主音量与静音</span>
+                  <span class="cw-row-sub">直连 Windows CoreAudio 默认输出设备</span>
+                </div>
+                ${renderStepSlider({
+                  idPrefix: "vol",
+                  value: sys.volumePercent,
+                  muted: !!sys.isMuted,
+                  muteBtnId: "btnToggleMute"
+                })}
+              </div>
+
+              <div class="cw-row">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">Zen 5 CPU 睿频调度 (AC &amp; 电池双写)</span>
+                  <span class="cw-row-sub">大型 GPU 瓶颈游戏建议关睿频或选高效平衡，省电并把功耗让给 8060S</span>
+                </div>
+                ${renderSegmented("data-cpu-boost", [
+                  { value: "off", label: "关睿频省电" },
+                  { value: "efficient", label: "高效平衡" },
+                  { value: "aggressive", label: "满血积极" }
+                ], sys.cpuBoostMode || "aggressive", "compact")}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
   function renderLibraryView() {
     const games = state.snapshot?.games || [];
     const active = getActiveGame();
@@ -856,6 +1098,7 @@
     const presets = state.snapshot?.presets || [];
     const cfg = state.config;
     const inj = active?.injection;
+    const sys = state.snapshot?.systemControl;
 
     const isUninjectedPreview = !inj?.isInjected && !state._userModifiedConfig;
 
@@ -870,6 +1113,7 @@
             ${active?.isCurrentlyRunning ? "运行中" : "已就绪"} · ${inj?.isInjected ? `已注入 (${esc(formatConfigSummary(inj.appliedConfig || cfg, true))})` : "原生未注入"}
           </div>
         </div>
+        ${sys ? `<button id="btnQamJumpSys" class="qam-quick-sys-chip ${(sys.refreshRateHz || 60) <= 60 ? "warn" : ""}" title="点击切到掌机中控">${sys.refreshRateHz}Hz · ${sys.hasBattery ? `${sys.batteryPercent}%` : "AC"}</button>` : ""}
         <button id="btnQamOpenGames" class="btn btn-sm" data-focusable="true">切换</button>
       </div>
     `;
@@ -952,6 +1196,99 @@
         <div class="action-row-2">
           <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">呼出菜单 [INS]</button>
           <button id="btnRestore" class="btn btn-sm btn-danger-soft" data-focusable="true" ${!inj?.isInjected || state.busy ? "disabled" : ""}>还原纯净原版</button>
+        </div>
+      `;
+    } else if (state.qamTab === "system") {
+      const sCtrl = sys || {
+        cpuUsagePercent: 0,
+        totalRamGb: 0,
+        usedRamGb: 0,
+        screenWidth: 1920,
+        screenHeight: 1080,
+        refreshRateHz: 60,
+        supportedRefreshRates: [60, 120],
+        supportedResolutions: ["1920x1080", "1600x900", "1280x720"],
+        brightnessSupported: false,
+        brightnessPercent: 70,
+        volumePercent: 50,
+        isMuted: false,
+        cpuBoostMode: "aggressive",
+        isAcOnline: true,
+        hasBattery: true,
+        batteryPercent: 100
+      };
+      const hzOpts = (sCtrl.supportedRefreshRates?.length ? sCtrl.supportedRefreshRates : [60, 120])
+        .map((hz) => ({ value: String(hz), label: `${hz}Hz` }));
+      const resOpts = (sCtrl.supportedResolutions?.length ? sCtrl.supportedResolutions : ["1920x1080", "1600x900", "1280x720"])
+        .map((r) => ({ value: r, label: formatResShort(r) }));
+      const curRes = `${sCtrl.screenWidth || 1920}x${sCtrl.screenHeight || 1080}`;
+
+      bodyHtml = `
+        <div class="sys-telemetry-grid">
+          <div class="sys-stat-box">
+            <span class="sys-stat-label">电源 / 电池</span>
+            <span id="sysPowerSummary" class="sys-stat-value" style="font-size:13px;">${esc(formatPowerBadge(sCtrl))}</span>
+          </div>
+          <div class="sys-stat-box">
+            <span class="sys-stat-label">CPU · 内存</span>
+            <span class="sys-stat-value" style="font-size:13px;"><span id="sysCpuLoadVal">${sCtrl.cpuUsagePercent ?? 0}%</span> · <span id="sysRamVal">${sCtrl.usedRamGb}/${sCtrl.totalRamGb}G</span></span>
+          </div>
+        </div>
+
+        <div class="cw-group">
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>屏幕刷新率</span>
+              <span class="qam-field-hint">${sCtrl.refreshRateHz <= 60 ? "锁60Hz · 推荐切120Hz" : `当前 ${sCtrl.refreshRateHz}Hz`}</span>
+            </div>
+            ${renderSegmented("data-refresh-hz", hzOpts, String(sCtrl.refreshRateHz), "compact")}
+          </div>
+
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>掌机分辨率</span>
+              <span class="qam-field-hint">${esc(curRes)}</span>
+            </div>
+            ${renderSegmented("data-res-mode", resOpts, curRes, "compact")}
+          </div>
+
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>屏幕亮度</span>
+              <span class="qam-field-hint">${sCtrl.brightnessSupported ? `${sCtrl.brightnessPercent}%` : "外接屏不支持"}</span>
+            </div>
+            ${renderStepSlider({
+              idPrefix: "bright",
+              value: sCtrl.brightnessPercent,
+              displayText: sCtrl.brightnessSupported ? `${sCtrl.brightnessPercent}%` : "不支持",
+              disabled: !sCtrl.brightnessSupported
+            })}
+          </div>
+
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>系统音量</span>
+              <span class="qam-field-hint">${sCtrl.isMuted ? "已静音" : `${sCtrl.volumePercent}%`}</span>
+            </div>
+            ${renderStepSlider({
+              idPrefix: "vol",
+              value: sCtrl.volumePercent,
+              muted: !!sCtrl.isMuted,
+              muteBtnId: "btnToggleMute"
+            })}
+          </div>
+
+          <div class="qam-field">
+            <div class="qam-field-head">
+              <span>Zen 5 CPU 睿频</span>
+              <span class="qam-field-hint">关睿频更省电</span>
+            </div>
+            ${renderSegmented("data-cpu-boost", [
+              { value: "off", label: "关睿频" },
+              { value: "efficient", label: "高效平衡" },
+              { value: "aggressive", label: "满血积极" }
+            ], sCtrl.cpuBoostMode || "aggressive", "compact")}
+          </div>
         </div>
       `;
     } else if (state.qamTab === "compat") {
@@ -1092,6 +1429,8 @@
         mainView.innerHTML = renderQamView();
       } else if (state.tab === "tune") {
         mainView.innerHTML = renderTuneView();
+      } else if (state.tab === "system") {
+        mainView.innerHTML = renderSystemView();
       } else if (state.tab === "library") {
         mainView.innerHTML = renderLibraryView();
       } else if (state.tab === "components") {
@@ -1430,6 +1769,107 @@
       showToast(`后台自动注入检查完成（处理 ${ev?.length || 0} 项）`, "success");
     });
 
+    // Phase 1 Handheld System Control Center events
+    const applySys = async (method, payload, okMsg = null) => {
+      try {
+        const updated = await rpc(method, payload);
+        if (state.snapshot && updated) {
+          state.snapshot.systemControl = updated;
+        }
+        render();
+        if (okMsg) showToast(okMsg, "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+
+    document.querySelectorAll("[data-refresh-hz]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const hz = Number(el.dataset.refreshHz);
+        applySys("setRefreshRate", { hz }, `屏幕刷新率已切换为 ${hz}Hz`);
+      });
+    });
+
+    document.querySelectorAll("[data-res-mode]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const resolution = el.dataset.resMode;
+        applySys("setResolution", { resolution }, `系统分辨率已切换为 ${formatResShort(resolution)}`);
+      });
+    });
+
+    document.querySelectorAll("[data-cpu-boost]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const mode = el.dataset.cpuBoost;
+        const label = mode === "off" ? "关睿频省电" : mode === "efficient" ? "高效平衡" : "满血积极";
+        applySys("setCpuBoost", { mode }, `CPU 睿频已切换为 ${label}`);
+      });
+    });
+
+    document.getElementById("brightDec")?.addEventListener("click", () => {
+      const cur = state.snapshot?.systemControl?.brightnessPercent ?? 70;
+      applySys("setBrightness", { percent: Math.max(5, cur - 10) });
+    });
+    document.getElementById("brightInc")?.addEventListener("click", () => {
+      const cur = state.snapshot?.systemControl?.brightnessPercent ?? 70;
+      applySys("setBrightness", { percent: Math.min(100, cur + 10) });
+    });
+    document.querySelector('[data-slider-track="bright"]')?.addEventListener("click", (e) => {
+      if (!state.snapshot?.systemControl?.brightnessSupported) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const pct = Math.max(5, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
+      applySys("setBrightness", { percent: pct });
+    });
+
+    document.getElementById("volDec")?.addEventListener("click", () => {
+      const cur = state.snapshot?.systemControl?.volumePercent ?? 50;
+      applySys("setVolume", { percent: Math.max(0, cur - 10) });
+    });
+    document.getElementById("volInc")?.addEventListener("click", () => {
+      const cur = state.snapshot?.systemControl?.volumePercent ?? 50;
+      applySys("setVolume", { percent: Math.min(100, cur + 10) });
+    });
+    document.querySelector('[data-slider-track="vol"]')?.addEventListener("click", (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
+      applySys("setVolume", { percent: pct });
+    });
+    document.getElementById("btnToggleMute")?.addEventListener("click", () => {
+      const muted = !!state.snapshot?.systemControl?.isMuted;
+      applySys("setMute", { muted: !muted });
+    });
+
+    document.getElementById("btnSysEnableVrr")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("enableWindowedVrr");
+        showToast(res?.message || "已开启 Win11 窗口化 VRR 优化", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnSysGoTune")?.addEventListener("click", () => {
+      state.tab = "tune";
+      state.focusIndex = 0;
+      render();
+    });
+
+    document.getElementById("btnSysRefresh")?.addEventListener("click", async () => {
+      try {
+        const updated = await rpc("getSystemControl");
+        if (state.snapshot && updated) state.snapshot.systemControl = updated;
+        render();
+        showToast("系统遥测已刷新", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnQamJumpSys")?.addEventListener("click", () => {
+      state.qamTab = "system";
+      state.focusIndex = 0;
+      render();
+    });
+
     // QAM Footer Actions
     document.getElementById("btnQamShowConsole")?.addEventListener("click", () => rpc("showConsole"));
     document.getElementById("btnQamClose")?.addEventListener("click", () => rpc("hideQam"));
@@ -1496,7 +1936,7 @@
       const deployed = data?.manifest?.createdFiles || data?.manifest?.deployedFiles || [];
       const filesLine = deployed.length
         ? `已部署文件 (${deployed.length})：${deployed.join(", ")}`
-        : "当前尚未通过 HandheldOpti 写入注入清单。";
+        : "当前尚未通过 HaloDeck 写入注入清单。";
       body.innerHTML = `
         <div class="pill-badge ${data?.iniExists ? "blue" : ""}" style="align-self:flex-start">${esc(filesLine)}</div>
         <div class="section-label" style="margin-top:4px;"><span>OptiScaler.ini 内容预览</span></div>
@@ -1697,6 +2137,11 @@
     });
   });
 
+  document.getElementById("topSysChip")?.addEventListener("click", () => {
+    state.tab = "system";
+    state.focusIndex = 0;
+    render();
+  });
   document.getElementById("btnOpenQam")?.addEventListener("click", () => rpc("toggleQam"));
   document.getElementById("btnMinimize")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));

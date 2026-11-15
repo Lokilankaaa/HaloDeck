@@ -33,6 +33,7 @@ public sealed class WebUiBridge
     private readonly BackgroundAutoInjector _backgroundAutoInjector;
     private readonly InputHubService _inputHub;
     private readonly Dispatcher _dispatcher;
+    private readonly SystemControlService _systemControl = new();
 
     private readonly List<WebView2> _registeredViews = new();
     private Task<CoreWebView2Environment>? _sharedEnvTask;
@@ -45,6 +46,7 @@ public sealed class WebUiBridge
     public event Action? RequestShowConsole;
     public event Action? RequestToggleFullscreen;
     public event Action? RequestMinimizeToTray;
+    public event Action? RequestRepositionQam;
 
     public WebUiBridge(
         SettingsStore settingsStore,
@@ -171,6 +173,11 @@ public sealed class WebUiBridge
         }
     }
 
+    public void PushSystemTelemetryTick()
+    {
+        BroadcastEvent("systemTelemetry", _systemControl.GetState());
+    }
+
     public async Task SendInsertKeyToGameAsync()
     {
         ushort vk = 0x2D; // VK_INSERT
@@ -248,6 +255,13 @@ public sealed class WebUiBridge
                 "runAutoInjectNow" => await RunBackgroundAutoInjectAsync(),
                 "expandPagefile" => await ExpandPagefileAsync(),
                 "enableWindowedVrr" => EnableWindowedVrr(),
+                "getSystemControl" => _systemControl.GetState(),
+                "setRefreshRate" => ApplyRefreshRate(payload),
+                "setResolution" => ApplyResolution(payload),
+                "setBrightness" => BroadcastSystemState(_systemControl.SetBrightness(payload.GetProperty("percent").GetInt32())),
+                "setVolume" => BroadcastSystemState(_systemControl.SetVolume(payload.GetProperty("percent").GetInt32())),
+                "setMute" => BroadcastSystemState(_systemControl.SetMute(payload.GetProperty("muted").GetBoolean())),
+                "setCpuBoost" => BroadcastSystemState(_systemControl.SetCpuBoostMode(payload.GetProperty("mode").GetString() ?? "aggressive")),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -281,9 +295,10 @@ public sealed class WebUiBridge
             connectedControllers = _inputHub.ConnectedControllerCount,
             memoryHealth = HandheldOpti.App.Native.Win32Interop.GetSystemMemoryHealth(),
             vrrWindowedEnabled = IsWindowedVrrEnabled(),
+            systemControl = _systemControl.GetState(),
             hardwareProfile = new
             {
-                deviceName = "GPD Win 5 / Windows 掌机",
+                deviceName = "HaloDeck · GPD Win 5",
                 recommendedArch = "AMD Strix Halo · RDNA 3.5",
                 menuKeyHint = "L4/R4 推荐绑定 Ctrl+Alt+O / Ctrl+Alt+I"
             }
@@ -766,23 +781,62 @@ public sealed class WebUiBridge
         return new { ok = true };
     }
 
+    private SystemControlState ApplyRefreshRate(JsonElement payload)
+    {
+        var updated = _systemControl.SetRefreshRate(payload.GetProperty("hz").GetInt32());
+        _dispatcher.InvokeAsync(() => RequestRepositionQam?.Invoke());
+        BroadcastStateSnapshot();
+        return updated;
+    }
+
+    private SystemControlState ApplyResolution(JsonElement payload)
+    {
+        int width;
+        int height;
+        if (payload.TryGetProperty("resolution", out var resProp) &&
+            resProp.GetString() is { } resStr &&
+            resStr.Split('x', 'X') is { Length: 2 } parts &&
+            int.TryParse(parts[0], out width) &&
+            int.TryParse(parts[1], out height))
+        {
+            // Parsed from "WxH"
+        }
+        else
+        {
+            width = payload.GetProperty("width").GetInt32();
+            height = payload.GetProperty("height").GetInt32();
+        }
+
+        var updated = _systemControl.SetResolution(width, height);
+        _dispatcher.InvokeAsync(() => RequestRepositionQam?.Invoke());
+        BroadcastStateSnapshot();
+        return updated;
+    }
+
+    private SystemControlState BroadcastSystemState(SystemControlState updated)
+    {
+        BroadcastEvent("systemTelemetry", updated);
+        return updated;
+    }
+
     private static void ApplyWindowsStartup(bool enabled)
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
             if (key is null) return;
+            key.DeleteValue("HandheldOpti", throwOnMissingValue: false);
             if (enabled)
             {
                 var exePath = Environment.ProcessPath;
                 if (!string.IsNullOrWhiteSpace(exePath))
                 {
-                    key.SetValue("HandheldOpti", $"\"{exePath}\" --minimized");
+                    key.SetValue("HaloDeck", $"\"{exePath}\" --minimized");
                 }
             }
             else
             {
-                key.DeleteValue("HandheldOpti", throwOnMissingValue: false);
+                key.DeleteValue("HaloDeck", throwOnMissingValue: false);
             }
         }
         catch

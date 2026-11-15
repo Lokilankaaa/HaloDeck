@@ -1,8 +1,11 @@
-# HandheldOpti
+# HaloDeck
 
-**专为 GPD Win 5 (AMD Ryzen AI Max+ 395 / 385, Radeon 8060S / 8050S RDNA 3.5) 及 Windows 掌机打造的现代化自动 OptiScaler 注入与管理软件。**
+**专为 GPD Win 5 (AMD Ryzen AI Max+ 388/395/385, Radeon 8060S / 8050S RDNA 3.5) 及 Windows 掌机打造的现代化 OptiScaler 注入管理与全能系统控制前端（前身为 HandheldOpti）。**
 
-HandheldOpti 融合了 **ClawTweaks 式「当前运行游戏」即时注入重启** 与 **OptiScaler Client 式多平台自动游戏库管理**，原生支持 **XInput 手柄导航**、**右侧滑出快捷菜单 (QAM)**、**无键盘 `Insert` 键扫描码直通注入** 以及 **事务级 SHA256 原文件备份还原**。
+HaloDeck 融合了 **ClawTweaks 式「当前运行游戏」即时注入重启**、**OptiScaler Client 式多平台自动游戏库管理** 与 **第一阶段掌机系统控制中心**（通过原生 Windows API 实现，无需安装内核驱动、零反作弊冲突）：
+- 显示模式控制：屏幕刷新率一键切换（如 `48 / 60 / 75 / 100 / 120 Hz`）与分辨率切换（`1920x1080` / `1600x900` / `1280x720`）
+- 硬件与电源调度：内置屏幕 WMI 亮度调节、CoreAudio 系统主音量与静音控制、Zen 5 CPU Boost 模式切换（关闭 / 节能 / 激进，同时写入 AC/DC 电源方案）
+- 实时状态遥测：电池电量与充放电功率、CPU 型号与实时利用率、统一内存占用，以及 XInput 手柄导航、右侧滑出快捷菜单（QAM）、无键盘 `Insert` 扫描码直通和事务级 SHA256 原文件备份还原。
 
 ---
 
@@ -44,7 +47,7 @@ Release 发布的便携包及本机安装脚本均采用 `win-x64 --self-contain
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
 ```
-安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HandheldOpti`，自动创建桌面和开始菜单快捷方式，并注册当前用户卸载项（`uninstall.ps1`）。
+安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HaloDeck`（保留既有 `%LOCALAPPDATA%\HandheldOpti` 组件缓存、配置与备份），自动迁移旧版快捷方式/自启动并注册当前用户卸载项（`uninstall.ps1`）。
 
 ### 本地编译与测试
 ```powershell
@@ -58,7 +61,7 @@ dotnet run --project src/HandheldOpti.App -c Release
 - `--minimized`：静默启动到系统托盘
 - `--qam`：启动并直接展开右侧 QAM 快捷菜单
 - `--verify-startup`：执行基础启动自检（验证 WebView2 初始化、游戏库扫描与输入总线状态）并退出
-- `--verify-gui [输出目录]`：执行完整端到端真实 GUI 自检（遍历 Tab、弹窗、空间焦点、全屏切换、QAM 侧栏并抓取 PNG 截图与 JSON 报告）
+- `--verify-gui [输出目录]`：执行完整端到端真实 GUI 自检（遍历控制台与掌机中控 Tab、弹窗、空间焦点、全屏切换、QAM 侧栏与中控视图并抓取 PNG 截图与 JSON 报告）
 
 ---
 
