@@ -1,71 +1,157 @@
+<div align="center">
+
 # HaloDeck
 
-**专为 GPD Win 5 (AMD Ryzen AI Max+ 388/395/385, Radeon 8060S / 8050S RDNA 3.5) 及 Windows 掌机打造的以掌机中控为核心的全功能前端（前身为 HandheldOpti，现版本 v0.3.0）。**
+**专为 GPD Win 5 (AMD Strix Halo / Radeon 8060S) 打造的 Windows 掌机总控台、440px 游戏内快捷侧栏 (QAM) 与 OptiScaler FSR 4 / XeFG 管理器**
 
-HaloDeck 以「掌机中控优先，超分插帧为专业子系统」的现代双形态架构（主控制台 + `440px` 右侧滑出 QAM 快捷侧栏）取代臃肿厂商工具与命令行调参，将以下四大核心模块整合为一体：
+[![Release](https://img.shields.io/github/v/release/Lokilankaaa/HaloDeck?display_name=tag&style=flat-square&color=0A84FF)](https://github.com/Lokilankaaa/HaloDeck/releases)
+[![License](https://img.shields.io/github/license/Lokilankaaa/HaloDeck?style=flat-square&color=30D158)](LICENSE)
+[![Platform](https://img.shields.io/badge/.NET%208-Windows%2010%2F11%20x64-1f6feb?style=flat-square)](HaloDeck.sln)
+[![Hardware](https://img.shields.io/badge/Target-GPD%20Win%205%20%C2%B7%20Strix%20Halo%208060S-ff7b00?style=flat-square)](#核心特性)
 
----
+</div>
 
-## 核心功能架构
-
-### 1. 掌机总控（默认首页 `handheld`）
-- **实时整机电源流**：借助 AMD ADL2 (`atiadlxx.dll`) 与 Windows 电池状态接口实时显示 **APU 封装功耗 (W)**、**电池充放电功率 (±W · 剩余容量 Wh · 电压 · 估算续航/充满时间)** 以及 **充电器输入功率估算 / AC 旁路直供状态**。
-- **12W–85W Strix Halo TDP 总控与电源联动**：提供 **静音 / 均衡 / 狂暴** 三档可自定义功率预设、1W 精细步进滑动条以及 **插拔电自动切换 TDP**（分别设定离电/插电目标功耗并在 AC 变化时自动下发）。
-- **双风扇智能曲线温控**：支持 `EC 自动 / 静音 / 均衡 / 狂暴 / 手动固定%`，实时读取风扇转速 (RPM) 与 PWM 占空比；内建 `≥ 82°C` 热安全保护底线，服务停止/15 秒曲线看门狗超时/程序退出时自动还原 EC 默认温控。
-- **可选一次性免 UAC 底层硬件服务 (`HaloDeckHardwareSvc`)**：基于开源签名驱动 **PawnIO** (`RyzenSMU.bin` & `LpcIO.bin`，带 GPD DMI 主板白名单校验与 ISA Mutex 同步)。日常显示/音频/监控/工具箱/超分全功能均可在普通用户态无弹窗运行；仅当需要启用 TDP 与风扇直控时点击一次授权注册。
-- **显示 · 音频 · CPU 调度与工具箱**：
-  - 一键切换刷新率（`48 / 60 / 100 / 120 Hz`）、分辨率、Win11 窗口化 VRR、内置屏亮度、CoreAudio 音量与静音、`PowrProf` CPU 睿频策略及 **CPU 最大频率上限 (MHz)**。
-  - **掌机快捷工具箱**：`游戏冰箱`（`NtSuspendProcess`/`NtResumeProcess` 挂起当前游戏省电并在应用退出时自动唤醒防丢档）、`手柄鼠标`、`返回桌面`、`切换窗口`、`屏幕键盘`、`区域截屏`、`任务管理器` 及 **二次确认防误触 `强关游戏`**。
-  - **分游戏独立性能档案**：按游戏保存专属 TDP 与刷新率配置。
-
-### 2. 性能监控与无钩子穿透 OSD（`monitor`）
-- **5 档 Steam Deck 风格穿透式性能悬浮窗 (`0–4`)**：纯原生 WPF `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE` 透明置顶窗口，不 Hook 游戏 DirectX 管线（零反作弊风险、不抢游戏焦点、鼠标点击完全穿透），支持停靠位置与透明度调节及实时样式预览。
-- **6 项硬件 KPI 与 60 秒原生 SVG 趋势曲线**：实时采样 APU 功耗、GPU/CPU 利用率与频率、核心温度、VRAM/RAM 及电源状态，并绘制最近 60 秒双曲线趋势图。
-
-### 3. 按键与手柄中心（`controls`）
-- **GPD 手柄硬件 V2 (`VID_2F24&PID_0137`) 直通 Flash 读写**：直接通过 Win32 HID 读写 **L4 / R4 背键映射**（推荐 `F13` 呼出 QAM 侧栏、`F14` 切换 OSD、`Insert`/`F15` 呼出插件菜单，同时兼容保留出厂多步组合宏）、马达震动强度 (`0/1/2`) 与左右摇杆死区 (`-10..10`)。
-- **XInput 手柄桌面鼠标模式**：左摇杆控光标、右摇杆滚轮、`A` 左键、`B` 右键、`X` 中键、`LB/RB` 加减速。
-- **全局后台手柄组合键与键盘热键**：独立配置侧栏、OSD、手柄鼠标与 `Insert` 菜单热键，并支持开机自启、默认全屏启动与后台静默自动注入设置。
-
-### 4. OptiScaler 超分插帧子系统（`opti`：`调优与注入` / `游戏库` / `组件与扩展`）
-- 支持 **FSR 4.1.2 INT8 / Lite**、**XeSS 2.0**、**FSR 3.1**，以及 **XeFG**（原生 DLSS-G 游戏可随游戏开关热启停）与 **OptiFG** 帧生成。
-- 集成 **Fakenvapi (`Reflex -> AMD Anti-Lag 2`)**、**OptiPatcher**、10GB DXGI 伪装显存防爆优化、翻页防撕裂 V-Sync 控制、全平台游戏库海报墙、GitHub 组件在线/离线管理，以及 `.handheldopti_backup/manifest.json` 事务级备份还原。
-- 内建 **EAC / BattlEye / Vanguard / ACE / Ricochet** 反作弊安全拦截。
-- **QAM 超分切游戏实时同步**：在 `440px` 右侧栏中直接内嵌游戏切换胶囊与 `#qamStatusBanner` 实时状态横幅，切换游戏即刻反映其真实注入与配置状态。
+HaloDeck 面向 **GPD Win 5** 等高功耗 AMD Strix Halo Windows 掌机深度定制，将底层硬件直控、无钩子 ETW 帧率悬浮窗、GPD 手柄背键编程与 **OptiScaler (FSR 4.1.2 / XeSS 2.0 / XeFG)** 超分插帧管理整合为一体，提供 **1200×640 主控台** 与 **440px 快捷侧栏 (QAM)** 双端一致体验，全程支持手柄 (`A / B / X / Y / LB / RB`) 与触屏滑动操作。
 
 ---
 
-## 环境要求与快速部署
+## 界面概览
 
-### 环境要求
-- Windows 10 / 11 (x64)
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)（编译与打包需要；发布后的自包含包可直接运行）
-- Microsoft Edge WebView2 Runtime（Windows 11 已内置）
-- **可选（仅直控 TDP 与双风扇需要）**：[PawnIO](https://pawnio.eu/) 签名驱动
+> 以下全部为纯应用窗口实拍截图，无桌面背景干扰。
 
-### 一键本地安装
+### 掌机总控台 (`HaloDeck Console`)
+
+![掌机总控主界面](docs/screenshots/console-handheld.png)
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-monitor.png" alt="性能监控与穿透 HUD" /><br />
+      <sub><b>性能监控与穿透 HUD</b> · 无钩子 ETW 帧率采样与 Steam Deck 风格 0–4 档浮窗</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-controls.png" alt="按键与手柄编程" /><br />
+      <sub><b>按键与手柄</b> · L4/R4 组合键与录制、Win11 软键盘接管与热键映射</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-opti.png" alt="OptiScaler 超分插帧调优" /><br />
+      <sub><b>超分插帧调优</b> · FSR 4.1.2 INT8/Lite · XeSS 2.0 · XeFG / OptiFG 与 Anti-Lag 2</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-library.png" alt="Steam 游戏库海报墙" /><br />
+      <sub><b>Steam 游戏库海报墙</b> · 多磁盘游戏识别、封面缓存、反作弊标注与一键切换</sub>
+    </td>
+  </tr>
+</table>
+
+### 440px 游戏内快捷侧栏 (`Quick Access Menu`)
+
+<table>
+  <tr>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-handheld.png" alt="QAM 掌机快调" /><br />
+      <sub><b>掌机快调</b><br />1W 步进 TDP / 风扇 / DRR</sub>
+    </td>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-osd.png" alt="QAM 性能浮窗" /><br />
+      <sub><b>性能浮窗</b><br />OSD 档位与 60s 曲线</sub>
+    </td>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-controls.png" alt="QAM 按键与软键盘" /><br />
+      <sub><b>按键与软键盘</b><br />背键方案 / TabTip / 鼠标</sub>
+    </td>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-opti.png" alt="QAM 游戏内超分" /><br />
+      <sub><b>游戏内超分</b><br />预设快切与重注入</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 核心特性
+
+### 1. 开放功耗、风扇与 CPU 调度
+- **开放 TDP 调控 (`8W–120W`)**：支持 **1W 精细步进微调**、滑块即时数值预览与自定义功耗快捷标签；支持 **插拔电自动切换 TDP** 与 **按当前前台游戏绑定专属功耗档案**。
+- **GPD 双风扇 EC 控制**：经签名 `PawnIO` 内核驱动直写 SMU/EC 寄存器，支持 **EC 自动**、**直接百分比** 与 **四点温度安全曲线** 三种模式。
+- **CPU 睿频与频点上限**：提供关睿频 / 平衡 / 满血调度，并支持限制 CPU 最大主频以将功耗预算优先让渡给 Radeon 8060S 核显。
+
+### 2. 实时整机电源流与三态续航估算
+- **消除 BMS 滞后**：通过即时追踪 APU 封装功耗变化并与电池 BMS 基准滤波融合，在游戏突发负载变化时快速反映整机运行功耗。
+- **三态电源精确计算**：
+  - **电池放电**：依据当前实际放电功率精确计算剩余续航时间；
+  - **快充 / 供电充足**：充电功率高于整机运行功率时自动切换为充电状态并估算充满时间；
+  - **边充边玩反向掉电**：充电器功率不足以覆盖整机运行时，自动按净电池放电速率实时给出剩余续航。
+
+### 3. 显示刷新率 (`DRR / VRR`) 与无钩子性能监控
+- **原生 Win11 动态刷新率协同**：一键切换 `48 / 60 / 75 / 100 / 120Hz` 或同步 Windows 11 `DRR`（`60–120Hz` / `48–120Hz VRR` 自适应），并支持 `1080p / 900p / 720p` 分辨率与平滑亮度、音量调节。
+- **零注入 ETW 性能采样与穿透 HUD**：基于 Windows 内核 ETW `PresentMon` 采样帧时间，不向游戏进程注入钩子、不触发反作弊；配合 `WS_EX_TRANSPARENT` 鼠标完全穿透顶层浮窗，提供 Steam Deck 风格 `0–4` 档显示与 60 秒实时负载/温度曲线。
+
+### 4. GPD Win 5 背键编程与系统软键盘接管
+- **L4 / R4 HID 固件直写**：直接读取并写入 GPD Win 5 手柄 Flash 配置，支持 **单键选择**、**实时按键录制** 与 **双键组合宏**（涵盖 Xbox 手柄按键与键盘组合）。
+- **Win11 触摸/手柄软键盘接管**：开启后可拦截机身物理键盘按键并呼出或收起 Windows 11 原生 `TabTip` 软键盘，避免弹出老旧传统键盘；同时内置手柄桌面鼠标模拟与全局热键录制。
+
+### 5. OptiScaler 超分插帧无损管理与反作弊保护
+- **掌机实测预设方案**：内置针对 Strix Halo 调优的 **FSR 4.1.2 INT8**、**FSR 4.1.2 Lite**、**XeSS 2.0** 与 **XeFG / OptiFG** 插帧组合，并集成 `Fakenvapi` 自动将游戏内 Reflex 映射为 **AMD Anti-Lag 2**。
+- **反作弊守护与无损还原**：自动扫描 Steam 全部盘符构建本地海报墙，识别 `Easy Anti-Cheat (EAC)` / `BattlEye` 等内核反作弊游戏并主动拦截后台自动注入；所有注入操作均以 SHA-256 备份原始 DLL，支持随时一键还原纯净原版。
+
+---
+
+## 安装与使用
+
+### 方式一：下载绿色便携版（推荐）
+1. 前往 [**GitHub Releases**](https://github.com/Lokilankaaa/HaloDeck/releases) 下载最新版本的 **`HaloDeck-win-x64-portable.zip`**。
+2. 解压至任意非临时目录，双击运行 **`HaloDeck.exe`** 即可使用（首次启用底层硬件直控或服务安装时会按需请求权限）。
+3. 已有旧版配置、组件包与游戏注入索引将在首次启动时自动平滑迁移至 `%LOCALAPPDATA%\HaloDeck`。
+
+### 方式二：源码构建与一键部署
+环境要求：**Windows 10 / 11 x64**、[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)、WebView2 Runtime（Windows 11 默认内置）。
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
-```
-安装脚本会将自包含程序部署到 `%LOCALAPPDATA%\Programs\HaloDeck`（保留既有 `%LOCALAPPDATA%\HandheldOpti` 缓存、配置与游戏备份），并生成桌/开始菜单快捷方式及 `uninstall.ps1`。
+git clone https://github.com/Lokilankaaa/HaloDeck.git
+cd HaloDeck
 
-### 编译、测试与 GUI 自检
-```powershell
-dotnet build HandheldOpti.sln -c Release
-dotnet test HandheldOpti.sln -c Release --no-build
-dotnet run --project src/HandheldOpti.App -c Release
+# 构建与运行测试
+dotnet build HaloDeck.sln -c Release
+dotnet test HaloDeck.sln -c Release
+
+# 可选：发布自包含便携版并安装至本地及开始菜单
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
 ```
 
-### 命令行参数
-- `--minimized`：静默启动到系统托盘
-- `--qam`：启动并直接展开右侧 QAM 快捷菜单
-- `--verify-startup`：执行基础启动自检并退出
-- `--verify-gui [输出目录]`：执行完整端到端 GUI 自检（验证掌机首页、性能监控与穿透 OSD 窗口样式、手柄与控制分页、OptiScaler 三子标签、弹窗、全屏切换及 440px QAM 四分页并输出报告与 PNG 截图）
-- `--install-hw-service` / `--uninstall-hw-service`：注册或卸载可选底层硬件服务 `HaloDeckHardwareSvc`
+### 常用启动参数
+
+| 参数 | 说明 |
+| :--- | :--- |
+| `--minimized` | 静默启动并驻留系统托盘 |
+| `--qam` | 直接呼出或切换 440px 快捷侧栏 |
+| `--install-hw-service` | 安装 `HaloDeckHardwareSvc` (Session 0 守护服务，之后切换 TDP / 风扇免 UAC 弹窗) |
+| `--uninstall-hw-service` | 停止并卸载 `HaloDeckHardwareSvc` 守护服务 |
 
 ---
 
-## 目录结构
-- `src/HandheldOpti.Core`：核心模型（`AppSettings`、`GpdV2PacketCodec`）、多平台游戏扫描、UE5/PE/反作弊识别、INI 编辑、组件管理与注入/还原引擎
-- `src/HandheldOpti.App`：WPF + WebView2 双窗口宿主、穿透式 `OverlayHudWindow`、`PawnIoHardwareDaemon`、GPD V2 HID 服务、工具箱服务与 `HaloDeck` 前端界面
-- `tests/HandheldOpti.Tests`：覆盖 INI/预设、扫描、注入还原以及 v0.3.0 设置兼容与 GPD V2 报文编解码的 xUnit 单元测试
+## 项目结构
+
+```text
+HaloDeck/
+├── HaloDeck.sln                     # .NET 8 解决方案
+├── src/
+│   ├── HaloDeck.Core/               # 核心库：SMU/EC/HID 硬件通信、电源估算、ETW FPS、OptiScaler 注入引擎
+│   └── HaloDeck.App/                # WPF 宿主、WebView2 双端视图、穿透 HUD、托盘与 Session 0 服务
+├── tests/
+│   └── HaloDeck.Tests/              # xUnit 单元测试与注入/还原/电源/编解码集成测试
+├── scripts/
+│   └── install-local.ps1            # 本地自包含发布、快捷方式与卸载脚本生成
+└── docs/screenshots/                # 纯窗口文档展示截图
+```
+
+---
+
+## 开源协议与致谢
+
+本项目基于 **[MIT License](LICENSE)** 开源。
+
+感谢以下开源项目提供底层驱动与超分生态基础：
+- [PawnIO](https://github.com/namazso/PawnIO) · [OptiScaler](https://github.com/optiscaler/OptiScaler) · [Fakenvapi](https://github.com/FakeMichau/fakenvapi)

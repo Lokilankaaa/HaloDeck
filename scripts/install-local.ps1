@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
-$AppCsproj = Join-Path $RepoRoot "src\HandheldOpti.App\HandheldOpti.App.csproj"
+$AppCsproj = Join-Path $RepoRoot "src\HaloDeck.App\HaloDeck.App.csproj"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\HaloDeck"
 $AppExe = Join-Path $InstallDir "HaloDeck.exe"
 $UninstallScript = Join-Path $InstallDir "uninstall.ps1"
@@ -155,7 +155,7 @@ Write-Host "[4/5] 注册当前用户已安装应用信息..."
 $uninstallRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HaloDeck"
 New-Item -Path $uninstallRegPath -Force | Out-Null
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayName" -Value "HaloDeck"
-Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.3.6"
+Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.4.0"
 Set-ItemProperty -Path $uninstallRegPath -Name "Publisher" -Value "HaloDeck"
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayIcon" -Value $AppExe
 Set-ItemProperty -Path $uninstallRegPath -Name "InstallLocation" -Value $InstallDir
@@ -167,7 +167,7 @@ Write-Host "[5/5] 安装完成！"
 Write-Host "  安装路径: $AppExe"
 Write-Host "  桌面快捷方式: $($shortcutTargets[0])"
 Write-Host "  开始菜单快捷方式: $($shortcutTargets[1])"
-Write-Host "  数据缓存已保留: $env:LOCALAPPDATA\HandheldOpti"
+Write-Host "  数据目录: $env:LOCALAPPDATA\HaloDeck"
 
 if ($LaunchAfterInstall) {
     Start-Process -FilePath $AppExe -WorkingDirectory $InstallDir | Out-Null

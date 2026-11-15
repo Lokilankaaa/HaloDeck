@@ -18,6 +18,7 @@ TestResults/
 # Logs and local caches
 *.log
 *.tmp
+.halodeck_backup/
 .handheldopti_backup/
 components_cache/
 

@@ -25,22 +25,24 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore HandheldOpti.sln
+        run: dotnet restore HaloDeck.sln
 
       - name: Build Release
-        run: dotnet build HandheldOpti.sln -c Release --no-restore
+        run: dotnet build HaloDeck.sln -c Release --no-restore
 
       - name: Run Unit & Integration Tests
-        run: dotnet test HandheldOpti.sln -c Release --no-build --logger "console;verbosity=normal"
+        run: dotnet test HaloDeck.sln -c Release --no-build --logger "console;verbosity=normal"
 
       - name: Publish Portable Win-x64 Package
-        run: dotnet publish src/HandheldOpti.App/HandheldOpti.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o ./publish/HaloDeck-win-x64
+        run: dotnet publish src/HaloDeck.App/HaloDeck.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o ./publish/HaloDeck-win-x64
 
       - name: Archive Portable Release Zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ./artifacts | Out-Null
           Compress-Archive -Path ./publish/HaloDeck-win-x64/* -DestinationPath ./artifacts/HaloDeck-win-x64-portable.zip -Force
+          $hash = (Get-FileHash ./artifacts/HaloDeck-win-x64-portable.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  HaloDeck-win-x64-portable.zip" | Set-Content -Path ./artifacts/HaloDeck-win-x64-portable.zip.sha256 -Encoding ASCII
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
@@ -52,5 +54,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ./artifacts/HaloDeck-win-x64-portable.zip
-          generate_release_notes: true
+          files: |
+            ./artifacts/HaloDeck-win-x64-portable.zip
+            ./artifacts/HaloDeck-win-x64-portable.zip.sha256
+          generate_release_notes: false
