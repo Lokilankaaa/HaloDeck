@@ -155,7 +155,7 @@ Write-Host "[4/5] 注册当前用户已安装应用信息..."
 $uninstallRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HaloDeck"
 New-Item -Path $uninstallRegPath -Force | Out-Null
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayName" -Value "HaloDeck"
-Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.4.0"
+Set-ItemProperty -Path $uninstallRegPath -Name "DisplayVersion" -Value "0.4.1"
 Set-ItemProperty -Path $uninstallRegPath -Name "Publisher" -Value "HaloDeck"
 Set-ItemProperty -Path $uninstallRegPath -Name "DisplayIcon" -Value $AppExe
 Set-ItemProperty -Path $uninstallRegPath -Name "InstallLocation" -Value $InstallDir
