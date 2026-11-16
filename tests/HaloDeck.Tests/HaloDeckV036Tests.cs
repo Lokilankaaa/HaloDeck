@@ -147,4 +147,115 @@ public sealed class HaloDeckV036Tests
         Assert.Equal(45.5, jumped.SystemDrawWatts);
         Assert.NotNull(jumped.EstimatedStandbyMinutes);
     }
+
+    [Fact]
+    public void FrontendFocusArbitrator_NeverRoutesGamepadToQamWhenExternalGameOwnsForeground()
+    {
+        // QAM visible while an external game window actually holds desktop foreground -> never route controller to QAM!
+        Assert.Null(FrontendFocusArbitrator.ResolveActiveUiTarget(
+            qamInteractiveVisible: true,
+            qamActiveOrForeground: false,
+            mainVisible: false,
+            mainActiveOrForeground: false,
+            desktopHasNoForeground: false));
+
+        // QAM visible and holding foreground -> strictly route to QAM
+        Assert.Equal("qam", FrontendFocusArbitrator.ResolveActiveUiTarget(
+            qamInteractiveVisible: true,
+            qamActiveOrForeground: true,
+            mainVisible: false,
+            mainActiveOrForeground: false,
+            desktopHasNoForeground: false));
+
+        // Closing shield active (qamInteractiveVisible == false) -> never accept further QAM input while waiting release
+        Assert.Null(FrontendFocusArbitrator.ResolveActiveUiTarget(
+            qamInteractiveVisible: false,
+            qamActiveOrForeground: true,
+            mainVisible: false,
+            mainActiveOrForeground: false,
+            desktopHasNoForeground: false));
+
+        // Console active & visible -> route to console
+        Assert.Equal("console", FrontendFocusArbitrator.ResolveActiveUiTarget(
+            qamInteractiveVisible: false,
+            qamActiveOrForeground: false,
+            mainVisible: true,
+            mainActiveOrForeground: true,
+            desktopHasNoForeground: false));
+    }
+
+    [Fact]
+    public void FrontendFocusArbitrator_ReassertsDuringSummonGraceAndAutoDismissesAfterGrace()
+    {
+        // Within initial 450ms summon grace window, re-assert QAM foreground if an external window took focus, do not dismiss.
+        Assert.True(FrontendFocusArbitrator.ShouldReassertQamForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 120,
+            foregroundHwnd: 0x1234,
+            qamIsForeground: false));
+        Assert.False(FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 120,
+            foregroundHwnd: 0x1234,
+            foregroundPid: 9999,
+            selfPid: 1000,
+            tabTipVisible: false));
+
+        // After 450ms grace window, external game regaining foreground auto-dismisses QAM.
+        Assert.False(FrontendFocusArbitrator.ShouldReassertQamForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 600,
+            foregroundHwnd: 0x1234,
+            qamIsForeground: false));
+        Assert.True(FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 600,
+            foregroundHwnd: 0x1234,
+            foregroundPid: 9999,
+            selfPid: 1000,
+            tabTipVisible: false));
+
+        // Never auto-dismiss for HaloDeck's own PID or while TabTip is open.
+        Assert.False(FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 600,
+            foregroundHwnd: 0x1234,
+            foregroundPid: 1000,
+            selfPid: 1000,
+            tabTipVisible: false));
+        Assert.False(FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
+            qamInteractiveVisible: true,
+            msSinceShown: 600,
+            foregroundHwnd: 0x1234,
+            foregroundPid: 9999,
+            selfPid: 1000,
+            tabTipVisible: true));
+    }
+
+    [Fact]
+    public void FrontendFocusArbitrator_EngagesCloseShieldForBothHeldButtonsAndRecentFastTapIpcArrival()
+    {
+        Assert.True(FrontendFocusArbitrator.ShouldEngageCloseFocusShield(
+            isAnyButtonOrTriggerHeld: true,
+            msSinceLastButtonOrTrigger: 9999,
+            isEscapeKeyHeld: false));
+
+        // Fast B tap released just before WebView2 RPC arrived (45ms ago): still engage close shield.
+        Assert.True(FrontendFocusArbitrator.ShouldEngageCloseFocusShield(
+            isAnyButtonOrTriggerHeld: false,
+            msSinceLastButtonOrTrigger: 45,
+            isEscapeKeyHeld: false));
+
+        // Keyboard Escape closing frontend: also engage shield until released.
+        Assert.True(FrontendFocusArbitrator.ShouldEngageCloseFocusShield(
+            isAnyButtonOrTriggerHeld: false,
+            msSinceLastButtonOrTrigger: 2000,
+            isEscapeKeyHeld: true));
+
+        // Idle mouse/touch click close with no recent gamepad input: no delay needed.
+        Assert.False(FrontendFocusArbitrator.ShouldEngageCloseFocusShield(
+            isAnyButtonOrTriggerHeld: false,
+            msSinceLastButtonOrTrigger: 1200,
+            isEscapeKeyHeld: false));
+    }
 }

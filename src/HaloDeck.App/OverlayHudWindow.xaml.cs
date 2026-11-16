@@ -20,6 +20,18 @@ public partial class OverlayHudWindow : Window
     {
         InitializeComponent();
         SizeChanged += (_, _) => RepositionWindow();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(RepositionWindow);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        base.OnClosed(e);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -33,11 +45,25 @@ public partial class OverlayHudWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == 0) return;
         int exStyle = Win32Interop.GetWindowLong(hwnd, Win32Interop.GWL_EXSTYLE);
-        exStyle |= Win32Interop.WS_EX_TRANSPARENT |
+        exStyle |= Win32Interop.WS_EX_TOPMOST |
+                   Win32Interop.WS_EX_TRANSPARENT |
                    Win32Interop.WS_EX_LAYERED |
                    Win32Interop.WS_EX_TOOLWINDOW |
                    Win32Interop.WS_EX_NOACTIVATE;
         Win32Interop.SetWindowLong(hwnd, Win32Interop.GWL_EXSTYLE, exStyle);
+    }
+
+    public void EnsureTopmostZOrder(bool forceReband = false)
+    {
+        if (_level <= 0 || !IsVisible) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == 0) return;
+
+        ApplyClickThroughStyles();
+        if (forceReband || Win32Interop.HasVisibleWindowAbove(hwnd))
+        {
+            Win32Interop.RaiseTopmostNoActivate(hwnd, forceReband);
+        }
     }
 
     public void ApplySettings(int level, string position, double opacity)
@@ -53,12 +79,14 @@ public partial class OverlayHudWindow : Window
             return;
         }
 
-        if (!IsVisible)
+        bool newlyShown = !IsVisible;
+        if (newlyShown)
         {
             Show();
             ApplyClickThroughStyles();
         }
         RepositionWindow();
+        EnsureTopmostZOrder(forceReband: newlyShown);
     }
 
     public void UpdateMetrics(SystemControlState sys, GameEntry? runningGame, int targetTdpWatts)
@@ -69,7 +97,8 @@ public partial class OverlayHudWindow : Window
             return;
         }
 
-        if (!IsVisible)
+        bool newlyShown = !IsVisible;
+        if (newlyShown)
         {
             Show();
             ApplyClickThroughStyles();
@@ -171,6 +200,7 @@ public partial class OverlayHudWindow : Window
 
         UpdateLayout();
         RepositionWindow();
+        EnsureTopmostZOrder(forceReband: newlyShown);
     }
 
     private static string FormatMinutesShort(int? minutes)

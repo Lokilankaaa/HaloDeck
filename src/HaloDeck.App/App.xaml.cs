@@ -13,6 +13,7 @@ using HaloDeck.Core.Discovery;
 using HaloDeck.Core.Injection;
 using HaloDeck.Core.Models;
 using HaloDeck.Core.Process;
+using HaloDeck.Core.Services;
 using Microsoft.Web.WebView2.Core;
 
 namespace HaloDeck.App;
@@ -29,6 +30,17 @@ public partial class App : System.Windows.Application
     private OverlayHudWindow? _overlayHudWindow;
     private HwndSource? _hiddenHotkeyHost;
     private int _pollCounter;
+    private DispatcherTimer? _topmostGuardTimer;
+    private nint _winEventHookForeground;
+    private nint _winEventHookMinimizeEnd;
+    private Win32Interop.WinEventDelegate? _winEventProc;
+    private nint _lastExternalForegroundHwnd;
+    private int _consoleCloseVersion;
+    private bool _isConsoleClosingShieldActive;
+    private bool _mainWasParkedOffscreen;
+    private double _savedMainLeft;
+    private double _savedMainTop;
+    private WindowState _savedMainState = WindowState.Normal;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -141,6 +153,7 @@ public partial class App : System.Windows.Application
         }
 
         ApplyOverlayHudFromSettings();
+        InstallTopmostGuardianHooks();
         _inputHub.StartPolling();
 
         _pollTimer = new DispatcherTimer
@@ -239,8 +252,10 @@ public partial class App : System.Windows.Application
         {
             Dispatcher.InvokeAsync(async () =>
             {
+                _inputHub.SuppressUntilGamepadRelease();
                 await _qamWindow.ToggleOverlayAsync();
                 UpdateUiActiveFlag();
+                ScheduleOverlayTopmostBurst(forceReband: true);
             });
         };
 
@@ -272,9 +287,9 @@ public partial class App : System.Windows.Application
         {
             Dispatcher.InvokeAsync(async () =>
             {
-                if (!forceClose && _qamWindow != null && _qamWindow.IsVisible)
+                if (!forceClose && _qamWindow != null && _qamWindow.IsInteractiveVisible)
                 {
-                    _qamWindow.HideAndRestoreGameFocus();
+                    await _qamWindow.HideAndRestoreGameFocusAsync();
                     UpdateUiActiveFlag();
                     await Task.Delay(75);
                 }
@@ -284,45 +299,112 @@ public partial class App : System.Windows.Application
 
         _bridge.OverlayHudUpdated += () =>
         {
-            Dispatcher.Invoke(ApplyOverlayHudFromSettings);
+            Dispatcher.Invoke(() =>
+            {
+                ApplyOverlayHudFromSettings();
+                ScheduleOverlayTopmostBurst(forceReband: true);
+            });
         };
 
         _bridge.RequestHideQam += () =>
         {
-            _qamWindow.HideAndRestoreGameFocus();
-            UpdateUiActiveFlag();
+            Dispatcher.InvokeAsync(async () =>
+            {
+                _inputHub?.SuppressUntilGamepadRelease();
+                await _qamWindow.HideAndRestoreGameFocusAsync();
+                UpdateUiActiveFlag();
+                ScheduleOverlayTopmostBurst(forceReband: true);
+            });
         };
 
         _bridge.RequestToggleQam += () =>
         {
             Dispatcher.InvokeAsync(async () =>
             {
+                _inputHub?.SuppressUntilGamepadRelease();
                 await _qamWindow.ToggleOverlayAsync();
                 UpdateUiActiveFlag();
+                ScheduleOverlayTopmostBurst(forceReband: true);
             });
         };
 
         _bridge.RequestShowConsole += ShowOrActivateMainConsole;
         _bridge.RequestToggleFullscreen += () => _mainWindow.ToggleFullscreen();
         _bridge.RequestRepositionQam += () => Dispatcher.Invoke(() => _qamWindow?.RepositionOnRightEdge());
-        _bridge.RequestMinimizeToTray += () =>
+        _bridge.RequestMinimizeToTray += HideMainConsoleAndRestoreGame;
+        _mainWindow.CloseToTrayRequested += HideMainConsoleAndRestoreGame;
+        _qamWindow.ClosingShieldChanged += () =>
         {
-            _mainWindow.Hide();
             UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
         };
 
         _mainWindow.Activated += (_, _) => UpdateUiActiveFlag();
-        _mainWindow.Deactivated += (_, _) => UpdateUiActiveFlag();
-        _mainWindow.IsVisibleChanged += (_, _) => UpdateUiActiveFlag();
+        _mainWindow.Deactivated += (_, _) =>
+        {
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
+        };
+        _mainWindow.IsVisibleChanged += (_, _) =>
+        {
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
+        };
         _qamWindow.Activated += (_, _) => UpdateUiActiveFlag();
-        _qamWindow.Deactivated += (_, _) => UpdateUiActiveFlag();
-        _qamWindow.IsVisibleChanged += (_, _) => UpdateUiActiveFlag();
+        _qamWindow.Deactivated += (_, _) =>
+        {
+            UpdateUiActiveFlag();
+            Dispatcher.BeginInvoke(CheckAutoDismissQamOnExternalFocus);
+        };
+        _qamWindow.IsVisibleChanged += (_, _) =>
+        {
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
+        };
+    }
+
+    private void CaptureExternalForegroundWindow()
+    {
+        var fg = Win32Interop.GetForegroundWindow();
+        if (fg == 0 || !Win32Interop.IsWindow(fg)) return;
+
+        Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
+        if (fgPid == (uint)Environment.ProcessId) return;
+
+        _lastExternalForegroundHwnd = fg;
+    }
+
+    private void RestoreMainBoundsIfParked()
+    {
+        if (_mainWindow is null || !_mainWasParkedOffscreen) return;
+        _mainWasParkedOffscreen = false;
+        _mainWindow.Left = _savedMainLeft;
+        _mainWindow.Top = _savedMainTop;
+        if (_savedMainState == WindowState.Maximized)
+        {
+            _mainWindow.WindowState = WindowState.Maximized;
+        }
     }
 
     private void ShowOrActivateMainConsole()
     {
         if (_mainWindow is null) return;
-        _qamWindow?.Hide();
+        ++_consoleCloseVersion;
+        _isConsoleClosingShieldActive = false;
+        RestoreMainBoundsIfParked();
+        _mainWindow.Opacity = 1.0;
+        _mainWindow.IsHitTestVisible = true;
+        _inputHub?.SuppressUntilGamepadRelease();
+
+        CaptureExternalForegroundWindow();
+        if ((_lastExternalForegroundHwnd == 0 || !Win32Interop.IsWindow(_lastExternalForegroundHwnd)) &&
+            _qamWindow is { PreviousForegroundHwnd: not 0 } &&
+            Win32Interop.IsWindow(_qamWindow.PreviousForegroundHwnd))
+        {
+            _lastExternalForegroundHwnd = _qamWindow.PreviousForegroundHwnd;
+        }
+
+        _qamWindow?.HideWithoutRestoringGame();
 
         if (!_mainWindow.IsVisible)
         {
@@ -333,29 +415,242 @@ public partial class App : System.Windows.Application
             _mainWindow.WindowState = WindowState.Normal;
         }
         _mainWindow.Activate();
+        var mainHwnd = new WindowInteropHelper(_mainWindow).Handle;
+        Win32Interop.ForceForegroundWindow(mainHwnd, makeTopmost: false);
+        _mainWindow.ConsoleWebView.Focus();
         UpdateUiActiveFlag();
+    }
+
+    private void HideMainConsoleAndRestoreGame()
+    {
+        _ = HideMainConsoleAndRestoreGameAsync();
+    }
+
+    private async Task HideMainConsoleAndRestoreGameAsync(
+        Func<bool>? isButtonHeldOverride = null,
+        bool forceShield = false)
+    {
+        if (_mainWindow is null || !_mainWindow.IsVisible || _isConsoleClosingShieldActive) return;
+
+        int ver = ++_consoleCloseVersion;
+        _inputHub?.SuppressUntilGamepadRelease();
+        var holdCheck = isButtonHeldOverride ?? (() =>
+            XInputInterop.HasAnyActiveButtonOrTrigger() ||
+            (Win32Interop.GetAsyncKeyState(0x1B /* VK_ESCAPE */) & 0x8000) != 0);
+
+        bool shouldShield = forceShield || FrontendFocusArbitrator.ShouldEngageCloseFocusShield(
+            holdCheck(),
+            XInputInterop.MillisecondsSinceLastButtonOrTrigger(),
+            (Win32Interop.GetAsyncKeyState(0x1B) & 0x8000) != 0);
+
+        if (shouldShield)
+        {
+            _isConsoleClosingShieldActive = true;
+            _mainWindow.IsHitTestVisible = false;
+
+            if (!_mainWasParkedOffscreen)
+            {
+                _savedMainState = _mainWindow.WindowState;
+                if (_mainWindow.WindowState == WindowState.Maximized)
+                {
+                    _mainWindow.WindowState = WindowState.Normal;
+                }
+                _savedMainLeft = _mainWindow.Left;
+                _savedMainTop = _mainWindow.Top;
+                _mainWasParkedOffscreen = true;
+            }
+            _mainWindow.Left = -32000;
+            _mainWindow.Top = -32000;
+            var mainHwnd = new WindowInteropHelper(_mainWindow).Handle;
+            Win32Interop.ParkWindowOffscreenNoActivate(mainHwnd);
+            UpdateUiActiveFlag();
+
+            var maxDeadline = DateTime.UtcNow.AddMilliseconds(FrontendFocusArbitrator.MaxCloseReleaseWaitMs);
+            int cleanMs = 0;
+            while (DateTime.UtcNow < maxDeadline && ver == _consoleCloseVersion)
+            {
+                if (holdCheck())
+                {
+                    cleanMs = 0;
+                }
+                else
+                {
+                    cleanMs += 10;
+                    if (cleanMs >= FrontendFocusArbitrator.PostReleaseDrainMs)
+                    {
+                        break;
+                    }
+                }
+                await Task.Delay(10);
+            }
+            if (ver != _consoleCloseVersion) return;
+        }
+
+        _isConsoleClosingShieldActive = false;
+        _mainWindow.Opacity = 1.0;
+        _mainWindow.IsHitTestVisible = true;
+        _mainWindow.Hide();
+        RestoreMainBoundsIfParked();
+
+        if (_lastExternalForegroundHwnd != 0 && Win32Interop.IsWindow(_lastExternalForegroundHwnd))
+        {
+            Win32Interop.RestoreWindowFocusIfValid(_lastExternalForegroundHwnd);
+        }
+
+        UpdateUiActiveFlag();
+        ScheduleOverlayTopmostBurst(forceReband: true);
+    }
+
+    private void CheckAutoDismissQamOnExternalFocus()
+    {
+        if (_qamWindow is null || !_qamWindow.IsInteractiveVisible) return;
+
+        nint fg = Win32Interop.GetForegroundWindow();
+        if (fg == 0) return;
+
+        nint qamHwnd = new WindowInteropHelper(_qamWindow).Handle;
+        if (fg == qamHwnd || Win32Interop.IsChild(qamHwnd, fg)) return;
+
+        Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
+        bool tabTipVisible = HandheldToolboxService.QueryTabTipVisible();
+        double msSinceShown = (DateTime.UtcNow - _qamWindow.ShownAtUtc).TotalMilliseconds;
+
+        if (FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
+                _qamWindow.IsInteractiveVisible,
+                msSinceShown,
+                fg,
+                fgPid,
+                (uint)Environment.ProcessId,
+                tabTipVisible))
+        {
+            _qamWindow.HideWithoutRestoringGame();
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
+        }
+    }
+
+    private void EnforceOverlayZOrder(bool forceReband = false)
+    {
+        nint hudHwnd = (_bridge?.Settings.OverlayLevel > 0 && _overlayHudWindow is { IsVisible: true })
+            ? new WindowInteropHelper(_overlayHudWindow).Handle
+            : 0;
+
+        if (_qamWindow is { IsInteractiveVisible: true })
+        {
+            _qamWindow.EnsureTopmostAboveGame(hudHwnd, forceReband);
+        }
+
+        if (_bridge?.Settings.OverlayLevel > 0)
+        {
+            _overlayHudWindow?.EnsureTopmostZOrder(forceReband);
+        }
+    }
+
+    private void ScheduleOverlayTopmostBurst(bool forceReband = false)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+
+        EnforceOverlayZOrder(forceReband);
+        foreach (int delayMs in new[] { 45, 130, 300 })
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(delayMs).ConfigureAwait(false);
+                if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+                try
+                {
+                    await Dispatcher.InvokeAsync(() => EnforceOverlayZOrder(false));
+                }
+                catch
+                {
+                    // Ignore during shutdown
+                }
+            });
+        }
+    }
+
+    private void InstallTopmostGuardianHooks()
+    {
+        _topmostGuardTimer ??= new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        _topmostGuardTimer.Tick -= OnTopmostGuardTick;
+        _topmostGuardTimer.Tick += OnTopmostGuardTick;
+        _topmostGuardTimer.Start();
+
+        _winEventProc ??= OnSystemWinEvent;
+        if (_winEventHookForeground == 0)
+        {
+            _winEventHookForeground = Win32Interop.SetWinEventHook(
+                Win32Interop.EVENT_SYSTEM_FOREGROUND,
+                Win32Interop.EVENT_SYSTEM_FOREGROUND,
+                0,
+                _winEventProc,
+                0,
+                0,
+                Win32Interop.WINEVENT_OUTOFCONTEXT);
+        }
+        if (_winEventHookMinimizeEnd == 0)
+        {
+            _winEventHookMinimizeEnd = Win32Interop.SetWinEventHook(
+                Win32Interop.EVENT_SYSTEM_MINIMIZEEND,
+                Win32Interop.EVENT_SYSTEM_MINIMIZEEND,
+                0,
+                _winEventProc,
+                0,
+                0,
+                Win32Interop.WINEVENT_OUTOFCONTEXT);
+        }
+    }
+
+    private void OnTopmostGuardTick(object? sender, EventArgs e)
+    {
+        CheckAutoDismissQamOnExternalFocus();
+        EnforceOverlayZOrder(forceReband: false);
+        UpdateUiActiveFlag();
+    }
+
+    private void OnSystemWinEvent(
+        nint hWinEventHook,
+        uint eventType,
+        nint hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            CheckAutoDismissQamOnExternalFocus();
+            ScheduleOverlayTopmostBurst(forceReband: false);
+            UpdateUiActiveFlag();
+        });
     }
 
     private void UpdateUiActiveFlag()
     {
         if (_inputHub is null) return;
-        if (_qamWindow is not null && _qamWindow.IsVisible)
-        {
-            _inputHub.ActiveUiTarget = "qam";
-            return;
-        }
+        nint fg = Win32Interop.GetForegroundWindow();
+        bool desktopHasNoForeground = fg == 0;
 
-        if (_mainWindow is not null && _mainWindow.IsVisible)
-        {
-            var mainHwnd = new WindowInteropHelper(_mainWindow).Handle;
-            if (_mainWindow.IsActive || Win32Interop.IsWindowOrChildForeground(mainHwnd))
-            {
-                _inputHub.ActiveUiTarget = "console";
-                return;
-            }
-        }
+        bool qamInteractive = _qamWindow is { IsInteractiveVisible: true };
+        nint qamHwnd = qamInteractive ? new WindowInteropHelper(_qamWindow!).Handle : 0;
+        bool qamFocused = qamInteractive &&
+                          (_qamWindow!.IsActive || Win32Interop.IsWindowOrChildForeground(qamHwnd));
 
-        _inputHub.ActiveUiTarget = null;
+        bool mainVisible = _mainWindow is { IsVisible: true } && !_isConsoleClosingShieldActive;
+        nint mainHwnd = mainVisible ? new WindowInteropHelper(_mainWindow!).Handle : 0;
+        bool mainFocused = mainVisible &&
+                           (_mainWindow!.IsActive || Win32Interop.IsWindowOrChildForeground(mainHwnd));
+
+        _inputHub.ActiveUiTarget = FrontendFocusArbitrator.ResolveActiveUiTarget(
+            qamInteractive,
+            qamFocused,
+            mainVisible,
+            mainFocused,
+            desktopHasNoForeground);
     }
 
     private void ApplyOverlayHudFromSettings()
@@ -407,6 +702,18 @@ public partial class App : System.Windows.Application
     private void ShutdownApplicationWithCode(int exitCode)
     {
         _pollTimer?.Stop();
+        _topmostGuardTimer?.Stop();
+        if (_winEventHookForeground != 0)
+        {
+            Win32Interop.UnhookWinEvent(_winEventHookForeground);
+            _winEventHookForeground = 0;
+        }
+        if (_winEventHookMinimizeEnd != 0)
+        {
+            Win32Interop.UnhookWinEvent(_winEventHookMinimizeEnd);
+            _winEventHookMinimizeEnd = 0;
+        }
+        _winEventProc = null;
         HandheldToolboxService.DetachInputPaneWatcher();
         _inputHub?.Dispose();
         _hiddenHotkeyHost?.Dispose();
@@ -1078,6 +1385,114 @@ public partial class App : System.Windows.Application
                 qamActualWidth = Math.Round(qamWindow.ActualWidth, 1),
                 qamClosed
             });
+
+            // Fullscreen Overlay Z-Order & Non-Activating Focus Preservation Regression Check
+            {
+                int prevHudLevel = bridge.Settings.OverlayLevel;
+                string prevHudPos = bridge.Settings.OverlayPosition;
+                double prevHudOpacity = bridge.Settings.OverlayOpacity;
+                Window? dummyGame = null;
+                try
+                {
+                    overlayHudWindow.ApplySettings(2, "top-left", 0.88);
+                    overlayHudWindow.UpdateMetrics(bridge.LatestSystemState, bridge.RunningGame, bridge.Settings.CurrentTdpWatts);
+                    await Task.Delay(80);
+
+                    dummyGame = new System.Windows.Window
+                    {
+                        WindowStyle = WindowStyle.None,
+                        ResizeMode = ResizeMode.NoResize,
+                        Width = 320,
+                        Height = 240,
+                        Left = 10,
+                        Top = 10,
+                        Topmost = true,
+                        ShowInTaskbar = false,
+                        Background = System.Windows.Media.Brushes.Black
+                    };
+                    dummyGame.Show();
+                    dummyGame.Activate();
+                    var dummyHwnd = new WindowInteropHelper(dummyGame).Handle;
+                    Win32Interop.ForceForegroundOverlay(dummyHwnd);
+                    await Task.Delay(80);
+
+                    var testHudHwnd = new WindowInteropHelper(overlayHudWindow).Handle;
+                    overlayHudWindow.EnsureTopmostZOrder(forceReband: true);
+                    await Task.Delay(50);
+                    bool hudBeatTopmostGame = !Win32Interop.HasVisibleWindowAbove(testHudHwnd);
+
+                    nint fgBeforeQam = Win32Interop.GetForegroundWindow();
+                    await qamWindow.ShowOverlayAsync();
+                    overlayHudWindow.EnsureTopmostZOrder(forceReband: false);
+                    await Task.Delay(150);
+
+                    nint qamHwnd = new WindowInteropHelper(qamWindow).Handle;
+                    bool qamFocusableStyle = (Win32Interop.GetWindowLong(qamHwnd, Win32Interop.GWL_EXSTYLE) & Win32Interop.WS_EX_NOACTIVATE) == 0;
+                    nint fgDuringQam = Win32Interop.GetForegroundWindow();
+                    bool qamTookFocusFromGame = qamFocusableStyle &&
+                                                fgDuringQam != dummyHwnd &&
+                                                (fgDuringQam == 0 || Win32Interop.IsWindowOrChildForeground(qamHwnd));
+                    bool qamAboveTopmostGame = !Win32Interop.HasVisibleWindowAbove(qamHwnd, allowedAboveHwnd: testHudHwnd);
+                    bool hudStillOnTop = !Win32Interop.HasVisibleWindowAbove(testHudHwnd);
+
+                    bool simulatedHeld = true;
+                    var hideShieldTask = qamWindow.HideAndRestoreGameFocusAsync(() => simulatedHeld, forceShield: true);
+                    await Task.Delay(60);
+                    bool hasParkedRect = Win32Interop.GetWindowRect(qamHwnd, out var parkedRect);
+                    bool shieldHeldActive = qamWindow.IsClosingShieldActive &&
+                                            qamWindow.IsVisible &&
+                                            hasParkedRect &&
+                                            parkedRect.Left <= -10000;
+                    simulatedHeld = false;
+                    var drainSw = Stopwatch.StartNew();
+                    await hideShieldTask;
+                    drainSw.Stop();
+                    bool shieldReleasedCleanly = !qamWindow.IsVisible &&
+                                                 !qamWindow.IsClosingShieldActive &&
+                                                 qamWindow.Left >= 0 &&
+                                                 drainSw.ElapsedMilliseconds >= 130;
+                    bool closingShieldHeldAndReleased = shieldHeldActive && shieldReleasedCleanly;
+                    await Task.Delay(60);
+
+                    // Verify SW_RESTORE path for minimized exclusive-fullscreen games
+                    Win32Interop.ShowWindow(dummyHwnd, 6 /* SW_MINIMIZE */);
+                    await Task.Delay(50);
+                    bool wasIconic = Win32Interop.IsIconic(dummyHwnd);
+                    Win32Interop.RestoreWindowFocusIfValid(dummyHwnd);
+                    await Task.Delay(50);
+                    bool iconicGameRestored = wasIconic && !Win32Interop.IsIconic(dummyHwnd);
+
+                    Record("fullscreenOverlayCompatibility",
+                        hudBeatTopmostGame && qamFocusableStyle && qamTookFocusFromGame && qamAboveTopmostGame && hudStillOnTop && closingShieldHeldAndReleased && iconicGameRestored,
+                        new
+                        {
+                            hudBeatTopmostGame,
+                            qamFocusableStyle,
+                            qamIsActive = qamWindow.IsActive,
+                            qamTookFocusFromGame,
+                            qamAboveTopmostGame,
+                            hudStillOnTop,
+                            shieldHeldActive,
+                            parkedLeft = parkedRect.Left,
+                            drainElapsedMs = drainSw.ElapsedMilliseconds,
+                            shieldReleasedCleanly,
+                            closingShieldHeldAndReleased,
+                            iconicGameRestored,
+                            fgBeforeQam = $"0x{fgBeforeQam:X}",
+                            fgDuringQam = $"0x{fgDuringQam:X}",
+                            dummyHwnd = $"0x{dummyHwnd:X}"
+                        });
+                }
+                finally
+                {
+                    if (qamWindow.IsVisible)
+                    {
+                        qamWindow.Hide();
+                    }
+                    dummyGame?.Close();
+                    overlayHudWindow.ApplySettings(prevHudLevel, prevHudPos, prevHudOpacity);
+                }
+            }
 
             // Live OSK open + close toggle verification (both physical Ctrl+Win+O chord race and live WebView2 UI click)
             if (HandheldToolboxService.QueryTabTipVisible())

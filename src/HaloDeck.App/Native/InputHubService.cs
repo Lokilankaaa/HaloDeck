@@ -77,14 +77,35 @@ public sealed class InputHubService : IDisposable
         get => _activeUiTarget;
         set
         {
+            bool wasActive = !string.IsNullOrEmpty(_activeUiTarget);
+            bool isNowActive = !string.IsNullOrEmpty(value);
             _activeUiTarget = value;
-            if (!string.IsNullOrEmpty(value))
+            if (isNowActive)
             {
                 ReleaseHeldMouseButtons();
+                if (!wasActive)
+                {
+                    _directionRepeatAt.Clear();
+                    if (XInputInterop.HasAnyActiveInput(StickThreshold))
+                    {
+                        _suppressNavigationUntilRelease = true;
+                    }
+                }
+            }
+            else if (wasActive)
+            {
+                _directionRepeatAt.Clear();
+                _suppressNavigationUntilRelease = true;
             }
         }
     }
     public bool IsUiActive => !string.IsNullOrEmpty(_activeUiTarget);
+
+    public void SuppressUntilGamepadRelease()
+    {
+        _suppressNavigationUntilRelease = true;
+        _directionRepeatAt.Clear();
+    }
 
     public InputHubService(AppSettings settings)
     {
@@ -386,19 +407,19 @@ public sealed class InputHubService : IDisposable
                                 ToggleQamRequested?.Invoke();
                             }
                         }
-                        else
+                        else if ((buttons & qamMask) == XInputButtons.None)
                         {
                             _qamComboArmed = true;
                         }
                     }
 
-                    // 2. Check global OptiScaler Insert combo (works inside any game!)
+                    // 2. Check global OptiScaler Insert combo (works inside any game, blocked when HaloDeck UI owns focus)
                     var insertMask = XInputInterop.CombineMask(_settings.InsertGamepadCombo.Buttons);
                     if (insertMask != XInputButtons.None)
                     {
                         if ((buttons & insertMask) == insertMask)
                         {
-                            if (_insertComboArmed)
+                            if (!IsUiActive && _insertComboArmed)
                             {
                                 _insertComboArmed = false;
                                 _suppressNavigationUntilRelease = true;
@@ -406,7 +427,7 @@ public sealed class InputHubService : IDisposable
                                 SendInsertToGameRequested?.Invoke();
                             }
                         }
-                        else
+                        else if ((buttons & insertMask) == XInputButtons.None)
                         {
                             _insertComboArmed = true;
                         }
@@ -426,7 +447,7 @@ public sealed class InputHubService : IDisposable
                                 CycleOsdRequested?.Invoke();
                             }
                         }
-                        else
+                        else if ((buttons & osdMask) == XInputButtons.None)
                         {
                             _osdComboArmed = true;
                         }
@@ -437,7 +458,7 @@ public sealed class InputHubService : IDisposable
                     {
                         if ((buttons & mouseMask) == mouseMask)
                         {
-                            if (_mouseComboArmed)
+                            if (!IsUiActive && _mouseComboArmed)
                             {
                                 _mouseComboArmed = false;
                                 _suppressNavigationUntilRelease = true;
@@ -445,13 +466,17 @@ public sealed class InputHubService : IDisposable
                                 ToggleMouseModeRequested?.Invoke();
                             }
                         }
-                        else
+                        else if ((buttons & mouseMask) == XInputButtons.None)
                         {
                             _mouseComboArmed = true;
                         }
                     }
 
-                    if (buttons == XInputButtons.None)
+                    if (buttons == XInputButtons.None &&
+                        gamepad.bLeftTrigger <= 30 &&
+                        gamepad.bRightTrigger <= 30 &&
+                        Math.Abs((int)gamepad.sThumbLX) <= StickThreshold &&
+                        Math.Abs((int)gamepad.sThumbLY) <= StickThreshold)
                     {
                         _suppressNavigationUntilRelease = false;
                     }

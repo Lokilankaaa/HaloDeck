@@ -47,13 +47,47 @@ internal static class Win32Interop
     private const uint MOUSEEVENTF_WHEEL = 0x0800;
 
     public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_TOPMOST = 0x00000008;
     public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
     public const int WS_EX_LAYERED = 0x00080000;
     public const int WS_EX_NOACTIVATE = 0x08000000;
 
+    public const int WM_MOUSEACTIVATE = 0x0021;
+    public const int MA_NOACTIVATE = 3;
+    public const uint GW_HWNDPREV = 3;
+    public const int SW_RESTORE = 9;
+
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_SHOWWINDOW = 0x0040;
+    public const uint SWP_NOOWNERZORDER = 0x0200;
+    public const uint SWP_NOSENDCHANGING = 0x0400;
+
+    public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+
+    private const int DWMWA_CLOAKED = 14;
     private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     private const int DWMWCP_ROUND = 2;
+
+    public static readonly nint HWND_TOPMOST = new(-1);
+    public static readonly nint HWND_NOTOPMOST = new(-2);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    public delegate bool EnumWindowsProc(nint hWnd, nint lParam);
+    public delegate void WinEventDelegate(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(nint hWnd, int nIndex);
@@ -71,7 +105,13 @@ internal static class Win32Interop
     public static extern nint GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    public static extern nint SendMessage(nint hWnd, int Msg, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern void SwitchToThisWindow(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool fAltTab);
 
     [DllImport("user32.dll")]
     public static extern bool BringWindowToTop(nint hWnd);
@@ -88,6 +128,39 @@ internal static class Win32Interop
 
     [DllImport("user32.dll")]
     public static extern bool IsWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern nint GetWindow(nint hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(nint hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(nint hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumChildWindows(nint hWndParent, EnumWindowsProc lpEnumFunc, nint lParam);
+
+    [DllImport("user32.dll")]
+    public static extern nint SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        nint hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint dwFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(nint hWinEventHook);
 
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
@@ -112,6 +185,9 @@ internal static class Win32Interop
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(nint hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
@@ -173,16 +249,22 @@ internal static class Win32Interop
         }
     }
 
-    public static bool ForceForegroundOverlay(nint hwnd)
+    public static bool ForceForegroundOverlay(nint hwnd) => ForceForegroundWindow(hwnd, makeTopmost: true);
+
+    public static bool ForceForegroundWindow(nint hwnd, bool makeTopmost)
     {
         if (hwnd == 0 || !IsWindow(hwnd)) return false;
 
-        const uint SWP_NOMOVE = 0x0002;
-        const uint SWP_NOSIZE = 0x0001;
-        const uint SWP_SHOWWINDOW = 0x0040;
-        nint hwndTopMost = new(-1);
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if ((ex & WS_EX_NOACTIVATE) != 0)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
+        }
 
-        SetWindowPos(hwnd, hwndTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        if (makeTopmost)
+        {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        }
 
         var fg = GetForegroundWindow();
         uint currentTid = GetCurrentThreadId();
@@ -207,7 +289,24 @@ internal static class Win32Interop
             }
         }
 
-        SetWindowPos(hwnd, hwndTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        // If summoned via XInput polling while an elevated/fullscreen game holds ForegroundLockTimeout,
+        // emit inert VK 0xFF tap to unlock foreground permission cleanly without Alt/Menu side effects.
+        if (GetForegroundWindow() != 0 && !IsWindowOrChildForeground(hwnd))
+        {
+            SendSyntheticChordBreak();
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            if (!IsWindowOrChildForeground(hwnd))
+            {
+                SwitchToThisWindow(hwnd, true);
+            }
+        }
+
+        if (makeTopmost)
+        {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        }
+
         return IsWindowOrChildForeground(hwnd);
     }
 
@@ -217,6 +316,148 @@ internal static class Win32Interop
         var fg = GetForegroundWindow();
         if (fg == 0) return false;
         return fg == hwnd || IsChild(hwnd, fg);
+    }
+
+    public static bool IsWindowCloaked(nint hwnd)
+    {
+        if (hwnd == 0) return false;
+        try
+        {
+            return DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool HasVisibleWindowAbove(nint targetHwnd, nint allowedAboveHwnd = 0)
+    {
+        if (targetHwnd == 0 || !IsWindow(targetHwnd)) return false;
+        nint cur = GetWindow(targetHwnd, GW_HWNDPREV);
+        int steps = 0;
+        while (cur != 0 && steps++ < 64)
+        {
+            if (cur != allowedAboveHwnd &&
+                IsWindowVisible(cur) &&
+                !IsWindowCloaked(cur) &&
+                GetWindowRect(cur, out var r) &&
+                (r.Right - r.Left) > 1 &&
+                (r.Bottom - r.Top) > 1)
+            {
+                return true;
+            }
+            cur = GetWindow(cur, GW_HWNDPREV);
+        }
+        return false;
+    }
+
+    public static void RaiseTopmostNoActivate(nint hwnd, bool forceReband = false, nint allowedAboveHwnd = 0)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if ((ex & WS_EX_TOPMOST) == 0)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TOPMOST);
+        }
+
+        const uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW;
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+
+        if (forceReband || HasVisibleWindowAbove(hwnd, allowedAboveHwnd))
+        {
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+
+            if (HasVisibleWindowAbove(hwnd, allowedAboveHwnd))
+            {
+                var fg = GetForegroundWindow();
+                uint currentTid = GetCurrentThreadId();
+                uint fgTid = fg != 0 ? GetWindowThreadProcessId(fg, out _) : 0;
+                bool attached = false;
+                try
+                {
+                    if (fgTid != 0 && fgTid != currentTid)
+                    {
+                        attached = AttachThreadInput(currentTid, fgTid, true);
+                    }
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+                }
+                finally
+                {
+                    if (attached)
+                    {
+                        AttachThreadInput(currentTid, fgTid, false);
+                    }
+                }
+            }
+        }
+    }
+
+    public static void ApplyNoActivateOverlayStyle(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        int targetEx = ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+        if (ex != targetEx)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, targetEx);
+        }
+
+        EnumChildWindows(hwnd, (child, _) =>
+        {
+            int childEx = GetWindowLong(child, GWL_EXSTYLE);
+            if ((childEx & WS_EX_NOACTIVATE) == 0)
+            {
+                SetWindowLong(child, GWL_EXSTYLE, childEx | WS_EX_NOACTIVATE);
+            }
+            return true;
+        }, 0);
+    }
+
+    public static void ApplyFocusableTopmostOverlayStyle(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        int targetEx = (ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_NOACTIVATE;
+        if (ex != targetEx)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, targetEx);
+        }
+
+        EnumChildWindows(hwnd, (child, _) =>
+        {
+            int childEx = GetWindowLong(child, GWL_EXSTYLE);
+            if ((childEx & WS_EX_NOACTIVATE) != 0)
+            {
+                SetWindowLong(child, GWL_EXSTYLE, childEx & ~WS_EX_NOACTIVATE);
+            }
+            return true;
+        }, 0);
+    }
+
+    public static void ParkWindowOffscreenNoActivate(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        SetWindowPos(
+            hwnd,
+            0,
+            -32000,
+            -32000,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
+    }
+
+    public static void RestoreWindowFocusIfValid(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        if (IsIconic(hwnd))
+        {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        ForceForegroundWindow(hwnd, makeTopmost: false);
     }
 
     public static ForegroundProcessSnapshot? GetForegroundProcessSnapshot()

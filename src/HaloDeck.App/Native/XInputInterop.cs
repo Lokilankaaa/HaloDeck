@@ -52,6 +52,7 @@ internal static class XInputInterop
     private static extern uint XInputGetState_9_1_0(uint dwUserIndex, out XInputState pState);
 
     private static bool _useFallback910;
+    private static long _lastButtonOrTriggerTick64;
 
     public static bool TryGetCombinedGamepadState(out XInputGamepad combined, out int connectedCount)
     {
@@ -80,7 +81,43 @@ internal static class XInputInterop
             }
         }
 
+        if (any && (combined.wButtons != 0 || combined.bLeftTrigger > 30 || combined.bRightTrigger > 30))
+        {
+            Interlocked.Exchange(ref _lastButtonOrTriggerTick64, Environment.TickCount64);
+        }
+
         return any;
+    }
+
+    public static long MillisecondsSinceLastButtonOrTrigger()
+    {
+        long last = Interlocked.Read(ref _lastButtonOrTriggerTick64);
+        if (last <= 0) return long.MaxValue;
+        return Math.Max(0, Environment.TickCount64 - last);
+    }
+
+    public static bool HasAnyActiveButtonOrTrigger(byte triggerDeadzone = 30)
+    {
+        if (!TryGetCombinedGamepadState(out var gp, out _))
+        {
+            return false;
+        }
+        return gp.wButtons != 0 || gp.bLeftTrigger > triggerDeadzone || gp.bRightTrigger > triggerDeadzone;
+    }
+
+    public static bool HasAnyActiveInput(short stickDeadzone = 18000, byte triggerDeadzone = 30)
+    {
+        if (!TryGetCombinedGamepadState(out var gp, out _))
+        {
+            return false;
+        }
+        return gp.wButtons != 0 ||
+               gp.bLeftTrigger > triggerDeadzone ||
+               gp.bRightTrigger > triggerDeadzone ||
+               Math.Abs((int)gp.sThumbLX) > stickDeadzone ||
+               Math.Abs((int)gp.sThumbLY) > stickDeadzone ||
+               Math.Abs((int)gp.sThumbRX) > stickDeadzone ||
+               Math.Abs((int)gp.sThumbRY) > stickDeadzone;
     }
 
     private static bool TryGetSingleState(uint userIndex, out XInputState state)

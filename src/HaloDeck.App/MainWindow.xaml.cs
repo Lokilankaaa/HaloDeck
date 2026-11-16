@@ -17,6 +17,7 @@ public partial class MainWindow : Window
     private ResizeMode _savedResize = ResizeMode.CanResize;
 
     public bool WebViewInitialized { get; private set; }
+    public event Action? CloseToTrayRequested;
 
     public MainWindow(WebUiBridge bridge)
     {
@@ -88,7 +89,14 @@ public partial class MainWindow : Window
         if (!_allowClose)
         {
             e.Cancel = true;
-            Hide();
+            if (CloseToTrayRequested is not null)
+            {
+                CloseToTrayRequested.Invoke();
+            }
+            else
+            {
+                Hide();
+            }
             return;
         }
         base.OnClosing(e);
