@@ -55,7 +55,11 @@ public sealed class RunningGameTracker
         "pwsh",
         "cmd",
         "WindowsTerminal",
-        "conhost"
+        "conhost",
+        "python",
+        "pythonw",
+        "ffmpeg",
+        "ffprobe"
     };
 
     private readonly Func<ForegroundProcessSnapshot?> _foregroundProbe;

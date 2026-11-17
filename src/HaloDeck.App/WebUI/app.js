@@ -409,10 +409,12 @@
     }
 
     const apuPowerText = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)} W` : `目标 ${curTdp}W`;
+    const fallbackApu = sys.apuPowerWatts != null ? Math.max(1.5, sys.apuPowerWatts) : 0;
     const sysDrawNow = typeof sys.systemDrawWatts === "number" && sys.systemDrawWatts > 0
       ? sys.systemDrawWatts
-      : (sys.apuPowerWatts != null ? sys.apuPowerWatts + 4.5 : 0);
-    const sysVal = sysDrawNow > 0 ? `${sysDrawNow.toFixed(1)} W` : "-- W";
+      : (fallbackApu > 0 ? fallbackApu * 1.18 + 3.4 + 5.2 * Math.max(0, Math.min(1, (fallbackApu - 9) / 14)) : 0);
+    const sysValExact = sysDrawNow > 0 ? `${sysDrawNow.toFixed(1)} W` : "-- W";
+    const sysValEst = sysDrawNow > 0 ? `≈${sysDrawNow.toFixed(1)} W` : "-- W";
 
     const mode = sys.powerRuntimeMode || (
       !sys.hasBattery
@@ -430,15 +432,15 @@
         sysDrawNow,
         modeText: "AC 直连 (无电池)",
         modeClass: "live",
-        sysVal,
-        sysSub: "AC 直供运行功耗",
+        sysVal: sysValEst,
+        sysSub: "AC 直供估算整机功耗",
         batVal: "无电池",
         batSub: "外接供电直连",
         batWarn: false,
         etaVal: "持续供电",
         etaSub: "未安装电池组",
         badge: "AC 直连 (无电池)",
-        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · AC 无电池直连`
+        kpiBatSub: `整机 ≈${sysDrawNow.toFixed(1)}W · AC 无电池直连`
       };
     }
 
@@ -451,15 +453,15 @@
         sysDrawNow,
         modeText: "正在充电",
         modeClass: "live",
-        sysVal,
-        sysSub: `不含充电 · 充电器 ≈${estIn.toFixed(1)}W`,
+        sysVal: sysValEst,
+        sysSub: `不含充电估算 · 充电器 ≈${estIn.toFixed(1)}W`,
         batVal: chgW > 0 ? `+${chgW.toFixed(1)} W` : `${sys.batteryPercent}%`,
         batSub: `${sys.batteryPercent}% · 净充入电池${chgEta ? ` (${chgEta})` : ""}`,
         batWarn: false,
         etaVal: "正在充电",
         etaSub: chgEta ? `供电充足 · ${chgEta}充满` : "充电功率 > 整机功耗 · 持续供电",
         badge: `${sys.batteryPercent}% 正在充电${chgW > 0.5 ? ` (+${chgW.toFixed(0)}W)` : ""}`,
-        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 充电器 ≈${estIn.toFixed(1)}W`
+        kpiBatSub: `整机 ≈${sysDrawNow.toFixed(1)}W · 充电器 ≈${estIn.toFixed(1)}W`
       };
     }
 
@@ -469,15 +471,15 @@
         sysDrawNow,
         modeText: sys.isBypassPower ? "AC 旁路直供" : "AC 持续供电",
         modeClass: "live",
-        sysVal,
-        sysSub: sys.isBypassPower ? "AC 旁路直供整机" : "AC 外接覆盖整机",
+        sysVal: sysValEst,
+        sysSub: sys.isBypassPower ? "AC 旁路估算整机功耗" : "AC 外接估算整机功耗",
         batVal: `${sys.batteryPercent}%`,
         batSub: `电池未放电 · ${(sys.batteryRemainingWh || 0).toFixed(1)} Wh`,
         batWarn: false,
         etaVal: "插电长续航",
         etaSub: sys.isBypassPower ? "充电器功率充足 · 零损耗旁路" : "充电器功率充足 · 持续供电不掉电",
         badge: `${sys.batteryPercent}% ${sys.isBypassPower ? "旁路持续供电" : "插电长续航"}`,
-        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 充电器 ≈${(sys.estimatedChargerWatts ?? sysDrawNow).toFixed(1)}W`
+        kpiBatSub: `整机 ≈${sysDrawNow.toFixed(1)}W · 充电器 ≈${(sys.estimatedChargerWatts ?? sysDrawNow).toFixed(1)}W`
       };
     }
 
@@ -491,7 +493,7 @@
         sysDrawNow,
         modeText: "供电不足 · 电池补电",
         modeClass: "warn",
-        sysVal,
+        sysVal: sysValEst,
         sysSub: `充电器 ≈${estIn.toFixed(1)}W + 电池补电 ${disW.toFixed(1)}W`,
         batVal: `-${disW.toFixed(1)} W`,
         batSub: `${sys.batteryPercent}% · 充电器低于整机功耗，正在掉电`,
@@ -499,7 +501,7 @@
         etaVal: eta,
         etaSub: `充电器不足 · 按电池净放电 ${disW.toFixed(1)}W 计算`,
         badge: `${sys.batteryPercent}% 补电-${disW.toFixed(1)}W${etaPart}`,
-        kpiBatSub: `整机 ${sysDrawNow.toFixed(1)}W · 补电-${disW.toFixed(1)}W 续航${eta}`
+        kpiBatSub: `整机 ≈${sysDrawNow.toFixed(1)}W · 补电-${disW.toFixed(1)}W 续航${eta}`
       };
     }
 
@@ -512,7 +514,7 @@
       sysDrawNow,
       modeText: "便携电池供电",
       modeClass: "",
-      sysVal,
+      sysVal: sysValExact,
       sysSub: "APU + 外围即时融合功耗",
       batVal: batShownW > 0 ? `-${batShownW.toFixed(1)} W` : `${sys.batteryPercent}%`,
       batSub: `${sys.batteryPercent}% · ${sys.voltageVolts > 0 ? `${sys.voltageVolts.toFixed(1)}V` : "离线放电"}`,
@@ -1194,11 +1196,13 @@
 
     const daemonVer = hw.daemonVersion || 0;
     const needsV2Upgrade = hw.serviceRunning && daemonVer < 2;
-    const needsV3Upgrade = hw.serviceRunning && daemonVer < 3;
+    const needsV3Upgrade = hw.serviceRunning && daemonVer < 4;
     const gpdConflictNote = hw.gpdServiceRunning
       ? "⚠ GPDToolService 并行运行中：HaloDeck 直接写入 SMU/EC，GPD Tools 只显示其自有内部缓存，不会自动刷新外部变更；建议暂停 GPDTools 以避免双端抢控。"
       : (needsV3Upgrade
-        ? "同步机制：HaloDeck 经 PawnIO 直控 SMU/EC（当前 v2 支持 8–120W 开放功耗与风扇曲线；升级至 v3 可解锁内核无钩子 ETW 帧率与 SMN 独立 CPU 温度）。"
+        ? (daemonVer < 3
+          ? "同步机制：HaloDeck 经 PawnIO 直控 SMU/EC（当前服务版本较旧，点击右侧「升级重启硬件服务」升级至 v4 可解锁高精度 QPC 帧率与独立 CPU 温度）。"
+          : "同步机制：检测到新版硬件服务协议 (v4：硬件 QPC 时间戳稳帧采样与风扇心跳不掉帧)，点击右侧「升级重启硬件服务」即可平滑热升级。")
         : "同步机制：HaloDeck 经签名 PawnIO 直写 SMU/EC 并附带无钩子 ETW 帧率与 SMN CPU 温度采样，双方互不读取彼此缓存。");
 
     const serviceBanner = !hw.serviceRunning
@@ -1222,7 +1226,7 @@
             <span class="hh-banner-sub">${esc(gpdConflictNote)}</span>
           </div>
           <div class="hh-banner-actions">
-            ${needsV3Upgrade ? `<button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${needsV2Upgrade ? "升级重启硬件服务" : "升级硬件服务 v3 (解锁 FPS/CPU温)"}</button>` : ""}
+            ${needsV3Upgrade ? `<button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">升级重启硬件服务</button>` : ""}
             ${hw.gpdServiceExists ? `<button id="btnToggleGpdSvc" class="btn btn-sm" data-focusable="true">${hw.gpdServiceRunning ? "暂停 GPDTools 服务" : "恢复 GPDTools 服务"}</button>` : ""}
           </div>
         </div>`;

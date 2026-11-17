@@ -106,12 +106,12 @@ public partial class OverlayHudWindow : Window
 
         string etaShort = FormatMinutesShort(sys.EstimatedStandbyMinutes);
         string batStr = !sys.HasBattery
-            ? "AC 直连"
+            ? $"整机 ≈{sys.SystemDrawWatts:F1}W · AC 直连"
             : sys.PowerRuntimeMode switch
             {
-                "charging" => $"整机 {sys.SystemDrawWatts:F1}W · 正在充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)",
-                "ac_sustained" => $"整机 {sys.SystemDrawWatts:F1}W · 插电持续供电 ({sys.BatteryPercent}%)",
-                "ac_discharging" => $"整机 {sys.SystemDrawWatts:F1}W · 供电不足 补电-{sys.BatteryDischargeWatts:F1}W{(etaShort != "" ? $" ({etaShort})" : "")}",
+                "charging" => $"整机 ≈{sys.SystemDrawWatts:F1}W · 正在充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)",
+                "ac_sustained" => $"整机 ≈{sys.SystemDrawWatts:F1}W · 插电持续供电 ({sys.BatteryPercent}%)",
+                "ac_discharging" => $"整机 ≈{sys.SystemDrawWatts:F1}W · 供电不足 补电-{sys.BatteryDischargeWatts:F1}W{(etaShort != "" ? $" ({etaShort})" : "")}",
                 _ => $"{sys.BatteryPercent}% (-{sys.SystemDrawWatts:F1}W{(etaShort != "" ? $" · {etaShort}" : "")})"
             };
 
@@ -179,15 +179,15 @@ public partial class OverlayHudWindow : Window
                 ? $"风扇: {sys.HardwareService.FanRpm} RPM ({sys.HardwareService.FanMode})"
                 : $"调度: {sys.CpuBoostMode}";
             string bypassOrWatts = sys.IsBypassPower
-                ? $"整机 {sys.SystemDrawWatts:F1}W · 旁路直供"
-                : $"整机 {sys.SystemDrawWatts:F1}W / 输入≈{sys.EstimatedChargerWatts ?? 0:F0}W";
+                ? $"整机 ≈{sys.SystemDrawWatts:F1}W · 旁路直供"
+                : $"整机 ≈{sys.SystemDrawWatts:F1}W / 输入≈{sys.EstimatedChargerWatts ?? 0:F0}W";
             PowerLineText.Text = sys.PowerRuntimeMode switch
             {
                 "charging" => $"{bypassOrWatts} · 正在充电 {sys.BatteryPercent}% (+{sys.BatteryPowerWatts ?? 0:F1}W)",
                 "ac_sustained" => $"{bypassOrWatts} · 持续供电 ({sys.BatteryPercent}%)",
-                "ac_discharging" => $"整机 {sys.SystemDrawWatts:F1}W · 电池放电-{sys.BatteryDischargeWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)",
+                "ac_discharging" => $"整机 ≈{sys.SystemDrawWatts:F1}W · 电池放电-{sys.BatteryDischargeWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)",
                 _ => !sys.HasBattery
-                    ? $"整机: {sys.SystemDrawWatts:F1}W (AC 直连)"
+                    ? $"整机: ≈{sys.SystemDrawWatts:F1}W (AC 直连)"
                     : $"整机: {sys.SystemDrawWatts:F1}W · 续航约 {etaShort} ({sys.BatteryPercent}%)"
             };
 

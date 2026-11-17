@@ -24,13 +24,27 @@ public sealed class HaloDeckV035Tests
             fanRpm: 3000,
             previousEmaSystemDrawWatts: 0);
 
-        Assert.InRange(res.SystemDrawWatts, 40.0, 44.0);
+        Assert.InRange(res.SystemDrawWatts, 49.0, 53.0);
         Assert.Equal(18.0, res.ChargeWatts);
         Assert.NotNull(res.ChargerInputWatts);
-        Assert.InRange(res.ChargerInputWatts!.Value, 58.0, 62.0);
+        Assert.InRange(res.ChargerInputWatts!.Value, 67.0, 71.0);
         Assert.Null(res.EstimatedStandbyMinutes);
         Assert.Equal("charging", res.RuntimeMode);
         Assert.False(res.IsBypassPower);
+    }
+
+    [Fact]
+    public void PowerRuntimeEstimator_ModelsStrixHaloAcSystemDrawAt8W_25W_45W()
+    {
+        var ac8W = PowerRuntimeEstimator.Compute(true, true, false, 100, 0.0, 80.0, apuPowerWatts: 8, brightnessPercent: 55, fanRpm: 2200, previousEmaSystemDrawWatts: 0);
+        var ac25W = PowerRuntimeEstimator.Compute(true, true, false, 100, 0.0, 80.0, apuPowerWatts: 25, brightnessPercent: 65, fanRpm: 2950, previousEmaSystemDrawWatts: 0);
+        var ac45W = PowerRuntimeEstimator.Compute(true, true, false, 100, 0.0, 80.0, apuPowerWatts: 45, brightnessPercent: 65, fanRpm: 3200, previousEmaSystemDrawWatts: 0);
+        var bat45W = PowerRuntimeEstimator.Compute(false, true, false, 80, 62.4, 64.0, apuPowerWatts: 45, brightnessPercent: 65, fanRpm: 3200, previousEmaSystemDrawWatts: 62.4, isBatteryDischarging: true, previousSlowApuWatts: 45.0);
+
+        Assert.InRange(ac8W.SystemDrawWatts, 11.5, 13.8);
+        Assert.InRange(ac25W.SystemDrawWatts, 37.5, 40.5);
+        Assert.InRange(ac45W.SystemDrawWatts, 60.5, 64.5);
+        Assert.Equal(62.4, bat45W.SystemDrawWatts);
     }
 
     [Fact]

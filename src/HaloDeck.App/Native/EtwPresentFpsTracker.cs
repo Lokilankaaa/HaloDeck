@@ -33,7 +33,7 @@ public sealed class EtwPresentFpsTracker : IDisposable
     private const int SourceD3d9 = 1;
     private const int SourceDxgKrnl = 2;
     private const int SourceCount = 3;
-    private const int RingCapacity = 240;
+    private const int RingCapacity = 512;
 
     private static readonly HashSet<string> ExcludedProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -59,7 +59,22 @@ public sealed class EtwPresentFpsTracker : IDisposable
         "taskmgr",
         "perfmon",
         "sihost",
-        "ctfmon"
+        "ctfmon",
+        "ffmpeg",
+        "ffprobe",
+        "python",
+        "pythonw",
+        "steam",
+        "steamwebhelper",
+        "gameoverlayui",
+        "gameoverlayui64",
+        "epicgameslauncher",
+        "antigravity",
+        "code",
+        "powershell",
+        "pwsh",
+        "conhost",
+        "windowsterminal"
     };
 
     private delegate uint EventTraceBufferCallback(IntPtr logfile);
@@ -236,7 +251,7 @@ public sealed class EtwPresentFpsTracker : IDisposable
             Samples[WriteIndex] = ts;
             WriteIndex = (WriteIndex + 1) % RingCapacity;
             if (Count < RingCapacity) Count++;
-            LastTimestamp = ts;
+            if (ts > LastTimestamp) LastTimestamp = ts;
         }
     }
 
@@ -339,7 +354,7 @@ public sealed class EtwPresentFpsTracker : IDisposable
         }
 
         long now = Stopwatch.GetTimestamp();
-        long staleCutoff = (long)(1.5 * Stopwatch.Frequency);
+        long staleCutoff = (long)(2.5 * Stopwatch.Frequency);
 
         if (preferredPid > 4 && !IsExcludedProcess(preferredPid) && _pidBuckets.TryGetValue(preferredPid, out var prefBucket))
         {
@@ -393,7 +408,8 @@ public sealed class EtwPresentFpsTracker : IDisposable
             for (int src = 0; src < SourceCount; src++)
             {
                 var ring = bucket.Rings[src];
-                if (ring.Count < 3 || (now - ring.LastTimestamp) > staleCutoff)
+                long anchor = ring.LastTimestamp;
+                if (ring.Count < 3 || anchor <= 0 || (now - anchor) > staleCutoff)
                 {
                     continue;
                 }
@@ -402,10 +418,12 @@ public sealed class EtwPresentFpsTracker : IDisposable
                 long oldest = long.MaxValue;
                 int inWindow = 0;
 
+                // Measure FPS over the latest 1s span of hardware QPC Present timestamps so 1s ETW
+                // real-time flush intervals never shrink the active sampling window between flushes.
                 for (int i = 0; i < ring.Count; i++)
                 {
                     long ts = ring.Samples[i];
-                    if (now - ts <= window1s)
+                    if (ts > 0 && ts <= anchor && (anchor - ts) <= window1s)
                     {
                         inWindow++;
                         if (ts > newest) newest = ts;
@@ -422,7 +440,7 @@ public sealed class EtwPresentFpsTracker : IDisposable
                     for (int i = 0; i < ring.Count; i++)
                     {
                         long ts = ring.Samples[i];
-                        if (now - ts <= window2s)
+                        if (ts > 0 && ts <= anchor && (anchor - ts) <= window2s)
                         {
                             inWindow++;
                             if (ts > newest) newest = ts;
@@ -437,7 +455,7 @@ public sealed class EtwPresentFpsTracker : IDisposable
                     double rawFps = (inWindow - 1) / seconds;
                     int rounded = Math.Clamp((int)Math.Round(rawFps), 1, 500);
                     double frameMs = Math.Round(1000.0 / Math.Max(1.0, rawFps), 1);
-                    return (rounded, frameMs, ring.LastTimestamp);
+                    return (rounded, frameMs, anchor);
                 }
             }
         }
@@ -495,10 +513,12 @@ public sealed class EtwPresentFpsTracker : IDisposable
         }
 
         long now = Stopwatch.GetTimestamp();
+        long eventQpc = Marshal.ReadInt64(eventRecordPtr, 16);
+        long ts = (eventQpc > 0 && Math.Abs(now - eventQpc) < Stopwatch.Frequency * 15) ? eventQpc : now;
         var bucket = _pidBuckets.GetOrAdd(pid, _ => new PidBucket());
         lock (bucket.Sync)
         {
-            bucket.Rings[source].Add(now);
+            bucket.Rings[source].Add(ts);
         }
     }
 
@@ -559,9 +579,11 @@ public sealed class EtwPresentFpsTracker : IDisposable
                 ClientContext = 1, // QPC timestamps
                 Flags = WnodeFlagTracedGuid
             },
+            // 64 KB buffers prevent kernel RealTimeBuffersLost drops on system-wide DXGI/DxgKrnl traces,
+            // while hardware QPC timestamps (EVENT_HEADER.TimeStamp) provide sub-microsecond Present intervals.
             BufferSize = 64,
-            MinimumBuffers = 4,
-            MaximumBuffers = 16,
+            MinimumBuffers = 16,
+            MaximumBuffers = 64,
             LogFileMode = EventTraceRealTimeMode | EventTraceNoPerProcessorBuffering,
             FlushTimer = 1,
             LoggerNameOffset = (uint)propsSize

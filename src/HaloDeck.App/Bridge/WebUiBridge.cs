@@ -1691,14 +1691,14 @@ public sealed class WebUiBridge : IDisposable
             await Task.Delay(95).ConfigureAwait(false);
         }
 
-        string msg = _toolbox.ExecuteAction(
+        string msg = await Task.Run(() => _toolbox.ExecuteAction(
             action,
             pid,
             gameName,
             hasAntiCheat,
             _settings.PreferredOskMode,
             fromUiClick: action == "osk",
-            forceCloseOsk: forceCloseOsk);
+            forceCloseOsk: forceCloseOsk)).ConfigureAwait(false);
         BroadcastStateSnapshot();
         return new { ok = true, message = msg, frozenGames = _toolbox.GetFrozenGames() };
 
@@ -1775,7 +1775,8 @@ public sealed class WebUiBridge : IDisposable
             string.Equals(_runningGame.Id, gameId, StringComparison.OrdinalIgnoreCase) &&
             profile.Enabled)
         {
-            if (profile.RefreshRateHz > 0)
+            var curSys = _systemControl.GetState(includeHardwareRefresh: false);
+            if (profile.RefreshRateHz > 0 && curSys.RefreshRateHz != profile.RefreshRateHz)
             {
                 try { _systemControl.SetRefreshRate(profile.RefreshRateHz); } catch { }
             }

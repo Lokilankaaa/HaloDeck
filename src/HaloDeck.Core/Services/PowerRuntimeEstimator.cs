@@ -37,10 +37,17 @@ public static class PowerRuntimeEstimator
         bool activelyCharging = isAcOnline && hasBattery && !reverseDischargingOnAc && isCharging && batW > 0.35;
         double chargeWatts = activelyCharging ? Math.Round(batW, 1) : 0.0;
 
-        double screenAndBoardLoss = 3.2
-            + (2.2 * Math.Clamp(brightnessPercent, 5, 100) / 100.0)
-            + (fanRpm > 3200 ? 0.8 : 0.3);
-        double apuModelWatts = Math.Round(Math.Max(1.5, apuPowerWatts) + screenAndBoardLoss, 1);
+        double apu = Math.Max(1.5, apuPowerWatts);
+        double boardBaseWatts = 1.1;
+        double screenWatts = 0.6 + (2.0 * Math.Clamp(brightnessPercent, 5, 100) / 100.0);
+        double fanWatts = fanRpm <= 0
+            ? 0.35
+            : Math.Clamp(0.2 + 1.8 * Math.Pow(fanRpm / 4500.0, 2.2), 0.2, 2.8);
+        // Strix Halo DC-DC VRM conversion loss (~85% buck efficiency) + 256-bit LPDDR5X-8000 / NVMe load scaling
+        double vrmLossWatts = apu * 0.18;
+        double memLoadFactor = Math.Clamp((apu - 9.0) / 14.0, 0.0, 1.0);
+        double memAndUncoreWatts = 5.2 * memLoadFactor;
+        double apuModelWatts = Math.Round(apu + boardBaseWatts + screenWatts + fanWatts + vrmLossWatts + memAndUncoreWatts, 1);
 
         double prevSlowApu = previousSlowApuWatts >= 0 ? previousSlowApuWatts : apuPowerWatts;
         double nextSlowApu = apuPowerWatts > 0
@@ -53,9 +60,9 @@ public static class PowerRuntimeEstimator
             if (apuPowerWatts > 0)
             {
                 // Compensate Smart Battery BMS rolling average lag by anchoring non-APU overhead to slow APU baseline
-                // and immediately adding instantaneous APU package watts.
-                double minOverhead = Math.Max(2.2, screenAndBoardLoss - 1.8);
-                double calibratedOverhead = Math.Clamp(batW - prevSlowApu, minOverhead, 15.0);
+                // and immediately adding instantaneous APU package watts (allow up to 32W overhead for 45W-85W VRM+RAM loss).
+                const double minOverhead = 2.5;
+                double calibratedOverhead = Math.Clamp(batW - prevSlowApu, minOverhead, 32.0);
                 systemDrawWatts = Math.Round(apuPowerWatts + calibratedOverhead, 1);
             }
             else

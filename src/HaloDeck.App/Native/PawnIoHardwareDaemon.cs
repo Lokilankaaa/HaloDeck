@@ -48,7 +48,7 @@ public sealed class HardwareDaemonStatus
 /// </summary>
 public sealed class PawnIoHardwareDaemon : ServiceBase
 {
-    public const int CurrentDaemonVersion = 3;
+    public const int CurrentDaemonVersion = 4;
     public const string WindowsServiceName = "HaloDeckHardwareSvc";
     public const string PipeName = "HaloDeck.Hardware.v1";
 
@@ -106,6 +106,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private int _appliedFanPwm;
     private DateTime _lastFanHeartbeatUtc = DateTime.UtcNow;
     private EtwPresentFpsTracker? _fpsTracker;
+    private volatile int _lastTargetPid;
 
     private delegate int PawnIoOpenDelegate(out nint handle);
     private delegate int PawnIoLoadDelegate(nint handle, byte[] blob, nuint size);
@@ -432,6 +433,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 int targetPid = root.TryGetProperty("targetPid", out var pidProp) && pidProp.TryGetInt32(out int parsedPid)
                     ? parsedPid
                     : 0;
+                if (targetPid > 0) _lastTargetPid = targetPid;
                 var fpsSample = _fpsTracker?.GetCurrentFps(targetPid) ?? (0, 0.0, 0);
 
                 lock (_hwLock)
@@ -465,11 +467,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 int fastWatts = root.TryGetProperty("fastWatts", out var fp) && fp.ValueKind == JsonValueKind.Number
                     ? Math.Clamp(fp.GetInt32(), MinTdpWatts, MaxFastWatts)
                     : Math.Min(MaxFastWatts, Math.Max(slowWatts, watts + 2));
+                var fpsSample = _fpsTracker?.GetCurrentFps(_lastTargetPid) ?? (0, 0.0, 0);
 
                 lock (_hwLock)
                 {
                     bool ok = ApplyStrixHaloTdpLocked(watts, slowWatts, fastWatts, out string err);
-                    return new { ok, error = err, status = BuildStatusSnapshotLocked() };
+                    return new { ok, error = err, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                 }
             }
 
@@ -478,6 +481,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 string mode = (root.TryGetProperty("mode", out var mp) ? mp.GetString() : "auto") ?? "auto";
                 int pct = Math.Clamp(root.TryGetProperty("percent", out var pp) ? pp.GetInt32() : 55, 20, 100);
                 int tempC = root.TryGetProperty("tempC", out var tp) ? Math.Clamp(tp.GetInt32(), 0, 115) : _lastTempC;
+                var fpsSample = _fpsTracker?.GetCurrentFps(_lastTargetPid) ?? (0, 0.0, 0);
 
                 List<FanCurvePoint>? parsedCurve = null;
                 if (root.TryGetProperty("curvePoints", out var cp) && cp.ValueKind == JsonValueKind.Array)
@@ -496,7 +500,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                     if (!_ecReady || _ecHandle == 0)
                     {
-                        return new { ok = false, error = "EC 风扇通道仅支持 GPD G1618-05 / G1622-01", status = BuildStatusSnapshotLocked() };
+                        return new { ok = false, error = "EC 风扇通道仅支持 GPD G1618-05 / G1622-01", status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                     }
 
                     WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
@@ -504,7 +508,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                         ApplyFanModeLocked(mode, pct, tempC);
                         _lastFanRpm = ReadFanRpmInternal();
                     });
-                    return new { ok = true, error = string.Empty, status = BuildStatusSnapshotLocked() };
+                    return new { ok = true, error = string.Empty, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                 }
             }
 
@@ -512,6 +516,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             {
                 bool paused = root.TryGetProperty("paused", out var p) && p.GetBoolean();
                 int rc = SetGpdServicePaused(paused);
+                var fpsSample = _fpsTracker?.GetCurrentFps(_lastTargetPid) ?? (0, 0.0, 0);
                 lock (_hwLock)
                 {
                     _lastGpdSvcCheckUtc = DateTime.MinValue;
@@ -519,7 +524,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                     {
                         ok = rc == 0,
                         error = rc == 0 ? string.Empty : $"切换 GPDToolService 状态失败 (code={rc})",
-                        status = BuildStatusSnapshotLocked()
+                        status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid)
                     };
                 }
             }

@@ -79,8 +79,7 @@ public sealed class HardwareServiceClient
         int fast = Math.Clamp(fastWatts ?? Math.Min(140, Math.Max(slow, w + 2)), 8, 140);
 
         var res = SendPipeRequest(new { op = "set_tdp", watts = w, slowWatts = slow, fastWatts = fast });
-        if (res.Status is not null) _cachedStatus = res.Status;
-        _lastStatusAtUtc = DateTime.UtcNow;
+        ApplyControlStatus(res.Status);
         return (res.Ok, res.Error, _cachedStatus);
     }
 
@@ -96,8 +95,7 @@ public sealed class HardwareServiceClient
         {
             int evaluatedPct = FanCurveEvaluator.Evaluate(tempC, curvePoints);
             var fallbackRes = SendPipeRequest(new { op = "set_fan", mode = "manual", percent = evaluatedPct, tempC });
-            if (fallbackRes.Status is not null) _cachedStatus = fallbackRes.Status;
-            _lastStatusAtUtc = DateTime.UtcNow;
+            ApplyControlStatus(fallbackRes.Status);
             return (fallbackRes.Ok, fallbackRes.Error, _cachedStatus);
         }
 
@@ -110,17 +108,29 @@ public sealed class HardwareServiceClient
             tempC,
             curvePoints = pts
         });
-        if (res.Status is not null) _cachedStatus = res.Status;
-        _lastStatusAtUtc = DateTime.UtcNow;
+        ApplyControlStatus(res.Status);
         return (res.Ok, res.Error, _cachedStatus);
     }
 
     public (bool Ok, string Error, HardwareDaemonStatus Status) SetGpdServicePaused(bool paused)
     {
         var res = SendPipeRequest(new { op = "set_gpd_service", paused });
-        if (res.Status is not null) _cachedStatus = res.Status;
-        _lastStatusAtUtc = DateTime.UtcNow;
+        ApplyControlStatus(res.Status);
         return (res.Ok, res.Error, _cachedStatus);
+    }
+
+    private void ApplyControlStatus(HardwareDaemonStatus? next)
+    {
+        if (next is null) return;
+        if (next.CurrentFps <= 0 && _cachedStatus.CurrentFps > 0)
+        {
+            next.CurrentFps = _cachedStatus.CurrentFps;
+            next.FrameTimeMs = _cachedStatus.FrameTimeMs;
+            next.FpsPid = _cachedStatus.FpsPid;
+        }
+        next.ServiceInstalled = true;
+        next.ServiceRunning = true;
+        _cachedStatus = next;
     }
 
     private (bool Ok, string Error, HardwareDaemonStatus? Status) SendPipeRequest(object payload)
