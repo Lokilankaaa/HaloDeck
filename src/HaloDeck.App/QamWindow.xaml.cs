@@ -107,6 +107,7 @@ public partial class QamWindow : Window
 
         _shownAtUtc = DateTime.UtcNow;
         _bridge.RefreshActiveGameForOverlay();
+        _bridge.MuteActiveGameControllerInput(_previousForegroundHwnd);
 
         PositionOnRightEdge();
         Topmost = true;
@@ -135,7 +136,7 @@ public partial class QamWindow : Window
         WebViewInitialized = true;
     }
 
-    public void HideWithoutRestoringGame()
+    public void HideWithoutRestoringGame(bool restoreController = true)
     {
         ++_transitionVersion;
         _isClosingShieldActive = false;
@@ -146,6 +147,10 @@ public partial class QamWindow : Window
             Hide();
         }
         PositionOnRightEdge();
+        if (restoreController)
+        {
+            _bridge.RestoreMutedGameControllerInput();
+        }
         ClosingShieldChanged?.Invoke();
     }
 
@@ -210,6 +215,7 @@ public partial class QamWindow : Window
         IsHitTestVisible = true;
         Hide();
         PositionOnRightEdge();
+        _bridge.RestoreMutedGameControllerInput();
 
         if (_previousForegroundHwnd != 0 && Win32Interop.IsWindow(_previousForegroundHwnd))
         {

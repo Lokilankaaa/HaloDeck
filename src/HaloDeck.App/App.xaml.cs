@@ -404,7 +404,8 @@ public partial class App : System.Windows.Application
             _lastExternalForegroundHwnd = _qamWindow.PreviousForegroundHwnd;
         }
 
-        _qamWindow?.HideWithoutRestoringGame();
+        _qamWindow?.HideWithoutRestoringGame(restoreController: false);
+        _bridge?.MuteActiveGameControllerInput(_lastExternalForegroundHwnd);
 
         if (!_mainWindow.IsVisible)
         {
@@ -491,6 +492,7 @@ public partial class App : System.Windows.Application
         _mainWindow.IsHitTestVisible = true;
         _mainWindow.Hide();
         RestoreMainBoundsIfParked();
+        _bridge?.RestoreMutedGameControllerInput();
 
         if (_lastExternalForegroundHwnd != 0 && Win32Interop.IsWindow(_lastExternalForegroundHwnd))
         {
@@ -645,12 +647,26 @@ public partial class App : System.Windows.Application
         bool mainFocused = mainVisible &&
                            (_mainWindow!.IsActive || Win32Interop.IsWindowOrChildForeground(mainHwnd));
 
-        _inputHub.ActiveUiTarget = FrontendFocusArbitrator.ResolveActiveUiTarget(
+        string? nextTarget = FrontendFocusArbitrator.ResolveActiveUiTarget(
             qamInteractive,
             qamFocused,
             mainVisible,
             mainFocused,
             desktopHasNoForeground);
+
+        _inputHub.ActiveUiTarget = nextTarget;
+
+        if (nextTarget is not null)
+        {
+            nint targetGameHwnd = qamInteractive && _qamWindow is { PreviousForegroundHwnd: not 0 }
+                ? _qamWindow.PreviousForegroundHwnd
+                : _lastExternalForegroundHwnd;
+            _bridge?.MuteActiveGameControllerInput(targetGameHwnd);
+        }
+        else if (_qamWindow is not { IsClosingShieldActive: true } && !_isConsoleClosingShieldActive)
+        {
+            _bridge?.RestoreMutedGameControllerInput();
+        }
     }
 
     private void ApplyOverlayHudFromSettings()
@@ -1569,10 +1585,10 @@ public partial class App : System.Windows.Application
                 await Task.Delay(50);
             }
 
-            await Task.Delay(350);
+            await Task.Delay(520);
             await mainCore.ExecuteScriptAsync("document.getElementById('btnTestOsk')?.click()");
             bool uiClickClosed = false;
-            var uiCloseDeadline = DateTime.UtcNow.AddMilliseconds(1200);
+            var uiCloseDeadline = DateTime.UtcNow.AddMilliseconds(1500);
             while (DateTime.UtcNow < uiCloseDeadline)
             {
                 if (!HandheldToolboxService.QueryTabTipVisible())

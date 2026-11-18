@@ -36,6 +36,7 @@ public sealed class WebUiBridge : IDisposable
     private readonly SystemControlService _systemControl = new();
     private readonly GpdControllerService _gpdController = new();
     private readonly HandheldToolboxService _toolbox = new();
+    private readonly GameXInputIsolator _xinputIsolator = new();
 
     private readonly List<WebView2> _registeredViews = new();
     private Task<CoreWebView2Environment>? _sharedEnvTask;
@@ -102,8 +103,34 @@ public sealed class WebUiBridge : IDisposable
     public int ResumeAllFrozenGames() => _toolbox.ResumeAllFrozenProcesses();
     public bool SuppressHardwareCleanupOnDispose { get; set; }
 
+    public void MuteActiveGameControllerInput(nint externalForegroundHwnd)
+    {
+        if (_runningGame is { IsCurrentlyRunning: true, RunningPid: > 4 and int runPid })
+        {
+            bool highRisk = _runningGame.AntiCheat?.RiskLevel == AntiCheatRiskLevel.HighRisk;
+            _xinputIsolator.TryMuteProcess(runPid, knownHighRiskAntiCheat: highRisk);
+        }
+
+        if (externalForegroundHwnd != 0 && Win32Interop.IsWindow(externalForegroundHwnd))
+        {
+            Win32Interop.GetWindowThreadProcessId(externalForegroundHwnd, out uint fgPid);
+            if (fgPid > 4 && fgPid != (uint)Environment.ProcessId)
+            {
+                bool highRisk = _runningGame is { RunningPid: var rp } && rp == (int)fgPid &&
+                                _runningGame.AntiCheat?.RiskLevel == AntiCheatRiskLevel.HighRisk;
+                _xinputIsolator.TryMuteProcess((int)fgPid, knownHighRiskAntiCheat: highRisk);
+            }
+        }
+    }
+
+    public void RestoreMutedGameControllerInput()
+    {
+        _xinputIsolator.RestoreAll();
+    }
+
     public void Dispose()
     {
+        _xinputIsolator.Dispose();
         FlushPendingSettingsSave();
         try
         {

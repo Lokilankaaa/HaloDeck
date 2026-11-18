@@ -258,4 +258,30 @@ public sealed class HaloDeckV036Tests
             msSinceLastButtonOrTrigger: 1200,
             isEscapeKeyHeld: false));
     }
+
+    [Fact]
+    public void GameXInputIsolator_MutesAndRestoresLiveXInput14StateAndRejectsAntiCheatModules()
+    {
+        Assert.True(HaloDeck.Core.Process.GameXInputIsolator.IsAntiCheatModuleName("EasyAntiCheat_EOS.dll"));
+        Assert.True(HaloDeck.Core.Process.GameXInputIsolator.IsAntiCheatModuleName("BEClient_x64.dll"));
+        Assert.False(HaloDeck.Core.Process.GameXInputIsolator.IsAntiCheatModuleName("xinput1_4.dll"));
+
+        if (Environment.Is64BitProcess)
+        {
+            nint hMod = System.Runtime.InteropServices.NativeLibrary.Load("xinput1_4.dll");
+            Assert.NotEqual(nint.Zero, hMod);
+
+            bool muted = HaloDeck.Core.Process.GameXInputIsolator.TrySetProcessXInputEnabled(
+                Environment.ProcessId,
+                enabled: false,
+                allowSelfForTest: true);
+            bool restored = HaloDeck.Core.Process.GameXInputIsolator.TrySetProcessXInputEnabled(
+                Environment.ProcessId,
+                enabled: true,
+                allowSelfForTest: true);
+
+            Assert.True(muted);
+            Assert.True(restored);
+        }
+    }
 }
