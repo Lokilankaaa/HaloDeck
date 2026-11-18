@@ -70,6 +70,15 @@ public sealed class SystemControlState
     public int[] FpsHistory { get; set; } = Array.Empty<int>();
     public bool GpdXboxKeyboardAvailable { get; set; }
 
+    // Steady & Eco Mode + CPU Topology Status
+    public string CpuTopologyKind { get; set; } = nameof(HaloDeck.Core.Services.CpuTopologyKind.SingleCcdHomogeneous);
+    public string CpuTopologyBadge { get; set; } = string.Empty;
+    public string CpuTopologyHint { get; set; } = string.Empty;
+    public bool SteadyEcoActive { get; set; }
+    public int IsolatedProcessCount { get; set; }
+    public bool WifiRadioSupported { get; set; }
+    public bool WifiRadioOff { get; set; }
+
     // PawnIO Hardware Daemon Status (Strix Halo TDP + GPD Dual-Fan EC)
     public HardwareDaemonStatus HardwareService { get; set; } = new();
 }
@@ -169,11 +178,15 @@ public sealed class SystemControlService : IDisposable
 
     public SystemControlState GetState(bool includeHardwareRefresh = false, int targetPid = 0)
     {
+        var topo = CpuTopologyInspector.GetCurrent();
         var state = new SystemControlState
         {
             CpuName = _cpuName,
             CpuUsagePercent = SampleCpuUsagePercent(),
-            GpdXboxKeyboardAvailable = HandheldToolboxService.IsGpdXboxKeyboardAvailable
+            GpdXboxKeyboardAvailable = HandheldToolboxService.IsGpdXboxKeyboardAvailable,
+            CpuTopologyKind = topo.Kind.ToString(),
+            CpuTopologyBadge = topo.SummaryBadge,
+            CpuTopologyHint = topo.StrategyHint
         };
 
         PopulateMemoryStats(state);
@@ -501,6 +514,11 @@ public sealed class SystemControlService : IDisposable
 
         _lastCpuSchemeQueryUtc = DateTime.MinValue;
         return GetState();
+    }
+
+    public void InvalidatePowerSchemeCache()
+    {
+        _lastCpuSchemeQueryUtc = DateTime.MinValue;
     }
 
     private int ReadCpuMaxFreqMhz(bool isAcOnline)

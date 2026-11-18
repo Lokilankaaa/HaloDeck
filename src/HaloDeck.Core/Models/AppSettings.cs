@@ -18,14 +18,17 @@ public sealed class GamePerformanceProfile
     public string GameId { get; set; } = string.Empty;
     public string GameName { get; set; } = string.Empty;
     public bool Enabled { get; set; }
-    public int TdpWatts { get; set; } = 40;
-    public int RefreshRateHz { get; set; }
+    public int TdpWatts { get; set; } = 25;
+    public int RefreshRateHz { get; set; } // 0 = keep current, -1 = dynamic DRR, >0 = fixed Hz (e.g. 60 / 120)
+    public int CpuMaxFreqMhz { get; set; } // 0 = keep current, >0 = per-game sub-base/boost cap (e.g. 2800 / 3000)
 }
 
 public sealed class AppSettings
 {
     public string ActiveOptiScalerSlot { get; set; } = nameof(ComponentSlot.OptiScalerNightly);
     public string DefaultPresetId { get; set; } = "strix-halo-quality";
+    public string UiTheme { get; set; } = "aurora"; // "aurora" (极光深色) | "frost" (凝霜浅色)
+    public string UiLayout { get; set; } = "bento"; // "bento" (掌机大磁贴风) | "cockpit" (桌面仪表盘风)
     public bool BackgroundAutoInjectEnabled { get; set; } = false;
     public bool StartMinimizedToTray { get; set; } = false;
     public bool LaunchConsoleFullscreen { get; set; } = false;
@@ -36,8 +39,9 @@ public sealed class AppSettings
     public int TdpPresetSilent { get; set; } = 18;
     public int TdpPresetBalanced { get; set; } = 40;
     public int TdpPresetTurbo { get; set; } = 80;
-    public List<int> CustomTdpPresets { get; set; } = [15, 25, 35, 45, 60, 80, 100];
+    public List<int> CustomTdpPresets { get; set; } = [10, 15, 20, 25, 30, 45, 60];
     public int CurrentTdpWatts { get; set; } = 40;
+    public bool FlatPowerLock { get; set; } = false; // True => SPL = sPPT = fPPT = CurrentTdpWatts
     public bool UnlockThreeStagePower { get; set; } = false;
     public int SlowPptWatts { get; set; } = 45;
     public int FastPptWatts { get; set; } = 50;
@@ -51,6 +55,13 @@ public sealed class AppSettings
     public int ManualFanPercent { get; set; } = 55;
     public string ActiveFanCurveId { get; set; } = "linear_60";
     public List<FanCurveProfile> FanCurves { get; set; } = FanCurveEvaluator.CreateDefaultCurves();
+
+    // Steady & Eco Mode (Zero-Hook Frame Stability & Peripheral Power Sanitizer)
+    public string SteadyEcoMode { get; set; } = "off"; // "off" | "auto" | "always"
+    public bool SteadyEcoCpuEnabled { get; set; } = true;
+    public bool SteadyEcoBackgroundEnabled { get; set; } = true;
+    public bool SteadyEcoPeripheralEnabled { get; set; } = true;
+    public int SteadyEcoCpuEpp { get; set; } = 70;
 
     // Native Click-Through Overlay HUD
     public int OverlayLevel { get; set; } = 0; // 0=off, 1..4

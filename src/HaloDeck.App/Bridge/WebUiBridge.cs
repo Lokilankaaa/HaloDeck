@@ -5,12 +5,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Threading;
 using HaloDeck.App.Native;
+using HaloDeck.Core.Analysis;
 using HaloDeck.Core.Components;
 using HaloDeck.Core.Config;
 using HaloDeck.Core.Discovery;
 using HaloDeck.Core.Injection;
 using HaloDeck.Core.Models;
 using HaloDeck.Core.Process;
+using HaloDeck.Core.Services;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Win32;
@@ -33,10 +35,17 @@ public sealed class WebUiBridge : IDisposable
     private readonly BackgroundAutoInjector _backgroundAutoInjector;
     private readonly InputHubService _inputHub;
     private readonly Dispatcher _dispatcher;
+    private static readonly bool IsVerifyOrCaptureCliRun = Environment.GetCommandLineArgs()
+        .Any(a => a.StartsWith("--verify-", StringComparison.OrdinalIgnoreCase) ||
+                  string.Equals(a, "--capture-docs", StringComparison.OrdinalIgnoreCase));
+
     private readonly SystemControlService _systemControl = new();
     private readonly GpdControllerService _gpdController = new();
     private readonly HandheldToolboxService _toolbox = new();
     private readonly GameXInputIsolator _xinputIsolator = new();
+    private readonly PowerPeripheralOptimizer _powerOptimizer;
+    private readonly BackgroundEcoIsolator _steadyEcoIsolator = new();
+    private readonly object _steadyEcoLock = new();
 
     private readonly List<WebView2> _registeredViews = new();
     private Task<CoreWebView2Environment>? _sharedEnvTask;
@@ -48,6 +57,12 @@ public sealed class WebUiBridge : IDisposable
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
     private bool? _preProfileDynamicRefreshRate;
+    private int? _preProfileCpuMaxFreqMhz;
+    private bool _steadyEcoActive;
+    private SteadyEcoPowerOptions? _lastAppliedSteadyPowerOpts;
+    private DateTime _lastSteadyGameSeenUtc = DateTime.MinValue;
+    private DateTime _lastBackgroundIsolatePassUtc = DateTime.MinValue;
+    private int _lastSteadyIsolatedGamePid;
     private SystemControlState? _latestSystemState;
     private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
     private readonly SemaphoreSlim _brightFastGate = new(1, 1);
@@ -82,6 +97,18 @@ public sealed class WebUiBridge : IDisposable
         _inputHub = inputHub;
         _dispatcher = dispatcher;
         _settings = _settingsStore.Load();
+        _settings.UiTheme = string.Equals(_settings.UiTheme, "frost", StringComparison.OrdinalIgnoreCase) ? "frost" : "aurora";
+        _settings.UiLayout = string.Equals(_settings.UiLayout, "cockpit", StringComparison.OrdinalIgnoreCase) ? "cockpit" : "bento";
+        if (IsVerifyOrCaptureCliRun)
+        {
+            string verifyBackup = Path.Combine(Path.GetTempPath(), $"halodeck_verify_steady_{Environment.ProcessId}.json");
+            _powerOptimizer = new PowerPeripheralOptimizer(new VerifyMemoryPowerBackend(), verifyBackup);
+        }
+        else
+        {
+            _powerOptimizer = new PowerPeripheralOptimizer();
+            _powerOptimizer.RecoverIfStaleBackupExists();
+        }
 
         _inputHub.GamepadCountChanged += count =>
             BroadcastEvent("gamepadStatus", new { connectedCount = count });
@@ -99,7 +126,7 @@ public sealed class WebUiBridge : IDisposable
     public AppSettings Settings => _settings;
     public IReadOnlyList<GameEntry> CachedGames => _cachedGames;
     public GameEntry? RunningGame => _runningGame;
-    public SystemControlState LatestSystemState => _latestSystemState ?? (_latestSystemState = _systemControl.GetState());
+    public SystemControlState LatestSystemState => _latestSystemState ?? (_latestSystemState = EnrichSystemState(_systemControl.GetState()));
     public int ResumeAllFrozenGames() => _toolbox.ResumeAllFrozenProcesses();
     public bool SuppressHardwareCleanupOnDispose { get; set; }
 
@@ -134,6 +161,12 @@ public sealed class WebUiBridge : IDisposable
         FlushPendingSettingsSave();
         try
         {
+            if (!SuppressHardwareCleanupOnDispose || _steadyEcoActive)
+            {
+                _steadyEcoIsolator.Dispose();
+                _powerOptimizer.Dispose();
+            }
+
             if (!SuppressHardwareCleanupOnDispose && _settings.FanMode != "auto")
             {
                 var st = _systemControl.HardwareClient.GetStatus();
@@ -155,6 +188,10 @@ public sealed class WebUiBridge : IDisposable
     {
         _cachedGames = await _libraryService.ScanAllAsync(_settings.ExcludedGameIds).ConfigureAwait(false);
         _runningGame = _runningTracker.Poll(_cachedGames);
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            UpdateSteadyEcoAutomation(_runningGame, allowAutoToast: false);
+        }
         _ = RefreshComponentsCatalogSilentAsync();
     }
 
@@ -230,7 +267,15 @@ public sealed class WebUiBridge : IDisposable
                        updatedRunning?.Injection.IsInjected != _runningGame?.Injection.IsInjected;
         _runningGame = updatedRunning;
 
-        var sys = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
+        bool prevSteadyActive = _steadyEcoActive;
+        int prevIsolated = _steadyEcoIsolator.IsolatedCount;
+        UpdateSteadyEcoAutomation(updatedRunning, allowAutoToast: true);
+        if (_steadyEcoActive != prevSteadyActive || _steadyEcoIsolator.IsolatedCount != prevIsolated)
+        {
+            changed = true;
+        }
+
+        var sys = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
         _latestSystemState = sys;
 
         // Fan curve temperature heartbeat when daemon is online & using active curve mode
@@ -271,7 +316,7 @@ public sealed class WebUiBridge : IDisposable
 
     public SystemControlState PushSystemTelemetryTick()
     {
-        var sys = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
+        var sys = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
         _latestSystemState = sys;
         BroadcastEvent("systemTelemetry", sys);
         return sys;
@@ -324,15 +369,20 @@ public sealed class WebUiBridge : IDisposable
         {
             if (_appliedProfileGameId is not null && runningId is null)
             {
-                // Exiting game: restore pre-game Hz (preserving DRR if it was active) and global/power-linked TDP
+                // Exiting game: restore pre-game Hz (preserving DRR if it was active), CPU cap, and global/power-linked TDP
                 bool restoreDyn = _preProfileDynamicRefreshRate ?? false;
                 if (_preProfileRefreshRateHz is { } restoreHz &&
                     (sys.RefreshRateHz != restoreHz || sys.IsDynamicRefreshRate != restoreDyn))
                 {
                     try { _systemControl.SetRefreshRate(restoreHz, restoreDyn); } catch { }
                 }
+                if (_preProfileCpuMaxFreqMhz is { } restoreMhz && sys.CpuMaxFreqMhz != restoreMhz)
+                {
+                    try { _systemControl.SetCpuMaxFreqMhz(restoreMhz); } catch { }
+                }
                 _preProfileRefreshRateHz = null;
                 _preProfileDynamicRefreshRate = null;
+                _preProfileCpuMaxFreqMhz = null;
                 _appliedProfileGameId = null;
 
                 int fallbackWatts = _settings.PowerLinkageEnabled
@@ -340,7 +390,11 @@ public sealed class WebUiBridge : IDisposable
                     : _settings.CurrentTdpWatts;
                 if (sys.HardwareService.ServiceRunning)
                 {
-                    _systemControl.HardwareClient.SetTdp(fallbackWatts);
+                    int slowFallback = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : fallbackWatts;
+                    int fastFallback = _settings.UnlockThreeStagePower
+                        ? _settings.FastPptWatts
+                        : (_settings.FlatPowerLock ? fallbackWatts : Math.Min(140, fallbackWatts + 2));
+                    _systemControl.HardwareClient.SetTdp(fallbackWatts, slowFallback, fastFallback);
                 }
             }
             else if (runningId is not null &&
@@ -349,19 +403,31 @@ public sealed class WebUiBridge : IDisposable
             {
                 _preProfileRefreshRateHz ??= sys.RefreshRateHz;
                 _preProfileDynamicRefreshRate ??= sys.IsDynamicRefreshRate;
+                _preProfileCpuMaxFreqMhz ??= _settings.CpuMaxFreqMhz;
                 _appliedProfileGameId = runningId;
-                if (prof.RefreshRateHz > 0 && sys.RefreshRateHz != prof.RefreshRateHz)
+                if (prof.RefreshRateHz == -1 && sys.DynamicRefreshSupported && !sys.IsDynamicRefreshRate)
                 {
-                    try { _systemControl.SetRefreshRate(prof.RefreshRateHz); } catch { }
+                    try { _systemControl.SetRefreshRate(sys.DynamicCeilingHz > 0 ? sys.DynamicCeilingHz : 120, true); } catch { }
+                }
+                else if (prof.RefreshRateHz > 0 && (sys.RefreshRateHz != prof.RefreshRateHz || sys.IsDynamicRefreshRate))
+                {
+                    try { _systemControl.SetRefreshRate(prof.RefreshRateHz, false); } catch { }
+                }
+                if (prof.CpuMaxFreqMhz >= 1600 && sys.CpuMaxFreqMhz != prof.CpuMaxFreqMhz)
+                {
+                    try { _systemControl.SetCpuMaxFreqMhz(prof.CpuMaxFreqMhz); } catch { }
                 }
                 if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 8 and <= 120)
                 {
-                    _systemControl.HardwareClient.SetTdp(prof.TdpWatts);
+                    int fastProf = _settings.FlatPowerLock ? prof.TdpWatts : Math.Min(140, prof.TdpWatts + 2);
+                    _systemControl.HardwareClient.SetTdp(prof.TdpWatts, prof.TdpWatts, fastProf);
                 }
+                string hzTag = prof.RefreshRateHz == -1 ? " · 动态Hz" : (prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "");
+                string cpuTag = prof.CpuMaxFreqMhz >= 1600 ? $" · 限{(prof.CpuMaxFreqMhz / 1000.0):F1}G" : "";
                 BroadcastEvent("toast", new
                 {
                     kind = "info",
-                    message = $"已应用《{running!.Title}》专属性能档：{prof.TdpWatts}W{(prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "")}"
+                    message = $"已应用《{running!.Title}》专属档：{prof.TdpWatts}W{hzTag}{cpuTag}"
                 });
             }
             else
@@ -503,6 +569,10 @@ public sealed class WebUiBridge : IDisposable
                 "getGpdController" => await Task.Run(() => _gpdController.ReadConfig(payload.TryGetProperty("forceRefresh", out var fr) && fr.GetBoolean())),
                 "saveGpdController" => await SaveGpdControllerAsync(payload),
                 "saveGamePerfProfile" => SaveGamePerfProfile(payload),
+                "setSteadyEco" => await SetSteadyEcoAsync(payload),
+                "toggleOfflineWifi" => await ToggleOfflineWifiAsync(payload),
+                "setUiTheme" => SetUiTheme(payload),
+                "setUiLayout" => SetUiLayout(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -523,7 +593,7 @@ public sealed class WebUiBridge : IDisposable
     private object BuildSnapshot()
     {
         var activeGame = _runningGame ?? _cachedGames.FirstOrDefault();
-        var sysState = _systemControl.GetState(targetPid: ResolveTargetRenderPid());
+        var sysState = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
         _latestSystemState = sysState;
         return new
         {
@@ -961,6 +1031,7 @@ public sealed class WebUiBridge : IDisposable
             ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
         }
 
+        UpdateSteadyEcoAutomation(_runningGame, allowAutoToast: false);
         BroadcastStateSnapshot();
         return _settings;
     }
@@ -1125,6 +1196,7 @@ public sealed class WebUiBridge : IDisposable
 
     private SystemControlState BroadcastSystemState(SystemControlState updated)
     {
+        EnrichSystemState(updated);
         _latestSystemState = updated;
         BroadcastEvent("systemTelemetry", updated);
         return updated;
@@ -1132,9 +1204,271 @@ public sealed class WebUiBridge : IDisposable
 
     private SystemControlState RefreshAndCacheSystemState()
     {
-        var st = _systemControl.GetState(includeHardwareRefresh: true);
+        var st = EnrichSystemState(_systemControl.GetState(includeHardwareRefresh: true));
         _latestSystemState = st;
         return st;
+    }
+
+    private SystemControlState EnrichSystemState(SystemControlState state)
+    {
+        state.SteadyEcoActive = _steadyEcoActive;
+        state.IsolatedProcessCount = _steadyEcoIsolator.IsolatedCount;
+        var (wifiSupported, wifiOff) = _toolbox.GetWifiRadioStatus(forceRefresh: false);
+        state.WifiRadioSupported = wifiSupported;
+        state.WifiRadioOff = wifiOff;
+        return state;
+    }
+
+    private async Task<object> SetSteadyEcoAsync(JsonElement payload)
+    {
+        if (payload.TryGetProperty("mode", out var mProp) && mProp.ValueKind == JsonValueKind.String)
+        {
+            string rawMode = (mProp.GetString() ?? "off").Trim().ToLowerInvariant();
+            _settings.SteadyEcoMode = rawMode is "auto" or "always" ? rawMode : "off";
+        }
+
+        if (payload.TryGetProperty("cpuEnabled", out var cpuProp) && cpuProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _settings.SteadyEcoCpuEnabled = cpuProp.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("backgroundEnabled", out var bgProp) && bgProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _settings.SteadyEcoBackgroundEnabled = bgProp.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("peripheralEnabled", out var perProp) && perProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _settings.SteadyEcoPeripheralEnabled = perProp.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("cpuEpp", out var eppProp) && eppProp.ValueKind == JsonValueKind.Number)
+        {
+            _settings.SteadyEcoCpuEpp = Math.Clamp(eppProp.GetInt32(), 50, 90);
+        }
+
+        _settingsStore.Save(_settings);
+
+        await Task.Run(() => UpdateSteadyEcoAutomation(_runningGame, allowAutoToast: false, forceImmediate: true)).ConfigureAwait(false);
+        _systemControl.InvalidatePowerSchemeCache();
+
+        var sys = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
+        _latestSystemState = sys;
+        BroadcastStateSnapshot();
+
+        string statusMsg = _settings.SteadyEcoMode switch
+        {
+            "always" => _steadyEcoActive
+                ? $"已常驻启用稳帧净空模式（净空 {_steadyEcoIsolator.IsolatedCount} 个后台进程 · EPP {_settings.SteadyEcoCpuEpp}）"
+                : "稳帧净空已设为常驻（请至少勾选一项子优化）",
+            "auto" => _steadyEcoActive
+                ? $"稳帧净空已随当前游戏生效（净空 {_steadyEcoIsolator.IsolatedCount} 个后台进程）"
+                : "已开启「随游戏自动」：检测到游戏启动自动稳帧降耗，退游自动还原",
+            _ => "已关闭稳帧净空模式，系统电源与后台调度已全部还原默认"
+        };
+
+        return new
+        {
+            ok = true,
+            settings = _settings,
+            systemControl = sys,
+            steadyEcoActive = _steadyEcoActive,
+            isolatedProcessCount = _steadyEcoIsolator.IsolatedCount,
+            message = statusMsg
+        };
+    }
+
+    private object SetUiTheme(JsonElement payload)
+    {
+        string raw = payload.TryGetProperty("theme", out var tp) ? (tp.GetString() ?? "aurora") : "aurora";
+        string normalized = string.Equals(raw.Trim(), "frost", StringComparison.OrdinalIgnoreCase) ? "frost" : "aurora";
+        _settings.UiTheme = normalized;
+        if (payload.TryGetProperty("layout", out var lp) && lp.ValueKind == JsonValueKind.String)
+        {
+            _settings.UiLayout = string.Equals(lp.GetString()?.Trim(), "cockpit", StringComparison.OrdinalIgnoreCase) ? "cockpit" : "bento";
+        }
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new { ok = true, theme = normalized, layout = _settings.UiLayout };
+    }
+
+    private object SetUiLayout(JsonElement payload)
+    {
+        string raw = payload.TryGetProperty("layout", out var lp) ? (lp.GetString() ?? "bento") : "bento";
+        string normalized = string.Equals(raw.Trim(), "cockpit", StringComparison.OrdinalIgnoreCase) ? "cockpit" : "bento";
+        _settings.UiLayout = normalized;
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new { ok = true, layout = normalized };
+    }
+
+    private async Task<object> ToggleOfflineWifiAsync(JsonElement payload)
+    {
+        bool? targetOff = payload.ValueKind == JsonValueKind.Object &&
+                          payload.TryGetProperty("radioOff", out var ro) &&
+                          ro.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? ro.GetBoolean()
+            : null;
+
+        string msg = await Task.Run(() => _toolbox.ToggleOfflineWifi(targetOff)).ConfigureAwait(false);
+        var (supported, isOff) = _toolbox.GetWifiRadioStatus(forceRefresh: true);
+        var sys = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
+        _latestSystemState = sys;
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            wifiSupported = supported,
+            wifiRadioOff = isOff,
+            message = msg,
+            systemControl = sys
+        };
+    }
+
+    private void UpdateSteadyEcoAutomation(GameEntry? running, bool allowAutoToast, bool forceImmediate = false)
+    {
+        lock (_steadyEcoLock)
+        {
+            string mode = (_settings.SteadyEcoMode ?? "off").Trim().ToLowerInvariant();
+            bool anySubEnabled = _settings.SteadyEcoCpuEnabled ||
+                                 _settings.SteadyEcoBackgroundEnabled ||
+                                 _settings.SteadyEcoPeripheralEnabled;
+
+            bool gameRunningNow = running is { IsCurrentlyRunning: true };
+            if (gameRunningNow)
+            {
+                _lastSteadyGameSeenUtc = DateTime.UtcNow;
+            }
+
+            bool wantActive = false;
+            if (anySubEnabled)
+            {
+                if (mode == "always")
+                {
+                    wantActive = true;
+                }
+                else if (mode == "auto")
+                {
+                    if (gameRunningNow)
+                    {
+                        wantActive = true;
+                    }
+                    else if (!forceImmediate &&
+                             _steadyEcoActive &&
+                             (DateTime.UtcNow - _lastSteadyGameSeenUtc) < TimeSpan.FromSeconds(3.2))
+                    {
+                        // 3.2s debounce prevents rapid rollback/re-apply during launcher-to-engine handoffs
+                        wantActive = true;
+                    }
+                }
+            }
+
+            if (!wantActive)
+            {
+                if (_steadyEcoActive || _powerOptimizer.IsApplied || _steadyEcoIsolator.IsolatedCount > 0)
+                {
+                    bool wasActive = _steadyEcoActive;
+                    _steadyEcoIsolator.RestoreAll();
+                    _powerOptimizer.Restore();
+                    _systemControl.InvalidatePowerSchemeCache();
+                    _steadyEcoActive = false;
+                    _lastAppliedSteadyPowerOpts = null;
+                    _lastSteadyIsolatedGamePid = 0;
+
+                    if (wasActive && allowAutoToast && mode == "auto")
+                    {
+                        BroadcastEvent("toast", new
+                        {
+                            kind = "info",
+                            message = "已退出游戏 · 稳帧净空已自动还原系统默认策略"
+                        });
+                    }
+                }
+                return;
+            }
+
+            var topo = CpuTopologyInspector.GetCurrent();
+            bool isOnlineAntiCheat = gameRunningNow &&
+                                     running?.AntiCheat is { RiskLevel: not AntiCheatRiskLevel.None };
+
+            var powerOpts = new SteadyEcoPowerOptions(
+                EnableCpuCoreEco: _settings.SteadyEcoCpuEnabled,
+                EnablePeripheralEco: _settings.SteadyEcoPeripheralEnabled,
+                CpuEppIndex: Math.Clamp(_settings.SteadyEcoCpuEpp, 50, 90),
+                TopologyKind: topo.Kind,
+                IsOnlineAntiCheatGame: isOnlineAntiCheat);
+
+            bool newlyActivated = !_steadyEcoActive;
+            if (newlyActivated || forceImmediate || !Equals(powerOpts, _lastAppliedSteadyPowerOpts))
+            {
+                _powerOptimizer.Apply(powerOpts);
+                _systemControl.InvalidatePowerSchemeCache();
+                _lastAppliedSteadyPowerOpts = powerOpts;
+            }
+
+            int activePid = gameRunningNow ? (running?.RunningPid ?? 0) : 0;
+            if (_settings.SteadyEcoBackgroundEnabled && !IsVerifyOrCaptureCliRun)
+            {
+                bool duePass = newlyActivated ||
+                               forceImmediate ||
+                               activePid != _lastSteadyIsolatedGamePid ||
+                               (DateTime.UtcNow - _lastBackgroundIsolatePassUtc) >= TimeSpan.FromSeconds(15);
+                if (duePass)
+                {
+                    _steadyEcoIsolator.ApplyPass(
+                        topo.BackgroundCpuSetIds,
+                        activePid,
+                        running?.InstallDirectory,
+                        running?.TargetRenderDirectory);
+                    _lastBackgroundIsolatePassUtc = DateTime.UtcNow;
+                    _lastSteadyIsolatedGamePid = activePid;
+                }
+            }
+            else if (!_settings.SteadyEcoBackgroundEnabled && _steadyEcoIsolator.IsolatedCount > 0)
+            {
+                _steadyEcoIsolator.RestoreAll();
+            }
+
+            _steadyEcoActive = true;
+
+            if (newlyActivated && allowAutoToast && mode == "auto" && gameRunningNow)
+            {
+                BroadcastEvent("toast", new
+                {
+                    kind = "info",
+                    message = $"已随《{running!.Title}》开启稳帧净空 · 周边省电与净空隔离生效"
+                });
+            }
+        }
+    }
+
+    private sealed class VerifyMemoryPowerBackend : IPowerSchemeBackend
+    {
+        private readonly Guid _scheme = new("381b4222-f694-41f0-9685-ff5bb260df2e");
+        private readonly Dictionary<(Guid, Guid), (uint Ac, uint Dc)> _values = new();
+
+        public Guid GetActiveScheme() => _scheme;
+
+        public bool TryReadAcDcValues(Guid scheme, Guid subGroup, Guid setting, out uint acValue, out uint dcValue)
+        {
+            if (_values.TryGetValue((subGroup, setting), out var pair))
+            {
+                acValue = pair.Ac;
+                dcValue = pair.Dc;
+                return true;
+            }
+            acValue = 50u;
+            dcValue = 50u;
+            return true;
+        }
+
+        public bool TryWriteAcDcValues(Guid scheme, Guid subGroup, Guid setting, uint acValue, uint dcValue)
+        {
+            _values[(subGroup, setting)] = (acValue, dcValue);
+            return true;
+        }
+
+        public bool ActivateScheme(Guid scheme) => true;
     }
 
     private object SetCpuMaxFreq(JsonElement payload)
@@ -1222,6 +1556,11 @@ public sealed class WebUiBridge : IDisposable
             _settings.UnlockThreeStagePower = ulProp.GetBoolean();
         }
 
+        if (payload.TryGetProperty("flatPowerLock", out var flatProp) && flatProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _settings.FlatPowerLock = flatProp.GetBoolean();
+        }
+
         if (_settings.UnlockThreeStagePower)
         {
             if (payload.TryGetProperty("slowWatts", out var sp) && sp.ValueKind == JsonValueKind.Number)
@@ -1236,7 +1575,7 @@ public sealed class WebUiBridge : IDisposable
         else
         {
             _settings.SlowPptWatts = watts;
-            _settings.FastPptWatts = Math.Min(140, watts + 2);
+            _settings.FastPptWatts = _settings.FlatPowerLock ? watts : Math.Min(140, watts + 2);
         }
 
         ScheduleSaveSettings();
@@ -1254,7 +1593,9 @@ public sealed class WebUiBridge : IDisposable
             if (hw.ServiceRunning)
             {
                 int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
-                int? fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, watts + 2);
+                int? fastArg = _settings.UnlockThreeStagePower
+                    ? _settings.FastPptWatts
+                    : (_settings.FlatPowerLock ? watts : Math.Min(140, watts + 2));
                 var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg)).ConfigureAwait(false);
                 if (!ok)
                 {
@@ -1341,6 +1682,16 @@ public sealed class WebUiBridge : IDisposable
             }
         }
 
+        if (payload.TryGetProperty("flatPowerLock", out var flProp) && flProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _settings.FlatPowerLock = flProp.GetBoolean();
+            if (_settings.FlatPowerLock && !_settings.UnlockThreeStagePower)
+            {
+                _settings.SlowPptWatts = _settings.CurrentTdpWatts;
+                _settings.FastPptWatts = _settings.CurrentTdpWatts;
+            }
+        }
+
         if (payload.TryGetProperty("unlockThreeStagePower", out var ulProp))
         {
             _settings.UnlockThreeStagePower = ulProp.GetBoolean();
@@ -1363,7 +1714,9 @@ public sealed class WebUiBridge : IDisposable
             if (hw.ServiceRunning)
             {
                 int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-                int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
+                int fastArg = _settings.UnlockThreeStagePower
+                    ? _settings.FastPptWatts
+                    : (_settings.FlatPowerLock ? _settings.CurrentTdpWatts : Math.Min(140, _settings.CurrentTdpWatts + 2));
                 var (ok, err, _) = _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg);
                 if (!ok)
                 {
@@ -1526,6 +1879,8 @@ public sealed class WebUiBridge : IDisposable
     private object ReloadSettingsJson()
     {
         _settings = _settingsStore.Load();
+        _settings.UiTheme = string.Equals(_settings.UiTheme, "frost", StringComparison.OrdinalIgnoreCase) ? "frost" : "aurora";
+        _settings.UiLayout = string.Equals(_settings.UiLayout, "cockpit", StringComparison.OrdinalIgnoreCase) ? "cockpit" : "bento";
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
@@ -1791,8 +2146,9 @@ public sealed class WebUiBridge : IDisposable
             GameId = gameId,
             GameName = payload.TryGetProperty("gameName", out var np) ? (np.GetString() ?? gameId) : gameId,
             Enabled = payload.TryGetProperty("enabled", out var ep) && ep.GetBoolean(),
-            TdpWatts = payload.TryGetProperty("tdpWatts", out var tp) ? Math.Clamp(tp.GetInt32(), 8, 120) : 40,
-            RefreshRateHz = payload.TryGetProperty("refreshRateHz", out var hp) ? hp.GetInt32() : 0
+            TdpWatts = payload.TryGetProperty("tdpWatts", out var tp) ? Math.Clamp(tp.GetInt32(), 8, 120) : 25,
+            RefreshRateHz = payload.TryGetProperty("refreshRateHz", out var hp) ? hp.GetInt32() : 0,
+            CpuMaxFreqMhz = payload.TryGetProperty("cpuMaxFreqMhz", out var cp) ? (cp.GetInt32() <= 0 ? 0 : Math.Clamp(cp.GetInt32(), 1600, 5500)) : 0
         };
 
         _settings.PerGameProfiles[gameId] = profile;
@@ -1803,14 +2159,23 @@ public sealed class WebUiBridge : IDisposable
             profile.Enabled)
         {
             var curSys = _systemControl.GetState(includeHardwareRefresh: false);
-            if (profile.RefreshRateHz > 0 && curSys.RefreshRateHz != profile.RefreshRateHz)
+            if (profile.RefreshRateHz == -1 && curSys.DynamicRefreshSupported && !curSys.IsDynamicRefreshRate)
             {
-                try { _systemControl.SetRefreshRate(profile.RefreshRateHz); } catch { }
+                try { _systemControl.SetRefreshRate(curSys.DynamicCeilingHz > 0 ? curSys.DynamicCeilingHz : 120, true); } catch { }
+            }
+            else if (profile.RefreshRateHz > 0 && (curSys.RefreshRateHz != profile.RefreshRateHz || curSys.IsDynamicRefreshRate))
+            {
+                try { _systemControl.SetRefreshRate(profile.RefreshRateHz, false); } catch { }
+            }
+            if (profile.CpuMaxFreqMhz >= 1600 && curSys.CpuMaxFreqMhz != profile.CpuMaxFreqMhz)
+            {
+                try { _systemControl.SetCpuMaxFreqMhz(profile.CpuMaxFreqMhz); } catch { }
             }
             var hw = _systemControl.HardwareClient.GetStatus();
             if (hw.ServiceRunning)
             {
-                _systemControl.HardwareClient.SetTdp(profile.TdpWatts);
+                int fastW = _settings.FlatPowerLock ? profile.TdpWatts : Math.Min(140, profile.TdpWatts + 2);
+                _systemControl.HardwareClient.SetTdp(profile.TdpWatts, profile.TdpWatts, fastW);
             }
         }
 

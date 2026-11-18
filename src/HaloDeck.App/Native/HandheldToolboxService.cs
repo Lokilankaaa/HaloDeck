@@ -91,6 +91,9 @@ public sealed class HandheldToolboxService : IDisposable
                 return resumed > 0 ? $"已从游戏冰箱解冻恢复 {resumed} 个进程" : "当前没有处于冻结状态的游戏进程";
             }
 
+            case "toggle_offline_wifi":
+                return ToggleOfflineWifi();
+
             default:
                 throw new ArgumentException($"未知快捷工具操作: {action}", nameof(action));
         }
@@ -754,8 +757,277 @@ public sealed class HandheldToolboxService : IDisposable
         done.Wait(timeoutMs);
     }
 
+    private readonly object _wifiLock = new();
+    private DateTime _lastWifiQueryUtc = DateTime.MinValue;
+    private bool _cachedWifiSupported;
+    private bool _cachedWifiRadioOff;
+    private bool _wifiSuspendedBySession;
+
+    public (bool Supported, bool IsRadioOff) GetWifiRadioStatus(bool forceRefresh = false)
+    {
+        lock (_wifiLock)
+        {
+            if (!forceRefresh && (DateTime.UtcNow - _lastWifiQueryUtc) < TimeSpan.FromSeconds(3))
+            {
+                return (_cachedWifiSupported, _cachedWifiRadioOff);
+            }
+
+            bool supported = false;
+            bool anyOn = false;
+            bool anyFound = false;
+
+            try
+            {
+                if (WlanOpenHandle(2u, 0, out _, out nint hClient) == 0 && hClient != 0)
+                {
+                    try
+                    {
+                        if (WlanEnumInterfaces(hClient, 0, out nint pIfList) == 0 && pIfList != 0)
+                        {
+                            try
+                            {
+                                int count = Marshal.ReadInt32(pIfList, 0);
+                                int itemSize = Marshal.SizeOf<WLAN_INTERFACE_INFO>();
+                                for (int i = 0; i < count; i++)
+                                {
+                                    nint itemPtr = pIfList + 8 + (i * itemSize);
+                                    var info = Marshal.PtrToStructure<WLAN_INTERFACE_INFO>(itemPtr);
+                                    Guid ifGuid = info.InterfaceGuid;
+                                    if (WlanQueryInterface(hClient, ref ifGuid, WlanIntfOpcodeRadioState, 0, out uint dataSize, out nint pData, out _) == 0 &&
+                                        pData != 0)
+                                    {
+                                        try
+                                        {
+                                            if (dataSize >= 16)
+                                            {
+                                                int numPhys = Math.Clamp(Marshal.ReadInt32(pData, 0), 1, 16);
+                                                anyFound = true;
+                                                for (int p = 0; p < numPhys; p++)
+                                                {
+                                                    int swState = Marshal.ReadInt32(pData, 4 + (p * 12) + 4);
+                                                    if (swState == Dot11RadioStateOn)
+                                                    {
+                                                        anyOn = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        finally
+                                        {
+                                            WlanFreeMemory(pData);
+                                        }
+                                    }
+                                }
+                            }
+                            finally
+                            {
+                                WlanFreeMemory(pIfList);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        WlanCloseHandle(hClient, 0);
+                    }
+                }
+            }
+            catch
+            {
+                // WLAN service disabled or unavailable
+            }
+
+            supported = anyFound;
+            _cachedWifiSupported = supported;
+            _cachedWifiRadioOff = supported && !anyOn;
+            _lastWifiQueryUtc = DateTime.UtcNow;
+            if (!_cachedWifiRadioOff)
+            {
+                _wifiSuspendedBySession = false;
+            }
+            return (_cachedWifiSupported, _cachedWifiRadioOff);
+        }
+    }
+
+    public string ToggleOfflineWifi(bool? targetRadioOff = null)
+    {
+        var (supported, currentlyOff) = GetWifiRadioStatus(forceRefresh: true);
+        if (!supported)
+        {
+            throw new InvalidOperationException("未检测到受控的内置 Wi-Fi 无线网卡，或 WLAN AutoConfig 服务未运行。");
+        }
+
+        bool turnOff = targetRadioOff ?? !currentlyOff;
+        SetWifiSoftwareRadioState(turnOff);
+
+        lock (_wifiLock)
+        {
+            _cachedWifiRadioOff = turnOff;
+            _lastWifiQueryUtc = DateTime.UtcNow;
+            _wifiSuspendedBySession = turnOff;
+        }
+
+        return turnOff
+            ? "已挂起 Wi-Fi 射频（单机离线省电生效，蓝牙手柄/耳机保持正常连接）"
+            : "已重新唤醒 Wi-Fi 无线网络";
+    }
+
+    private static void SetWifiSoftwareRadioState(bool turnOff)
+    {
+        uint rcOpen = WlanOpenHandle(2u, 0, out _, out nint hClient);
+        if (rcOpen != 0 || hClient == 0)
+        {
+            throw new InvalidOperationException($"打开 WLAN 控制器失败 (错误码 {rcOpen})。");
+        }
+
+        try
+        {
+            uint rcEnum = WlanEnumInterfaces(hClient, 0, out nint pIfList);
+            if (rcEnum != 0 || pIfList == 0)
+            {
+                throw new InvalidOperationException($"枚举 Wi-Fi 接口失败 (错误码 {rcEnum})。");
+            }
+
+            try
+            {
+                int count = Marshal.ReadInt32(pIfList, 0);
+                if (count <= 0)
+                {
+                    throw new InvalidOperationException("当前未发现可用的 Wi-Fi 无线接口。");
+                }
+
+                bool anySucceeded = false;
+                uint lastErr = 0;
+                int itemSize = Marshal.SizeOf<WLAN_INTERFACE_INFO>();
+                for (int i = 0; i < count; i++)
+                {
+                    nint itemPtr = pIfList + 8 + (i * itemSize);
+                    var info = Marshal.PtrToStructure<WLAN_INTERFACE_INFO>(itemPtr);
+                    Guid ifGuid = info.InterfaceGuid;
+
+                    int numPhys = 1;
+                    if (WlanQueryInterface(hClient, ref ifGuid, WlanIntfOpcodeRadioState, 0, out uint dataSize, out nint pData, out _) == 0 && pData != 0)
+                    {
+                        try
+                        {
+                            if (dataSize >= 16)
+                            {
+                                numPhys = Math.Clamp(Marshal.ReadInt32(pData, 0), 1, 16);
+                            }
+                        }
+                        finally
+                        {
+                            WlanFreeMemory(pData);
+                        }
+                    }
+
+                    for (uint phyIdx = 0; phyIdx < (uint)numPhys; phyIdx++)
+                    {
+                        var state = new WLAN_PHY_RADIO_STATE
+                        {
+                            dwPhyIndex = phyIdx,
+                            dot11SoftwareRadioState = turnOff ? Dot11RadioStateOff : Dot11RadioStateOn,
+                            dot11HardwareRadioState = Dot11RadioStateOn
+                        };
+
+                        uint rcSet = WlanSetInterface(
+                            hClient,
+                            ref ifGuid,
+                            WlanIntfOpcodeRadioState,
+                            (uint)Marshal.SizeOf<WLAN_PHY_RADIO_STATE>(),
+                            ref state,
+                            0);
+                        if (rcSet == 0)
+                        {
+                            anySucceeded = true;
+                        }
+                        else
+                        {
+                            lastErr = rcSet;
+                        }
+                    }
+                }
+
+                if (!anySucceeded)
+                {
+                    throw new InvalidOperationException($"切换 Wi-Fi 射频状态失败 (Win32={lastErr})。");
+                }
+            }
+            finally
+            {
+                WlanFreeMemory(pIfList);
+            }
+        }
+        finally
+        {
+            WlanCloseHandle(hClient, 0);
+        }
+    }
+
+    private const int WlanIntfOpcodeRadioState = 4;
+    private const int Dot11RadioStateOn = 1;
+    private const int Dot11RadioStateOff = 2;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WLAN_INTERFACE_INFO
+    {
+        public Guid InterfaceGuid;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string strInterfaceDescription;
+        public int isState;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WLAN_PHY_RADIO_STATE
+    {
+        public uint dwPhyIndex;
+        public int dot11SoftwareRadioState;
+        public int dot11HardwareRadioState;
+    }
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanOpenHandle(uint dwClientVersion, nint pReserved, out uint pdwNegotiatedVersion, out nint phClientHandle);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanCloseHandle(nint hClientHandle, nint pReserved);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanEnumInterfaces(nint hClientHandle, nint pReserved, out nint ppInterfaceList);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanQueryInterface(
+        nint hClientHandle,
+        ref Guid pInterfaceGuid,
+        int OpCode,
+        nint pReserved,
+        out uint pdwDataSize,
+        out nint ppData,
+        out int pWlanOpcodeValueType);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanSetInterface(
+        nint hClientHandle,
+        ref Guid pInterfaceGuid,
+        int OpCode,
+        uint dwDataSize,
+        ref WLAN_PHY_RADIO_STATE pData,
+        nint pReserved);
+
+    [DllImport("wlanapi.dll")]
+    private static extern void WlanFreeMemory(nint pMemory);
+
     public void Dispose()
     {
         ResumeAllFrozenProcesses();
+        bool restoreWifi;
+        lock (_wifiLock)
+        {
+            restoreWifi = _wifiSuspendedBySession;
+            _wifiSuspendedBySession = false;
+        }
+
+        if (restoreWifi)
+        {
+            try { SetWifiSoftwareRadioState(turnOff: false); } catch { }
+        }
     }
 }

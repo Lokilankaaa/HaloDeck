@@ -68,6 +68,7 @@ public sealed class RunningGameTracker
 
     private GameEntry? _lastActiveGame;
     private int _lastActivePid;
+    private DateTime _lastProcessScanUtc = DateTime.MinValue;
 
     public RunningGameTracker(
         Func<ForegroundProcessSnapshot?> foregroundProbe,
@@ -127,6 +128,26 @@ public sealed class RunningGameTracker
             _lastActiveGame.IsCurrentlyRunning = stillAlive;
             _lastActiveGame.RunningPid = stillAlive ? _lastActivePid : null;
             _libraryService.RefreshInjectionStatus(_lastActiveGame);
+            if (stillAlive)
+            {
+                return _lastActiveGame;
+            }
+        }
+
+        // Fallback every 2.5s: detect running library games even when HaloDeck Console/QAM, Steam, or LockScreen owns focus
+        if (libraryGames.Count > 0 && (DateTime.UtcNow - _lastProcessScanUtc) >= TimeSpan.FromSeconds(2.5))
+        {
+            _lastProcessScanUtc = DateTime.UtcNow;
+            var bgMatched = TryFindRunningLibraryGame(libraryGames, out int bgPid);
+            if (bgMatched is not null && bgPid > 4)
+            {
+                bgMatched.IsCurrentlyRunning = true;
+                bgMatched.RunningPid = bgPid;
+                _libraryService.RefreshInjectionStatus(bgMatched);
+                _lastActiveGame = bgMatched;
+                _lastActivePid = bgPid;
+                return _lastActiveGame;
+            }
         }
 
         return _lastActiveGame;
@@ -256,6 +277,106 @@ public sealed class RunningGameTracker
                lower.Contains(@"\appdata\local\programs\") ||
                lower.Contains(@"\microsoft\edge\");
     }
+
+    private static GameEntry? TryFindRunningLibraryGame(IReadOnlyList<GameEntry> libraryGames, out int matchedPid)
+    {
+        matchedPid = 0;
+        var candidateNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var g in libraryGames)
+        {
+            if (!string.IsNullOrWhiteSpace(g.MainExecutablePath))
+            {
+                string stem = Path.GetFileNameWithoutExtension(g.MainExecutablePath);
+                if (!string.IsNullOrWhiteSpace(stem) && !IgnoredProcessNames.Contains(stem))
+                {
+                    candidateNames.Add(stem);
+                }
+            }
+        }
+
+        if (candidateNames.Count == 0)
+        {
+            return null;
+        }
+
+        System.Diagnostics.Process[] procs;
+        try
+        {
+            procs = System.Diagnostics.Process.GetProcesses();
+        }
+        catch
+        {
+            return null;
+        }
+
+        try
+        {
+            foreach (var p in procs)
+            {
+                try
+                {
+                    if (p.Id <= 4 || p.Id == Environment.ProcessId) continue;
+                    string procName = p.ProcessName;
+                    if (!candidateNames.Contains(procName)) continue;
+
+                    string? fullExe = TryQueryProcessImagePath(p.Id);
+                    if (string.IsNullOrWhiteSpace(fullExe)) continue;
+
+                    var matched = MatchLibraryGame(fullExe, libraryGames);
+                    if (matched is not null)
+                    {
+                        matchedPid = p.Id;
+                        return matched;
+                    }
+                }
+                catch
+                {
+                    // Ignore exited/inaccessible process
+                }
+            }
+        }
+        finally
+        {
+            foreach (var p in procs)
+            {
+                p.Dispose();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryQueryProcessImagePath(int pid)
+    {
+        const uint ProcessQueryLimitedInformation = 0x1000;
+        nint h = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (h == 0) return null;
+        try
+        {
+            Span<char> buf = stackalloc char[1024];
+            uint size = (uint)buf.Length;
+            if (QueryFullProcessImageNameW(h, 0, ref System.Runtime.InteropServices.MemoryMarshal.GetReference(buf), ref size) && size > 0)
+            {
+                return new string(buf[..(int)size]);
+            }
+            return null;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint hObject);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageNameW(nint hProcess, uint dwFlags, ref char lpExeName, ref uint lpdwSize);
 
     private static bool IsProcessRunning(int pid)
     {

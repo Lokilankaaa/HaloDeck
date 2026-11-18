@@ -17,54 +17,62 @@ HaloDeck 面向 **GPD Win 5** 等高功耗 AMD Strix Halo Windows 掌机深度�
 
 ## 界面概览
 
-> 以下全部为纯应用窗口实拍截图，无桌面背景干扰。
+> 以下全部为纯应用窗口实拍截图，内置 **掌机大磁贴 (`Bento`) / 桌面仪表盘 (`Cockpit`)** 双结构布局与 **极光深色 (`Aurora`) / 凝霜浅色 (`Frost`)** 双配色，首页与右侧快捷侧栏 (`QAM`) 均严格保持 **一屏零纵向滚动**。
 
 ### 掌机总控台 (`HaloDeck Console`)
-
-![掌机总控主界面](docs/screenshots/console-handheld.png)
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/screenshots/console-monitor.png" alt="性能监控与穿透 HUD" /><br />
-      <sub><b>性能监控与穿透 HUD</b> · 无钩子 ETW 帧率采样与 Steam Deck 风格 0–4 档浮窗</sub>
+      <img src="docs/screenshots/console-handheld.png" alt="掌机大磁贴布局" /><br />
+      <sub><b>快捷总控 · 掌机大磁贴 (Bento)</b> · 大触控胶囊滑条、单游专属绑定与三合一模式快切</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/screenshots/console-controls.png" alt="按键与手柄编程" /><br />
-      <sub><b>按键与手柄</b> · L4/R4 组合键与录制、Win11 软键盘接管与热键映射</sub>
+      <img src="docs/screenshots/console-cockpit.png" alt="桌面仪表盘布局" /><br />
+      <sub><b>快捷总控 · 桌面仪表盘 (Cockpit)</b> · 顶部动态负载条、60s 功耗曲线与风扇温控曲线预览</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/screenshots/console-opti.png" alt="OptiScaler 超分插帧调优" /><br />
-      <sub><b>超分插帧调优</b> · FSR 4.1.2 INT8/Lite · XeSS 2.0 · XeFG / OptiFG 与 Anti-Lag 2</sub>
+      <img src="docs/screenshots/console-opti.png" alt="游戏专属档案与超分调优" /><br />
+      <sub><b>游戏与超分</b> · 单游戏专属 TDP/刷新率/次基频 + FSR 4.1.2 / XeSS 2.0 / XeFG 一站式配置</sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/screenshots/console-library.png" alt="Steam 游戏库海报墙" /><br />
       <sub><b>Steam 游戏库海报墙</b> · 多磁盘游戏识别、封面缓存、反作弊标注与一键切换</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-monitor.png" alt="硬件调校与传感器监控" /><br />
+      <sub><b>硬件与监控</b> · 双风扇 5 点 SVG 温控曲线、CPU 次基频分配与无钩子穿透 HUD</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/console-controls.png" alt="手柄背键与外观设置" /><br />
+      <sub><b>手柄与设置</b> · L4/R4 组合键与录制、Win11 软键盘接管与双布局/双配色切换</sub>
+    </td>
+  </tr>
 </table>
 
-### 440px 游戏内快捷侧栏 (`Quick Access Menu`)
+### 440px 游戏内快捷侧栏 (`Quick Access Menu` · 首屏零滚动)
 
 <table>
   <tr>
     <td width="25%" align="center">
-      <img src="docs/screenshots/qam-handheld.png" alt="QAM 掌机快调" /><br />
-      <sub><b>掌机快调</b><br />1W 步进 TDP / 风扇 / DRR</sub>
-    </td>
-    <td width="25%" align="center">
-      <img src="docs/screenshots/qam-osd.png" alt="QAM 性能浮窗" /><br />
-      <sub><b>性能浮窗</b><br />OSD 档位与 60s 曲线</sub>
-    </td>
-    <td width="25%" align="center">
-      <img src="docs/screenshots/qam-controls.png" alt="QAM 按键与软键盘" /><br />
-      <sub><b>按键与软键盘</b><br />背键方案 / TabTip / 鼠标</sub>
+      <img src="docs/screenshots/qam-handheld.png" alt="QAM 快捷总控" /><br />
+      <sub><b>快捷总控</b><br />TDP / 声光 / OSD / 游戏冰箱</sub>
     </td>
     <td width="25%" align="center">
       <img src="docs/screenshots/qam-opti.png" alt="QAM 游戏内超分" /><br />
-      <sub><b>游戏内超分</b><br />预设快切与重注入</sub>
+      <sub><b>游戏与超分</b><br />预设快切与一键重注入</sub>
+    </td>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-osd.png" alt="QAM 硬件与浮窗" /><br />
+      <sub><b>硬件与浮窗</b><br />传感器、次基频与 60s 曲线</sub>
+    </td>
+    <td width="25%" align="center">
+      <img src="docs/screenshots/qam-controls.png" alt="QAM 手柄与偏好" /><br />
+      <sub><b>手柄与偏好</b><br />背键方案 / 软键盘 / 主题</sub>
     </td>
   </tr>
 </table>
@@ -73,10 +81,10 @@ HaloDeck 面向 **GPD Win 5** 等高功耗 AMD Strix Halo Windows 掌机深度�
 
 ## 核心特性
 
-### 1. 开放功耗、风扇与 CPU 调度
-- **开放 TDP 调控 (`8W–120W`)**：支持 **1W 精细步进微调**、滑块即时数值预览与自定义功耗快捷标签；支持 **插拔电自动切换 TDP** 与 **按当前前台游戏绑定专属功耗档案**。
-- **GPD 双风扇 EC 控制**：经签名 `PawnIO` 内核驱动直写 SMU/EC 寄存器，支持 **EC 自动**、**直接百分比** 与 **四点温度安全曲线** 三种模式。
-- **CPU 睿频与频点上限**：提供关睿频 / 平衡 / 满血调度，并支持限制 CPU 最大主频以将功耗预算优先让渡给 Radeon 8060S 核显。
+### 1. 开放功耗、稳态锁、稳帧省电与双风扇温控
+- **开放 TDP 调控 (`8W–120W`) 与稳态功耗锁 (`SPL = sPPT = fPPT`)**：支持 **1W 精细步进微调**、一键锁定瞬时功耗脉冲消除抢电波动、插拔电自动切换瓦数，以及 **按单款游戏独立绑定专属 TDP + 刷新率 + CPU 限频**（启动游戏自动接管，退出恢复全局）。
+- **无钩子稳帧省电引擎 (`Steady Eco Mode`)**：零进程注入、100% 反作弊安全，支持空闲核心 CC6 深睡、后台非游戏进程收敛绑定尾核与外设闲置节能；针对常驻关闭睿频场景内置 **`2.6G / 3.0G / 3.2G` 次基频甜点限频**，在锁死 TDP 下为 Radeon 8060S 核显腾出额外功耗预算。
+- **GPD 双风扇 EC 控制**：经签名 `PawnIO` 内核驱动直写 SMU/EC 寄存器，支持 **自动静音**、**手动定速 %** 与 **5 点可编辑 SVG 温控曲线**。
 
 ### 2. 实时整机电源流与三态续航估算
 - **消除 BMS 滞后**：通过即时追踪 APU 封装功耗变化并与电池 BMS 基准滤波融合，在游戏突发负载变化时快速反映整机运行功耗。

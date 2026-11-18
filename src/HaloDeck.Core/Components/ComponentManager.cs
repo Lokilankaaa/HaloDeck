@@ -33,7 +33,7 @@ public sealed class ComponentManager
 
         _http = httpHandler is null ? new HttpClient() : new HttpClient(httpHandler);
         _http.Timeout = TimeSpan.FromMinutes(3);
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("HaloDeck/0.4.3");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("HaloDeck/0.5.0");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
 
         _components = CreateDefaultCatalog();

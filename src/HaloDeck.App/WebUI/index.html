@@ -6,7 +6,7 @@
   <title>HaloDeck · 掌机全能控制中心</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body class="mode-console">
+<body class="mode-console" data-theme="aurora" data-layout="bento">
   <!-- Dynamic Game Hero Blurred Backdrop -->
   <div id="ambientBackdrop" class="ambient-backdrop" aria-hidden="true">
     <img id="ambientHeroImg" class="ambient-hero-img is-empty" alt="" />
@@ -31,19 +31,19 @@
 
       <nav class="top-nav" aria-label="主功能导航">
         <span class="bumper-cap" title="LB 向左切换">LB</span>
-        <button class="tab-btn active" data-nav="handheld" data-focusable="true">掌机总控</button>
-        <button class="tab-btn" data-nav="monitor" data-focusable="true">性能监控</button>
-        <button class="tab-btn" data-nav="controls" data-focusable="true">按键与手柄</button>
-        <button class="tab-btn" data-nav="opti" data-focusable="true">超分插帧</button>
+        <button class="tab-btn active" data-nav="handheld" data-focusable="true">快捷总控</button>
+        <button class="tab-btn" data-nav="opti" data-focusable="true">游戏与超分</button>
+        <button class="tab-btn" data-nav="monitor" data-focusable="true">硬件与监控</button>
+        <button class="tab-btn" data-nav="controls" data-focusable="true">手柄与设置</button>
         <span class="bumper-cap" title="RB 向右切换">RB</span>
       </nav>
 
       <div class="top-actions">
-        <button id="topApuChip" class="gp-status-chip sys-top-chip" data-focusable="true" title="点击查看性能监控与 OSD">
+        <button id="topApuChip" class="gp-status-chip sys-top-chip" data-focusable="true" title="点击查看硬件精调与监控">
           <span id="topApuLabel">APU --W · --°C</span>
         </button>
 
-        <button id="topSysChip" class="gp-status-chip sys-top-chip" data-focusable="true" title="点击回到掌机总控">
+        <button id="topSysChip" class="gp-status-chip sys-top-chip" data-focusable="true" title="点击回到快捷总控">
           <span id="topSysLabel">1080p · --Hz · --%</span>
         </button>
 
@@ -56,6 +56,21 @@
           </svg>
           <span id="controllerLabel">键鼠 / 触摸</span>
         </div>
+
+        <button id="btnLayoutSwitch" class="top-pill-btn" data-focusable="true" title="切换布局风格：掌机大磁贴 / 桌面仪表盘">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="8" height="8" rx="2"></rect>
+            <rect x="13" y="3" width="8" height="5" rx="1.6"></rect>
+            <rect x="13" y="10" width="8" height="11" rx="2"></rect>
+            <rect x="3" y="13" width="8" height="8" rx="2"></rect>
+          </svg>
+          <span id="topLayoutLabel">磁贴</span>
+        </button>
+
+        <button id="btnThemeSwitch" class="top-pill-btn theme-pill-btn" data-focusable="true" title="切换深浅配色：极光深色 / 凝霜浅色">
+          <span class="theme-dot" aria-hidden="true"></span>
+          <span id="topThemeLabel">极光</span>
+        </button>
 
         <button id="btnOpenQam" class="top-pill-btn" data-focusable="true" title="打开右侧掌机快捷侧栏">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -82,32 +97,34 @@
     <!-- Primary Content Region (dynamically rendered for Console OR QAM mode) -->
     <main id="mainView" class="main-view"></main>
 
-    <!-- Right Vertical Icon Rail (visible only in QAM mode) -->
+    <!-- Right Vertical Icon Rail (visible only in QAM mode, matched to frequency order) -->
     <aside id="qamRail" class="qam-rail hidden" aria-label="侧栏页面切换">
       <span class="qam-bumper">LB</span>
       <div class="qam-rail-items">
-        <button class="qam-rail-btn active" data-qam-tab="handheld" title="掌机总控">
+        <button class="qam-rail-btn active" data-qam-tab="handheld" title="一屏快捷总控">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 14l4-4"></path>
-            <path d="M3.34 19a10 10 0 1 1 17.32 0"></path>
+            <rect x="3" y="3" width="8" height="8" rx="2.2"></rect>
+            <rect x="13" y="3" width="8" height="8" rx="2.2"></rect>
+            <rect x="3" y="13" width="8" height="8" rx="2.2"></rect>
+            <rect x="13" y="13" width="8" height="8" rx="2.2"></rect>
           </svg>
         </button>
-        <button class="qam-rail-btn" data-qam-tab="osd" title="性能监控与 OSD">
+        <button class="qam-rail-btn" data-qam-tab="opti" title="游戏专属与超分">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </button>
+        <button class="qam-rail-btn" data-qam-tab="osd" title="硬件微调与监控">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="22 12 18 12 15 20 9 4 6 12 2 12"></polyline>
           </svg>
         </button>
-        <button class="qam-rail-btn" data-qam-tab="controls" title="按键与鼠标">
+        <button class="qam-rail-btn" data-qam-tab="controls" title="手柄与系统设置">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <rect x="2" y="6" width="20" height="12" rx="4"></rect>
             <path d="M6 12h4M8 10v4"></path>
             <circle cx="15.5" cy="11" r="1"></circle>
             <circle cx="17.5" cy="13" r="1"></circle>
-          </svg>
-        </button>
-        <button class="qam-rail-btn" data-qam-tab="opti" title="OptiScaler 超分插帧">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
           </svg>
         </button>
       </div>
@@ -118,7 +135,7 @@
     <footer id="gamepadLegend" class="bottom-legend"></footer>
   </div>
 
-  <!-- Frosted Diagnostics / INI Viewer Modal -->
+  <!-- Frosted Diagnostics / INI Viewer / Back-Key Picker Modal -->
   <div id="modalBackdrop" class="modal-backdrop hidden">
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">

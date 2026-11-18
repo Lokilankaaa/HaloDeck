@@ -819,6 +819,13 @@ public partial class App : System.Windows.Application
             await PrepareCleanCaptureAsync(mainCore);
             await CapturePngAsync(mainCore, outputDir, "console-handheld.png");
 
+            await mainCore.ExecuteScriptAsync("(() => { if ((document.body.dataset.layout || 'bento') !== 'cockpit') document.getElementById('btnLayoutSwitch')?.click(); })()");
+            await Task.Delay(250);
+            await PrepareCleanCaptureAsync(mainCore);
+            await CapturePngAsync(mainCore, outputDir, "console-cockpit.png");
+            await mainCore.ExecuteScriptAsync("(() => { if ((document.body.dataset.layout || 'bento') !== 'bento') document.getElementById('btnLayoutSwitch')?.click(); })()");
+            await Task.Delay(200);
+
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"monitor\"]').click()");
             bool monReady = await WaitUntilAsync(
                 mainCore,
@@ -983,9 +990,11 @@ public partial class App : System.Windows.Application
             var mainCore = mainWindow.ConsoleWebView.CoreWebView2
                            ?? throw new InvalidOperationException("Main CoreWebView2 未初始化");
 
+            string origUiTheme = bridge.Settings.UiTheme;
+            string origUiLayout = bridge.Settings.UiLayout;
             bool handheldReady = await WaitUntilAsync(
                 mainCore,
-                "document.readyState === 'complete' && Boolean(document.querySelector('.tab-btn[data-nav=\"handheld\"].active')) && document.querySelectorAll('[data-tdp-watt]').length >= 3 && document.querySelectorAll('[data-tdp-preset]').length === 0 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('svg.fan-curve-svg').length === 1 && Boolean(document.getElementById('fanManualRange'))");
+                "document.readyState === 'complete' && Boolean(document.querySelector('.tab-btn[data-nav=\"handheld\"].active')) && document.querySelectorAll('[data-tdp-watt]').length >= 3 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('[data-osd-level]').length === 5");
             await Task.Delay(350);
 
             var workArea = SystemParameters.WorkArea;
@@ -999,34 +1008,77 @@ public partial class App : System.Windows.Application
                 workAreaHeight = Math.Round(workArea.Height, 1)
             });
 
+            // Capture all 4 (Layout x Theme) combinations on Page 1 & verify zero vertical scroll on both Bento and Cockpit
+            async Task SwitchLayoutAndThemeAsync(string layoutId, string themeId)
+            {
+                await mainCore.ExecuteScriptAsync($$"""
+                    (() => {
+                      const curL = document.body.dataset.layout || 'bento';
+                      if (curL !== '{{layoutId}}') document.getElementById('btnLayoutSwitch')?.click();
+                    })()
+                    """);
+                await Task.Delay(160);
+                await mainCore.ExecuteScriptAsync($$"""
+                    (() => {
+                      const curT = document.body.dataset.theme || 'aurora';
+                      if (curT !== '{{themeId}}') document.getElementById('btnThemeSwitch')?.click();
+                    })()
+                    """);
+                await Task.Delay(180);
+                await mainCore.ExecuteScriptAsync("document.getElementById('toastStack').innerHTML = ''; document.querySelectorAll('.gp-focused').forEach(e => e.classList.remove('gp-focused'));");
+                await Task.Delay(60);
+            }
+
+            await SwitchLayoutAndThemeAsync("bento", "aurora");
+            await CapturePngAsync(mainCore, outputDir, "v5_01_bento_aurora.png");
+
             var homeInfoJson = await mainCore.ExecuteScriptAsync("""
-                (() => ({
-                  tdpChips: document.querySelectorAll('[data-tdp-watt]').length,
-                  legacyTdpPresets: document.querySelectorAll('[data-tdp-preset]').length,
-                  fanModes: document.querySelectorAll('[data-fan-mode]').length,
-                  fanCurveSvg: document.querySelectorAll('svg.fan-curve-svg').length,
-                  hasFanSlider: Boolean(document.getElementById('fanManualRange')),
-                  hasPfSys: Boolean(document.getElementById('pfSysVal')?.textContent?.trim()),
-                  hasPfEta: Boolean(document.getElementById('pfEtaVal')?.textContent?.trim()),
-                  pfModeText: document.getElementById('pfModeBadge')?.textContent?.trim() || '',
-                  pfEtaText: document.getElementById('pfEtaVal')?.textContent?.trim() || '',
-                  hasDrrPill: Boolean(document.querySelector('[data-refresh-hz="drr"]')),
-                  activeRefreshVal: document.querySelector('[data-refresh-hz].active')?.dataset.refreshHz || '',
-                  dispRefreshSub: document.getElementById('dispRefreshSub')?.textContent?.trim() || '',
-                  hasBrightRange: Boolean(document.getElementById('brightRange')),
-                  hasVolRange: Boolean(document.getElementById('volRange')),
-                  tdpRangeStep: document.getElementById('tdpRangeInput')?.getAttribute('step') || '',
-                  tdpDecText: document.getElementById('btnTdpDec')?.textContent?.trim() || '',
-                  tdpIncText: document.getElementById('btnTdpInc')?.textContent?.trim() || '',
-                  toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
-                  selectCount: document.querySelectorAll('select').length,
-                  legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
-                  noHorizOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2,
-                  focusCount: document.querySelectorAll('.gp-focused').length
-                }))()
+                (() => {
+                  const mv = document.getElementById('mainView');
+                  return {
+                    layout: document.body.dataset.layout || '',
+                    theme: document.body.dataset.theme || '',
+                    tdpChips: document.querySelectorAll('[data-tdp-watt]').length,
+                    legacyTdpPresets: document.querySelectorAll('[data-tdp-preset]').length,
+                    fanModes: document.querySelectorAll('[data-fan-mode]').length,
+                    osdLevelsOnHome: document.querySelectorAll('[data-osd-level]').length,
+                    closeBtnFits: Boolean(document.getElementById('btnCloseApp')) && document.getElementById('btnCloseApp').getBoundingClientRect().right <= window.innerWidth + 2,
+                    hasPfSys: Boolean(document.getElementById('pfSysVal')?.textContent?.trim()),
+                    hasPfEta: Boolean(document.getElementById('pfEtaVal')?.textContent?.trim()),
+                    hasDrrPill: Boolean(document.querySelector('[data-refresh-hz="drr"]')),
+                    activeRefreshVal: document.querySelector('[data-refresh-hz].active')?.dataset.refreshHz || '',
+                    hasBrightRange: Boolean(document.getElementById('brightRange')),
+                    hasVolRange: Boolean(document.getElementById('volRange')),
+                    tdpRangeStep: document.getElementById('tdpRangeInput')?.getAttribute('step') || '',
+                    tdpDecText: document.getElementById('btnTdpDec')?.textContent?.trim() || '',
+                    tdpIncText: document.getElementById('btnTdpInc')?.textContent?.trim() || '',
+                    toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
+                    steadyModePills: document.querySelectorAll('[data-steady-mode]').length,
+                    hasSteadyBadge: Boolean(document.getElementById('steadyStatusBadge')?.textContent?.trim()),
+                    hasOfflineWifiBtn: Boolean(document.getElementById('btnToggleOfflineWifi')),
+                    selectCount: document.querySelectorAll('select').length,
+                    legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
+                    noHorizOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2,
+                    bentoZeroVertScroll: Boolean(mv) && mv.scrollHeight <= mv.clientHeight + 2
+                  };
+                })()
                 """);
             using var homeDoc = JsonDocument.Parse(homeInfoJson);
             var homeRoot = homeDoc.RootElement;
+
+            await SwitchLayoutAndThemeAsync("bento", "frost");
+            await CapturePngAsync(mainCore, outputDir, "v5_02_bento_frost.png");
+
+            await SwitchLayoutAndThemeAsync("cockpit", "aurora");
+            await CapturePngAsync(mainCore, outputDir, "v7_03_cockpit_aurora.png");
+            var cockpitScrollOkStr = await mainCore.ExecuteScriptAsync("(() => { const mv = document.getElementById('mainView'); return Boolean(mv) && mv.scrollHeight <= mv.clientHeight + 2 && document.querySelectorAll('.ck-cell').length === 6; })()");
+            bool cockpitZeroVertScroll = string.Equals(cockpitScrollOkStr.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+            await SwitchLayoutAndThemeAsync("cockpit", "frost");
+            await CapturePngAsync(mainCore, outputDir, "v7_04_cockpit_frost.png");
+
+            await SwitchLayoutAndThemeAsync(origUiLayout, origUiTheme);
+
             var initSys = bridge.LatestSystemState;
             bool drrUiMatches = !initSys.DynamicRefreshSupported ||
                                 (homeRoot.GetProperty("hasDrrPill").GetBoolean() &&
@@ -1035,8 +1087,8 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("tdpChips").GetInt32() >= 3 &&
                           homeRoot.GetProperty("legacyTdpPresets").GetInt32() == 0 &&
                           homeRoot.GetProperty("fanModes").GetInt32() == 3 &&
-                          homeRoot.GetProperty("fanCurveSvg").GetInt32() == 1 &&
-                          homeRoot.GetProperty("hasFanSlider").GetBoolean() &&
+                          homeRoot.GetProperty("osdLevelsOnHome").GetInt32() == 5 &&
+                          homeRoot.GetProperty("closeBtnFits").GetBoolean() &&
                           homeRoot.GetProperty("hasPfSys").GetBoolean() &&
                           homeRoot.GetProperty("hasPfEta").GetBoolean() &&
                           drrUiMatches &&
@@ -1046,26 +1098,30 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("tdpDecText").GetString() == "−1W" &&
                           homeRoot.GetProperty("tdpIncText").GetString() == "+1W" &&
                           homeRoot.GetProperty("toolboxTiles").GetInt32() >= 8 &&
+                          homeRoot.GetProperty("steadyModePills").GetInt32() == 3 &&
+                          homeRoot.GetProperty("hasSteadyBadge").GetBoolean() &&
+                          homeRoot.GetProperty("hasOfflineWifiBtn").GetBoolean() &&
                           homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           homeRoot.GetProperty("legendFits").GetBoolean() &&
-                          homeRoot.GetProperty("noHorizOverflow").GetBoolean();
+                          homeRoot.GetProperty("noHorizOverflow").GetBoolean() &&
+                          homeRoot.GetProperty("bentoZeroVertScroll").GetBoolean() &&
+                          cockpitZeroVertScroll;
             Record("handheldHomeDefault", homeOk, new
             {
                 home = homeRoot.Clone(),
+                cockpitZeroVertScroll,
                 sysIsDrr = initSys.IsDynamicRefreshRate,
-                sysRefreshHz = initSys.RefreshRateHz,
-                sysBaseHz = initSys.BaseRefreshRateHz,
-                sysDrrSupported = initSys.DynamicRefreshSupported,
-                sysPowerMode = initSys.PowerRuntimeMode
+                sysRefreshHz = initSys.RefreshRateHz
             });
-            await CapturePngAsync(mainCore, outputDir, "v3_01_console_handheld.png");
 
-            // Tab 2: Monitor & Click-Through Overlay HUD Verification
+            // Tab 3: Hardware & Monitor + Click-Through Overlay HUD Verification
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"monitor\"]').click()");
             bool monitorDomOk = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('svg.sparkline-svg').length === 2 && Boolean(document.getElementById('kpiFps')?.textContent?.trim()) && Boolean(document.getElementById('kpiVram')?.textContent?.trim()) && Boolean(document.getElementById('kpiCpuTemp')?.textContent?.trim())");
+                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-cpu-max-mhz]').length === 6 && document.querySelectorAll('[data-steady-sub]').length === 3 && document.querySelectorAll('svg.sparkline-svg').length === 2 && Boolean(document.getElementById('kpiFps')?.textContent?.trim())");
             await Task.Delay(250);
+            await PrepareCleanCaptureAsync(mainCore);
+            await CapturePngAsync(mainCore, outputDir, "v5_06_tab3_hardware_monitor.png");
 
             int prevLevel = bridge.Settings.OverlayLevel;
             string prevPos = bridge.Settings.OverlayPosition;
@@ -1085,7 +1141,6 @@ public partial class App : System.Windows.Application
                 hudClickThroughOk,
                 hudExStyle = $"0x{hudExStyle:X}"
             });
-            await CapturePngAsync(mainCore, outputDir, "v3_02_console_monitor.png");
 
             // Tab 3: Simplified Controls, Back-Key Picker Modal, TabTip OSK, Spatial Focus & Scroll Preservation
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"controls\"]').click()");
@@ -1153,13 +1208,14 @@ public partial class App : System.Windows.Application
                 scrollAfter,
                 maxControlsScroll
             });
-            await CapturePngAsync(mainCore, outputDir, "v3_03_console_controls.png");
+            await PrepareCleanCaptureAsync(mainCore);
+            await CapturePngAsync(mainCore, outputDir, "v4_07_tab4_controls_settings.png");
 
-            // Tab 4: OptiScaler Suite (Tune, Library, Components)
+            // Tab 2: Unified Game Hardware Profile + OptiScaler Suite (Tune, Library, Components)
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"opti\"]').click()");
             bool optiTuneReady = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.sub-tab-btn[data-opti-sub=\"tune\"]')?.classList.contains('active') && document.querySelectorAll('.preset-card').length === 4");
+                "document.querySelector('.sub-tab-btn[data-opti-sub=\"tune\"]')?.classList.contains('active') && document.querySelectorAll('.preset-card').length === 4 && document.querySelectorAll('[data-game-perf-cpu]').length === 4");
             await Task.Delay(250);
 
             var tuneInfoJson = await mainCore.ExecuteScriptAsync("""
@@ -1205,7 +1261,8 @@ public partial class App : System.Windows.Application
                 expectedFg = expectedCfg.FgType,
                 hasInspectBtn
             });
-            await CapturePngAsync(mainCore, outputDir, "v3_04_opti_tune.png");
+            await PrepareCleanCaptureAsync(mainCore);
+            await CapturePngAsync(mainCore, outputDir, "v5_05_tab2_game_opti.png");
 
             await mainCore.ExecuteScriptAsync("document.querySelector('[data-preset=\"xess-antishimmer\"]').click()");
             bool switchedToXess = await WaitUntilAsync(mainCore, "document.querySelector('[data-sr-mode].active')?.dataset.srMode === 'xess'");
@@ -1221,7 +1278,6 @@ public partial class App : System.Windows.Application
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnInspectLog').click()");
                 bool modalOpened = await WaitUntilAsync(mainCore, "!document.getElementById('modalBackdrop').classList.contains('hidden')");
                 await Task.Delay(200);
-                await CapturePngAsync(mainCore, outputDir, "v3_04b_opti_ini_modal.png");
                 await mainCore.ExecuteScriptAsync("document.getElementById('btnCloseModal')?.click()");
                 bool modalClosed = await WaitUntilAsync(mainCore, "document.getElementById('modalBackdrop').classList.contains('hidden')");
                 Record("diagnosticModal", modalOpened && modalClosed, new { modalOpened, modalClosed });
@@ -1254,7 +1310,6 @@ public partial class App : System.Windows.Application
                 cachedGames = bridge.CachedGames.Count,
                 loadedCovers
             });
-            await CapturePngAsync(mainCore, outputDir, "v3_05_opti_library.png");
 
             // Opti Sub-tab: Components
             await mainCore.ExecuteScriptAsync("document.querySelector('.sub-tab-btn[data-opti-sub=\"components\"]').click()");
@@ -1264,7 +1319,6 @@ public partial class App : System.Windows.Application
             await Task.Delay(250);
             var activeKernelStr = await mainCore.ExecuteScriptAsync("document.querySelector('[data-active-slot].active')?.dataset.activeSlot || ''");
             Record("optiComponentsSubTab", compReady, new { activeKernelSlot = activeKernelStr.Trim('"') });
-            await CapturePngAsync(mainCore, outputDir, "v3_06_opti_components.png");
 
             // Fullscreen Toggle
             mainWindow.SetFullscreenMode(true);
@@ -1288,7 +1342,7 @@ public partial class App : System.Windows.Application
 
             bool qamVisibleAndInit = qamWindow.IsVisible && qamWindow.WebViewInitialized;
             bool qamHandheldReady = false;
-            bool qamScrollPreserved = true;
+            bool qamZeroVertScroll = false;
             bool qamWidthOk = false;
             bool qamOsdOk = false;
             bool qamControlsOk = false;
@@ -1299,7 +1353,7 @@ public partial class App : System.Windows.Application
             {
                 qamHandheldReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange')) && document.querySelectorAll('[data-refresh-hz]').length >= 2");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange')) && document.querySelectorAll('[data-refresh-hz]').length >= 2 && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-steady-mode]').length === 3 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('.toolbox-tile').length === 8 && Boolean(document.querySelector('[data-toolbox=\"toggle_fridge\"]'))");
 
                 var qamLiveSlideOkStr = await qamCore.ExecuteScriptAsync("""
                     (() => {
@@ -1318,64 +1372,54 @@ public partial class App : System.Windows.Application
                     """);
                 qamHandheldReady = qamHandheldReady && string.Equals(qamLiveSlideOkStr.Trim(), "true", StringComparison.OrdinalIgnoreCase);
 
-                await Task.Delay(250);
+                var qamZeroScrollStr = await qamCore.ExecuteScriptAsync("(() => { const mv = document.getElementById('mainView'); return Boolean(mv) && mv.scrollHeight <= mv.clientHeight + 2; })()");
+                qamZeroVertScroll = string.Equals(qamZeroScrollStr.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+                await Task.Delay(200);
                 qamWidthOk = Math.Abs(qamWindow.ActualWidth - 440) < 2;
-                await CapturePngAsync(qamCore, outputDir, "v3_07_qam_handheld.png");
 
-                var qamScrollJson = await qamCore.ExecuteScriptAsync("""
-                    (() => {
-                      const mv = document.getElementById('mainView');
-                      if (!mv) return { maxScroll: 0, before: 0 };
-                      const maxScroll = Math.max(0, mv.scrollHeight - mv.clientHeight);
-                      if (maxScroll >= 60) mv.scrollTop = Math.min(120, maxScroll);
-                      return { maxScroll, before: mv.scrollTop };
-                    })()
-                    """);
-                using var qamScrollDoc = JsonDocument.Parse(qamScrollJson);
-                double qamMaxScroll = qamScrollDoc.RootElement.GetProperty("maxScroll").GetDouble();
-                double qamScrollBefore = qamScrollDoc.RootElement.GetProperty("before").GetDouble();
-                if (qamMaxScroll >= 60)
-                {
-                    await qamCore.ExecuteScriptAsync("document.getElementById('swPowerLinkage')?.click()");
-                    await Task.Delay(180);
-                    await qamCore.ExecuteScriptAsync("document.getElementById('swPowerLinkage')?.click()");
-                    await Task.Delay(180);
-                    var qamAfterStr = await qamCore.ExecuteScriptAsync("document.getElementById('mainView')?.scrollTop ?? 0");
-                    double.TryParse(qamAfterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var qamScrollAfter);
-                    qamScrollPreserved = Math.Abs(qamScrollAfter - qamScrollBefore) <= 20;
-                    await qamCore.ExecuteScriptAsync("const mv = document.getElementById('mainView'); if (mv) mv.scrollTop = 0;");
-                }
+                await SwitchLayoutAndThemeAsync("bento", "aurora");
+                await PrepareCleanCaptureAsync(qamCore);
+                await CapturePngAsync(qamCore, outputDir, "v5_08_qam_quick_aurora.png");
 
-                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]').click()");
-                qamOsdOk = await WaitUntilAsync(
-                    qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg')) && Boolean(document.getElementById('qamKpiFps')?.textContent?.trim()) && Boolean(document.getElementById('qamKpiVram')?.textContent?.trim()) && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
-                await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v3_08_qam_osd.png");
+                await SwitchLayoutAndThemeAsync("bento", "frost");
+                await PrepareCleanCaptureAsync(qamCore);
+                await CapturePngAsync(qamCore, outputDir, "v5_09_qam_quick_frost.png");
 
-                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
-                qamControlsOk = await WaitUntilAsync(
-                    qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && Boolean(document.getElementById('btnPickL4')) && Boolean(document.getElementById('btnPickR4')) && Boolean(document.getElementById('btnTestOsk')) && document.querySelectorAll('[data-gpd-preset]').length === 4 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
-                await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v3_08b_qam_controls.png");
+                await SwitchLayoutAndThemeAsync(origUiLayout, origUiTheme);
+                await PrepareCleanCaptureAsync(qamCore);
 
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]').click()");
                 qamOptiOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && Boolean(document.getElementById('btnQamOpenGamePicker')) && document.querySelectorAll('.qam-game-switcher').length === 0 && document.querySelectorAll('[data-preset]').length >= 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
-                await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v3_09_qam_opti.png");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"opti\"]')?.classList.contains('active') && Boolean(document.getElementById('qamStatusBanner')) && Boolean(document.getElementById('btnQamOpenGamePicker')) && document.querySelectorAll('[data-preset]').length >= 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                await Task.Delay(180);
+                await PrepareCleanCaptureAsync(qamCore);
+                await CapturePngAsync(qamCore, outputDir, "v4_10_qam_opti.png");
 
                 await qamCore.ExecuteScriptAsync("document.getElementById('btnQamOpenGamePicker').click()");
                 bool qamGamesPickerOk = await WaitUntilAsync(
                     qamCore,
                     "Boolean(document.querySelector('.qam-game-picker-view')) && Boolean(document.getElementById('btnQamBackToTune')) && document.querySelectorAll('.qam-game-row').length >= 1");
-                await Task.Delay(200);
-                await CapturePngAsync(qamCore, outputDir, "v3_10_qam_opti_games.png");
                 await qamCore.ExecuteScriptAsync("document.getElementById('btnQamBackToTune').click()");
                 await WaitUntilAsync(qamCore, "Boolean(document.getElementById('qamStatusBanner'))");
                 qamOptiOk = qamOptiOk && qamGamesPickerOk;
+
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]').click()");
+                qamOsdOk = await WaitUntilAsync(
+                    qamCore,
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg')) && Boolean(document.getElementById('qamKpiFps')?.textContent?.trim()) && document.querySelectorAll('[data-cpu-max-mhz]').length === 5 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                await Task.Delay(180);
+                await PrepareCleanCaptureAsync(qamCore);
+                await CapturePngAsync(qamCore, outputDir, "v4_11_qam_osd.png");
+
+                await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
+                qamControlsOk = await WaitUntilAsync(
+                    qamCore,
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && Boolean(document.getElementById('btnPickL4')) && Boolean(document.getElementById('btnPickR4')) && document.querySelectorAll('[data-ui-layout]').length === 2 && document.querySelectorAll('[data-ui-theme]').length === 2 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                await Task.Delay(180);
+                await PrepareCleanCaptureAsync(qamCore);
+                await CapturePngAsync(qamCore, outputDir, "v4_12_qam_controls.png");
 
                 var qamErrStr = await qamCore.ExecuteScriptAsync("(window.__hoErrors || []).length");
                 int.TryParse(qamErrStr, out qamErrCount);
@@ -1389,11 +1433,11 @@ public partial class App : System.Windows.Application
                 await Task.Delay(80);
             }
             bool qamClosed = !qamWindow.IsVisible;
-            Record("qamHandheldFirstAndClose", qamVisibleAndInit && qamHandheldReady && qamScrollPreserved && qamWidthOk && qamOsdOk && qamControlsOk && qamOptiOk && qamClosed, new
+            Record("qamHandheldFirstAndClose", qamVisibleAndInit && qamHandheldReady && qamZeroVertScroll && qamWidthOk && qamOsdOk && qamControlsOk && qamOptiOk && qamClosed, new
             {
                 qamVisibleAndInit,
                 qamHandheldReady,
-                qamScrollPreserved,
+                qamZeroVertScroll,
                 qamWidthOk,
                 qamOsdOk,
                 qamControlsOk,
