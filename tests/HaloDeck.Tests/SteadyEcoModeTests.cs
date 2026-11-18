@@ -262,6 +262,8 @@ public sealed class SteadyEcoModeTests
         Assert.Equal("aurora", settings.UiTheme);
         Assert.Equal("bento", settings.UiLayout);
         Assert.False(settings.FlatPowerLock);
+        Assert.Equal(new[] { "BACK", "LB" }, settings.ConsoleGamepadCombo.Buttons);
+        Assert.Empty(settings.MouseModeGamepadCombo.Buttons);
         Assert.Contains(10, settings.CustomTdpPresets);
         Assert.Contains(25, settings.CustomTdpPresets);
 

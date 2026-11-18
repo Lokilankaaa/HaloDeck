@@ -82,7 +82,7 @@ public sealed class RunningGameTracker
 
     public GameEntry? LastActiveGame => _lastActiveGame;
 
-    public GameEntry? Poll(IReadOnlyList<GameEntry> libraryGames)
+    public GameEntry? Poll(IReadOnlyList<GameEntry> libraryGames, bool allowBackgroundScan = false)
     {
         var snapshot = _foregroundProbe();
         if (snapshot is not null && !IsIgnoredProcess(snapshot))
@@ -129,7 +129,7 @@ public sealed class RunningGameTracker
             }
         }
 
-        // Preserve last active game when user switches to QAM overlay or desktop without touching disk
+        // Preserve last active game when user switches to QAM overlay or desktop without touching disk; clear once exited
         if (_lastActiveGame is not null)
         {
             bool stillAlive = IsProcessRunning(_lastActivePid);
@@ -139,10 +139,13 @@ public sealed class RunningGameTracker
             {
                 return _lastActiveGame;
             }
+
+            _lastActiveGame = null;
+            _lastActivePid = 0;
         }
 
-        // Fallback every 8s when idle: detect running library games launched while Console/Steam owns focus
-        if (libraryGames.Count > 0 && (DateTime.UtcNow - _lastProcessScanUtc) >= TimeSpan.FromSeconds(8.0))
+        // Fallback every 12s ONLY when HaloDeck UI is open: detect running library games launched while Console/Steam owns focus
+        if (allowBackgroundScan && libraryGames.Count > 0 && (DateTime.UtcNow - _lastProcessScanUtc) >= TimeSpan.FromSeconds(12.0))
         {
             _lastProcessScanUtc = DateTime.UtcNow;
             var bgMatched = TryFindRunningLibraryGame(libraryGames, out int bgPid);

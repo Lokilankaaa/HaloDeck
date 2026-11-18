@@ -72,15 +72,15 @@ public sealed class AppSettings
     public bool GamepadMouseModeEnabled { get; set; } = false;
 
     // GPD Win 5 recommended bindings:
+    // Main Console (Frontend): Select + LB or Ctrl+Shift+O (or bind L4/R4 -> F16)
     // QAM Sidebar: Select + RB or Ctrl+Alt+O (or bind L4 -> F13)
     // Overlay HUD: Select + Y or Ctrl+Alt+M (or bind R4 -> F14)
-    // Mouse Mode: Select + LB
-    // OptiScaler Menu (Insert): Select + Start or Ctrl+Alt+I
-    // Main Console: Ctrl+Shift+O
+    // OptiScaler Menu (Insert): Select + Start or Ctrl+Alt+I (or bind R4 -> F15)
+    public GamepadComboBinding ConsoleGamepadCombo { get; set; } = new() { Buttons = new() { "BACK", "LB" } };
     public GamepadComboBinding QamGamepadCombo { get; set; } = new() { Buttons = new() { "BACK", "RB" } };
     public GamepadComboBinding InsertGamepadCombo { get; set; } = new() { Buttons = new() { "BACK", "START" } };
     public GamepadComboBinding OsdGamepadCombo { get; set; } = new() { Buttons = new() { "BACK", "Y" } };
-    public GamepadComboBinding MouseModeGamepadCombo { get; set; } = new() { Buttons = new() { "BACK", "LB" } };
+    public GamepadComboBinding MouseModeGamepadCombo { get; set; } = new();
 
     public HotkeyBinding QamHotkey { get; set; } = new() { Modifiers = 0x0001 | 0x0002, VirtualKey = 0x4F, DisplayText = "Ctrl + Alt + O" };
     public HotkeyBinding InsertHotkey { get; set; } = new() { Modifiers = 0x0001 | 0x0002, VirtualKey = 0x49, DisplayText = "Ctrl + Alt + I" };

@@ -363,36 +363,11 @@ internal static class Win32Interop
         }
 
         const uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW;
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-
-        if (forceReband || HasVisibleWindowAbove(hwnd, allowedAboveHwnd))
+        if (forceReband)
         {
             SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-
-            if (HasVisibleWindowAbove(hwnd, allowedAboveHwnd))
-            {
-                var fg = GetForegroundWindow();
-                uint currentTid = GetCurrentThreadId();
-                uint fgTid = fg != 0 ? GetWindowThreadProcessId(fg, out _) : 0;
-                bool attached = false;
-                try
-                {
-                    if (fgTid != 0 && fgTid != currentTid)
-                    {
-                        attached = AttachThreadInput(currentTid, fgTid, true);
-                    }
-                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-                }
-                finally
-                {
-                    if (attached)
-                    {
-                        AttachThreadInput(currentTid, fgTid, false);
-                    }
-                }
-            }
         }
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
     }
 
     public static void ApplyNoActivateOverlayStyle(nint hwnd)

@@ -53,17 +53,30 @@ internal static class XInputInterop
 
     private static bool _useFallback910;
     private static long _lastButtonOrTriggerTick64;
+    private static readonly long[] DisconnectedRetryTick64 = new long[4];
+    private const long DisconnectedBackoffMs = 3000;
 
     public static bool TryGetCombinedGamepadState(out XInputGamepad combined, out int connectedCount)
     {
         combined = default;
         connectedCount = 0;
         bool any = false;
+        long nowTick = Environment.TickCount64;
 
         for (uint i = 0; i < 4; i++)
         {
+            long retryAt = Interlocked.Read(ref DisconnectedRetryTick64[i]);
+            if (retryAt > nowTick)
+            {
+                continue;
+            }
+
             if (TryGetSingleState(i, out var state))
             {
+                if (retryAt != 0)
+                {
+                    Interlocked.Exchange(ref DisconnectedRetryTick64[i], 0);
+                }
                 any = true;
                 connectedCount++;
                 combined.wButtons |= state.Gamepad.wButtons;
@@ -78,6 +91,11 @@ internal static class XInputInterop
                     combined.sThumbRX = state.Gamepad.sThumbRX;
                 if (Math.Abs(state.Gamepad.sThumbRY) > Math.Abs(combined.sThumbRY))
                     combined.sThumbRY = state.Gamepad.sThumbRY;
+            }
+            else
+            {
+                // Avoid calling XInputGetState on empty slots at 55Hz (prevents periodic Windows HID enumeration stalls)
+                Interlocked.Exchange(ref DisconnectedRetryTick64[i], nowTick + DisconnectedBackoffMs);
             }
         }
 

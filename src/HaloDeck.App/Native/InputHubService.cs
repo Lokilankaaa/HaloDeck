@@ -14,6 +14,7 @@ public sealed class InputHubService : IDisposable
     public const int HotkeyPaddleQamF13Id = 0x5111;
     public const int HotkeyPaddleOsdF14Id = 0x5112;
     public const int HotkeyPaddleInsF15Id = 0x5113;
+    public const int HotkeyPaddleConsoleF16Id = 0x5114;
 
     private const short StickThreshold = 18000;
     private const short MouseStickDeadzone = 7849;
@@ -27,6 +28,7 @@ public sealed class InputHubService : IDisposable
     private nint _hotkeyWindowHwnd;
     private HwndSource? _hwndSource;
     private XInputButtons _prevButtons;
+    private bool _consoleComboArmed = true;
     private bool _qamComboArmed = true;
     private bool _insertComboArmed = true;
     private bool _osdComboArmed = true;
@@ -177,12 +179,13 @@ public sealed class InputHubService : IDisposable
         TryRegisterHotkey(HotkeyConsoleId, _settings.ConsoleHotkey);
         TryRegisterHotkey(HotkeyOsdId, _settings.OsdHotkey);
 
-        // Bare paddle bindings for GPD Win 5 L4/R4 (VK_F13=0x7C, VK_F14=0x7D, VK_F15=0x7E)
+        // Bare paddle bindings for GPD Win 5 L4/R4 (VK_F13=0x7C, VK_F14=0x7D, VK_F15=0x7E, VK_F16=0x7F)
         if (_settings.EnableBackButtonHotkeys)
         {
             Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
             Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id, Win32Interop.MOD_NOREPEAT, 0x7D);
             Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id, Win32Interop.MOD_NOREPEAT, 0x7E);
+            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleConsoleF16Id, Win32Interop.MOD_NOREPEAT, 0x7F);
         }
     }
 
@@ -299,6 +302,7 @@ public sealed class InputHubService : IDisposable
         Win32Interop.UnregisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id);
         Win32Interop.UnregisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id);
         Win32Interop.UnregisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id);
+        Win32Interop.UnregisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleConsoleF16Id);
     }
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
@@ -316,7 +320,7 @@ public sealed class InputHubService : IDisposable
                 SendInsertToGameRequested?.Invoke();
                 handled = true;
             }
-            else if (id == HotkeyConsoleId)
+            else if (id is HotkeyConsoleId or HotkeyPaddleConsoleF16Id)
             {
                 ToggleConsoleRequested?.Invoke();
                 handled = true;
@@ -391,6 +395,26 @@ public sealed class InputHubService : IDisposable
                         _prevButtons = buttons;
                         await Task.Delay(12, ct).ConfigureAwait(false);
                         continue;
+                    }
+
+                    // 0. Check global Main Console (Frontend) toggle combo (works inside any game or desktop!)
+                    var consoleMask = XInputInterop.CombineMask(_settings.ConsoleGamepadCombo?.Buttons ?? []);
+                    if (consoleMask != XInputButtons.None)
+                    {
+                        if ((buttons & consoleMask) == consoleMask)
+                        {
+                            if (_consoleComboArmed)
+                            {
+                                _consoleComboArmed = false;
+                                _suppressNavigationUntilRelease = true;
+                                _directionRepeatAt.Clear();
+                                ToggleConsoleRequested?.Invoke();
+                            }
+                        }
+                        else if ((buttons & consoleMask) == XInputButtons.None)
+                        {
+                            _consoleComboArmed = true;
+                        }
                     }
 
                     // 1. Check global QAM toggle combo (works inside any game!)

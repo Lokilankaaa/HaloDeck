@@ -45,12 +45,16 @@ public partial class OverlayHudWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == 0) return;
         int exStyle = Win32Interop.GetWindowLong(hwnd, Win32Interop.GWL_EXSTYLE);
-        exStyle |= Win32Interop.WS_EX_TOPMOST |
-                   Win32Interop.WS_EX_TRANSPARENT |
-                   Win32Interop.WS_EX_LAYERED |
-                   Win32Interop.WS_EX_TOOLWINDOW |
-                   Win32Interop.WS_EX_NOACTIVATE;
-        Win32Interop.SetWindowLong(hwnd, Win32Interop.GWL_EXSTYLE, exStyle);
+        int desired = exStyle |
+                      Win32Interop.WS_EX_TOPMOST |
+                      Win32Interop.WS_EX_TRANSPARENT |
+                      Win32Interop.WS_EX_LAYERED |
+                      Win32Interop.WS_EX_TOOLWINDOW |
+                      Win32Interop.WS_EX_NOACTIVATE;
+        if (exStyle != desired)
+        {
+            Win32Interop.SetWindowLong(hwnd, Win32Interop.GWL_EXSTYLE, desired);
+        }
     }
 
     public void EnsureTopmostZOrder(bool forceReband = false)
@@ -60,10 +64,7 @@ public partial class OverlayHudWindow : Window
         if (hwnd == 0) return;
 
         ApplyClickThroughStyles();
-        if (forceReband || Win32Interop.HasVisibleWindowAbove(hwnd))
-        {
-            Win32Interop.RaiseTopmostNoActivate(hwnd, forceReband);
-        }
+        Win32Interop.RaiseTopmostNoActivate(hwnd, forceReband);
     }
 
     public void ApplySettings(int level, string position, double opacity)
@@ -202,9 +203,12 @@ public partial class OverlayHudWindow : Window
             }
         }
 
-        UpdateLayout();
-        RepositionWindow();
-        EnsureTopmostZOrder(forceReband: newlyShown);
+        if (newlyShown)
+        {
+            UpdateLayout();
+            RepositionWindow();
+            EnsureTopmostZOrder(forceReband: true);
+        }
     }
 
     private static string FormatMinutesShort(int? minutes)

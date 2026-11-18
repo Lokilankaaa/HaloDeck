@@ -57,7 +57,6 @@ public sealed class WebUiBridge : IDisposable
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
     private bool? _preProfileDynamicRefreshRate;
-    private int? _preProfileCpuMaxFreqMhz;
     private bool _steadyEcoActive;
     private SteadyEcoPowerOptions? _lastAppliedSteadyPowerOpts;
     private DateTime _lastSteadyGameSeenUtc = DateTime.MinValue;
@@ -109,7 +108,14 @@ public sealed class WebUiBridge : IDisposable
         else
         {
             _powerOptimizer = new PowerPeripheralOptimizer();
-            _powerOptimizer.RecoverIfStaleBackupExists(_settings.CpuMaxFreqMhz);
+            // Always clean up any stale backup and ensure SteadyEco / CPU cap are rolled back to clean OS defaults
+            _powerOptimizer.RecoverIfStaleBackupExists(0);
+            if (_settings.CpuMaxFreqMhz != 0 || !string.Equals(_settings.SteadyEcoMode, "off", StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.CpuMaxFreqMhz = 0;
+                _settings.SteadyEcoMode = "off";
+                _settingsStore.Save(_settings);
+            }
         }
         _systemControl = new SystemControlService(_powerOptimizer);
 
@@ -191,10 +197,6 @@ public sealed class WebUiBridge : IDisposable
     {
         _cachedGames = await _libraryService.ScanAllAsync(_settings.ExcludedGameIds).ConfigureAwait(false);
         _runningGame = _runningTracker.Poll(_cachedGames);
-        if (!IsVerifyOrCaptureCliRun)
-        {
-            UpdateSteadyEcoAutomation(_runningGame, allowAutoToast: false);
-        }
         _ = RefreshComponentsCatalogSilentAsync();
     }
 
@@ -252,7 +254,7 @@ public sealed class WebUiBridge : IDisposable
 
     public void RefreshActiveGameForOverlay()
     {
-        var current = _runningTracker.Poll(_cachedGames);
+        var current = _runningTracker.Poll(_cachedGames, allowBackgroundScan: true);
         var target = current ?? _cachedGames.FirstOrDefault();
         if (target is not null)
         {
@@ -264,19 +266,11 @@ public sealed class WebUiBridge : IDisposable
 
     public void PollRunningAndAutoInjectTick(bool runAutoInjectPass, bool uiVisible = true, bool osdVisible = false)
     {
-        var updatedRunning = _runningTracker.Poll(_cachedGames);
+        var updatedRunning = _runningTracker.Poll(_cachedGames, allowBackgroundScan: uiVisible);
         bool changed = !Equals(updatedRunning?.Id, _runningGame?.Id) ||
                        updatedRunning?.IsCurrentlyRunning != _runningGame?.IsCurrentlyRunning ||
                        updatedRunning?.Injection.IsInjected != _runningGame?.Injection.IsInjected;
         _runningGame = updatedRunning;
-
-        bool prevSteadyActive = _steadyEcoActive;
-        int prevIsolated = _steadyEcoIsolator.IsolatedCount;
-        UpdateSteadyEcoAutomation(updatedRunning, allowAutoToast: true);
-        if (_steadyEcoActive != prevSteadyActive || _steadyEcoIsolator.IsolatedCount != prevIsolated)
-        {
-            changed = true;
-        }
 
         var sys = EnrichSystemState(
             _systemControl.GetState(
@@ -381,20 +375,15 @@ public sealed class WebUiBridge : IDisposable
         {
             if (_appliedProfileGameId is not null && runningId is null)
             {
-                // Exiting game: restore pre-game Hz (preserving DRR if it was active), CPU cap, and global/power-linked TDP
+                // Exiting game: restore pre-game Hz (preserving DRR if it was active) and global/power-linked TDP
                 bool restoreDyn = _preProfileDynamicRefreshRate ?? false;
                 if (_preProfileRefreshRateHz is { } restoreHz &&
                     (sys.RefreshRateHz != restoreHz || sys.IsDynamicRefreshRate != restoreDyn))
                 {
                     try { _systemControl.SetRefreshRate(restoreHz, restoreDyn); } catch { }
                 }
-                if (_preProfileCpuMaxFreqMhz is { } restoreMhz && sys.CpuMaxFreqMhz != restoreMhz)
-                {
-                    try { _systemControl.SetCpuMaxFreqMhz(restoreMhz); } catch { }
-                }
                 _preProfileRefreshRateHz = null;
                 _preProfileDynamicRefreshRate = null;
-                _preProfileCpuMaxFreqMhz = null;
                 _appliedProfileGameId = null;
 
                 int fallbackWatts = _settings.PowerLinkageEnabled
@@ -415,7 +404,6 @@ public sealed class WebUiBridge : IDisposable
             {
                 _preProfileRefreshRateHz ??= sys.RefreshRateHz;
                 _preProfileDynamicRefreshRate ??= sys.IsDynamicRefreshRate;
-                _preProfileCpuMaxFreqMhz ??= _settings.CpuMaxFreqMhz;
                 _appliedProfileGameId = runningId;
                 if (prof.RefreshRateHz == -1 && sys.DynamicRefreshSupported && !sys.IsDynamicRefreshRate)
                 {
@@ -425,21 +413,16 @@ public sealed class WebUiBridge : IDisposable
                 {
                     try { _systemControl.SetRefreshRate(prof.RefreshRateHz, false); } catch { }
                 }
-                if (prof.CpuMaxFreqMhz >= 1600 && sys.CpuMaxFreqMhz != prof.CpuMaxFreqMhz)
-                {
-                    try { _systemControl.SetCpuMaxFreqMhz(prof.CpuMaxFreqMhz); } catch { }
-                }
                 if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 8 and <= 120)
                 {
                     int fastProf = _settings.FlatPowerLock ? prof.TdpWatts : Math.Min(140, prof.TdpWatts + 2);
                     _systemControl.HardwareClient.SetTdp(prof.TdpWatts, prof.TdpWatts, fastProf);
                 }
                 string hzTag = prof.RefreshRateHz == -1 ? " · 动态Hz" : (prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "");
-                string cpuTag = prof.CpuMaxFreqMhz >= 1600 ? $" · 限{(prof.CpuMaxFreqMhz / 1000.0):F1}G" : "";
                 BroadcastEvent("toast", new
                 {
                     kind = "info",
-                    message = $"已应用《{running!.Title}》专属档：{prof.TdpWatts}W{hzTag}{cpuTag}"
+                    message = $"已应用《{running!.Title}》专属档：{prof.TdpWatts}W{hzTag}"
                 });
             }
             else
@@ -1043,7 +1026,6 @@ public sealed class WebUiBridge : IDisposable
             ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
         }
 
-        UpdateSteadyEcoAutomation(_runningGame, allowAutoToast: false);
         BroadcastStateSnapshot();
         return _settings;
     }
@@ -2150,8 +2132,8 @@ public sealed class WebUiBridge : IDisposable
         };
 
         static bool UsesBackHotkeyHid(int? single, IReadOnlyList<ushort>? combo) =>
-            (single is >= 0x0068 and <= 0x006A) ||
-            (combo is not null && combo.Any(c => c is >= 0x0068 and <= 0x006A));
+            (single is >= 0x0068 and <= 0x006B) ||
+            (combo is not null && combo.Any(c => c is >= 0x0068 and <= 0x006B));
 
         if ((UsesBackHotkeyHid(req.L4SingleHidCode, req.L4ComboCodes) ||
              UsesBackHotkeyHid(req.R4SingleHidCode, req.R4ComboCodes)) &&
@@ -2199,10 +2181,6 @@ public sealed class WebUiBridge : IDisposable
             else if (profile.RefreshRateHz > 0 && (curSys.RefreshRateHz != profile.RefreshRateHz || curSys.IsDynamicRefreshRate))
             {
                 try { _systemControl.SetRefreshRate(profile.RefreshRateHz, false); } catch { }
-            }
-            if (profile.CpuMaxFreqMhz >= 1600 && curSys.CpuMaxFreqMhz != profile.CpuMaxFreqMhz)
-            {
-                try { _systemControl.SetCpuMaxFreqMhz(profile.CpuMaxFreqMhz); } catch { }
             }
             var hw = _systemControl.HardwareClient.GetStatus();
             if (hw.ServiceRunning)

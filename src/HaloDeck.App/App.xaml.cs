@@ -78,7 +78,9 @@ public partial class App : System.Windows.Application
             }
         }
 
-        var settingsStore = new SettingsStore();
+        var settingsStore = (verifyStartup || verifyGui || captureDocs)
+            ? new SettingsStore(Path.Combine(Path.GetTempPath(), $"HaloDeck_Verify_{Environment.ProcessId}"))
+            : new SettingsStore();
         var settings = settingsStore.Load();
         var componentManager = new ComponentManager();
 
@@ -291,7 +293,7 @@ public partial class App : System.Windows.Application
 
         _inputHub.ToggleConsoleRequested += () =>
         {
-            Dispatcher.InvokeAsync(ShowOrActivateMainConsole);
+            Dispatcher.InvokeAsync(ToggleMainConsole);
         };
 
         _inputHub.SendInsertToGameRequested += () =>
@@ -414,6 +416,17 @@ public partial class App : System.Windows.Application
         {
             _mainWindow.WindowState = WindowState.Maximized;
         }
+    }
+
+    private void ToggleMainConsole()
+    {
+        if (_mainWindow is { IsVisible: true } && !_isConsoleClosingShieldActive &&
+            (_mainWindow.IsActive || Win32Interop.IsWindowOrChildForeground(new WindowInteropHelper(_mainWindow).Handle)))
+        {
+            HideMainConsoleAndRestoreGame();
+            return;
+        }
+        ShowOrActivateMainConsole();
     }
 
     private void ShowOrActivateMainConsole()
@@ -638,17 +651,19 @@ public partial class App : System.Windows.Application
 
     private void OnTopmostGuardTick(object? sender, EventArgs e)
     {
-        bool anyVisible = (_mainWindow is { IsVisible: true }) ||
-                          (_qamWindow is { IsVisible: true }) ||
-                          (_bridge?.Settings.OverlayLevel > 0) ||
-                          (_inputHub?.IsUiActive == true);
-        if (!anyVisible)
+        bool interactiveUiOpen = (_mainWindow is { IsVisible: true } && !_isConsoleClosingShieldActive) ||
+                                 (_qamWindow is { IsInteractiveVisible: true }) ||
+                                 (_inputHub?.IsUiActive == true);
+        if (!interactiveUiOpen)
         {
             return;
         }
 
         CheckAutoDismissQamOnExternalFocus();
-        EnforceOverlayZOrder(forceReband: false);
+        if (_qamWindow is { IsInteractiveVisible: true })
+        {
+            EnforceOverlayZOrder(forceReband: false);
+        }
         UpdateUiActiveFlag();
     }
 
@@ -1092,8 +1107,7 @@ public partial class App : System.Windows.Application
                     tdpDecText: document.getElementById('btnTdpDec')?.textContent?.trim() || '',
                     tdpIncText: document.getElementById('btnTdpInc')?.textContent?.trim() || '',
                     toolboxTiles: document.querySelectorAll('.toolbox-tile').length,
-                    steadyModePills: document.querySelectorAll('[data-steady-mode]').length,
-                    hasSteadyBadge: Boolean(document.getElementById('steadyStatusBadge')?.textContent?.trim()),
+                    cpuBoostPills: document.querySelectorAll('[data-cpu-boost]').length,
                     hasOfflineWifiBtn: Boolean(document.getElementById('btnToggleOfflineWifi')),
                     selectCount: document.querySelectorAll('select').length,
                     legendFits: document.getElementById('gamepadLegend').getBoundingClientRect().bottom <= window.innerHeight + 2,
@@ -1137,8 +1151,7 @@ public partial class App : System.Windows.Application
                           homeRoot.GetProperty("tdpDecText").GetString() == "−1W" &&
                           homeRoot.GetProperty("tdpIncText").GetString() == "+1W" &&
                           homeRoot.GetProperty("toolboxTiles").GetInt32() >= 8 &&
-                          homeRoot.GetProperty("steadyModePills").GetInt32() == 3 &&
-                          homeRoot.GetProperty("hasSteadyBadge").GetBoolean() &&
+                          homeRoot.GetProperty("cpuBoostPills").GetInt32() == 3 &&
                           homeRoot.GetProperty("hasOfflineWifiBtn").GetBoolean() &&
                           homeRoot.GetProperty("selectCount").GetInt32() == 0 &&
                           homeRoot.GetProperty("legendFits").GetBoolean() &&
@@ -1157,7 +1170,7 @@ public partial class App : System.Windows.Application
             await mainCore.ExecuteScriptAsync("document.querySelector('.tab-btn[data-nav=\"monitor\"]').click()");
             bool monitorDomOk = await WaitUntilAsync(
                 mainCore,
-                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-cpu-max-mhz]').length === 6 && document.querySelectorAll('[data-steady-sub]').length === 3 && document.querySelectorAll('svg.sparkline-svg').length === 2 && Boolean(document.getElementById('kpiFps')?.textContent?.trim())");
+                "document.querySelector('.tab-btn[data-nav=\"monitor\"]')?.classList.contains('active') && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-cpu-boost]').length === 3 && document.querySelectorAll('svg.sparkline-svg').length === 2 && Boolean(document.getElementById('kpiFps')?.textContent?.trim())");
             await Task.Delay(250);
             await PrepareCleanCaptureAsync(mainCore);
             await CapturePngAsync(mainCore, outputDir, "v5_06_tab3_hardware_monitor.png");
@@ -1392,7 +1405,7 @@ public partial class App : System.Windows.Application
             {
                 qamHandheldReady = await WaitUntilAsync(
                     qamCore,
-                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange')) && document.querySelectorAll('[data-refresh-hz]').length >= 2 && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-steady-mode]').length === 3 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('.toolbox-tile').length === 8 && Boolean(document.querySelector('[data-toolbox=\"toggle_fridge\"]'))");
+                    "document.body.classList.contains('mode-qam') && !document.getElementById('qamRail').classList.contains('hidden') && document.querySelector('.qam-rail-btn[data-qam-tab=\"handheld\"]')?.classList.contains('active') && document.querySelectorAll('.qam-rail-btn').length === 4 && document.querySelectorAll('select').length === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2 && document.querySelectorAll('.gp-focused').length === 1 && document.getElementById('btnTdpDec')?.textContent?.trim() === '−1W' && document.getElementById('btnTdpInc')?.textContent?.trim() === '+1W' && Boolean(document.getElementById('brightRange')) && Boolean(document.getElementById('volRange')) && document.querySelectorAll('[data-refresh-hz]').length >= 2 && document.querySelectorAll('[data-osd-level]').length === 5 && document.querySelectorAll('[data-cpu-boost]').length === 3 && document.querySelectorAll('[data-fan-mode]').length === 3 && document.querySelectorAll('.toolbox-tile').length === 8 && Boolean(document.querySelector('[data-toolbox=\"toggle_fridge\"]'))");
 
                 var qamLiveSlideOkStr = await qamCore.ExecuteScriptAsync("""
                     (() => {
@@ -1447,7 +1460,7 @@ public partial class App : System.Windows.Application
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]').click()");
                 qamOsdOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg')) && Boolean(document.getElementById('qamKpiFps')?.textContent?.trim()) && document.querySelectorAll('[data-cpu-max-mhz]').length === 5 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"osd\"]')?.classList.contains('active') && Boolean(document.querySelector('#qamOsdSparkline svg')) && Boolean(document.getElementById('qamKpiFps')?.textContent?.trim()) && document.querySelectorAll('[data-cpu-boost]').length === 3 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
                 await Task.Delay(180);
                 await PrepareCleanCaptureAsync(qamCore);
                 await CapturePngAsync(qamCore, outputDir, "v4_11_qam_osd.png");

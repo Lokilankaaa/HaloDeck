@@ -71,6 +71,7 @@
     { value: 0x0068, label: "F13 (呼出侧栏)" },
     { value: 0x0069, label: "F14 (切换帧率窗)" },
     { value: 0x006A, label: "F15 (超分菜单)" },
+    { value: 0x006B, label: "F16 (呼出前端主界面)" },
     { value: 0x0049, label: "Insert (超分菜单)" }
   ];
 
@@ -78,7 +79,7 @@
     fps_l3r3: { l4: 0x800F, r4: 0x8010, shortLabel: "摇杆按下 (L3 / R3)", label: "摇杆按下 (L4=手柄L3 / R4=手柄R3)" },
     act_ab: { l4: 0x8007, r4: 0x8008, shortLabel: "跳跃与闪避 (A / B)", label: "跳跃与闪避 (L4=手柄A / R4=手柄B)" },
     shoulder_lbrb: { l4: 0x800B, r4: 0x800C, shortLabel: "肩键扩展 (LB / RB)", label: "肩键扩展 (L4=手柄LB / R4=手柄RB)" },
-    halodeck_fn: { l4: 0x0068, r4: 0x0069, shortLabel: "侧栏与帧率窗", label: "侧栏与帧率窗 (L4=侧栏 / R4=帧率窗)", enableHotkeys: true }
+    halodeck_fn: { l4: 0x0068, r4: 0x006B, shortLabel: "侧栏与主界面", label: "快捷呼出 (L4=侧栏 / R4=前端主界面)", enableHotkeys: true }
   };
 
   const GPD_COMBO_MODIFIER_OPTIONS = [
@@ -109,7 +110,8 @@
     { value: 0x0045, label: "F12" },
     { value: 0x0068, label: "F13 侧栏" },
     { value: 0x0069, label: "F14 帧率窗" },
-    { value: 0x006A, label: "F15 超分菜单" }
+    { value: 0x006A, label: "F15 超分菜单" },
+    { value: 0x006B, label: "F16 主界面" }
   ];
 
   const GPD_BACK_COMBO_PRESETS = [
@@ -117,6 +119,7 @@
     { id: "gp_ltrt", label: "LT + RT 双扳机", codes: [0x800D, 0x800E] },
     { id: "gp_l3r3", label: "L3 + R3 觉醒/处决", codes: [0x800F, 0x8010] },
     { id: "gp_ax", label: "手柄 A + X", codes: [0x8007, 0x8009] },
+    { id: "kb_console", label: "Ctrl+Shift+O (主界面)", codes: [0x00E0, 0x00E1, 0x0012] },
     { id: "kb_qam", label: "Ctrl+Alt+O (侧栏)", codes: [0x00E0, 0x00E2, 0x0012] },
     { id: "kb_osd", label: "Ctrl+Alt+M (帧率窗)", codes: [0x00E0, 0x00E2, 0x0010] },
     { id: "kb_alttab", label: "Alt + Tab 切窗", codes: [0x00E2, 0x002B] },
@@ -145,6 +148,7 @@
     m.F13 = 0x0068;
     m.F14 = 0x0069;
     m.F15 = 0x006A;
+    m.F16 = 0x006B;
     return m;
   })();
 
@@ -160,7 +164,7 @@
       [0x004F, "→"], [0x0050, "←"], [0x0051, "↓"], [0x0052, "↑"],
       [0x00E0, "Ctrl"], [0x00E1, "Shift"], [0x00E2, "Alt"], [0x00E3, "Win"],
       [0x00E4, "RCtrl"], [0x00E5, "RShift"], [0x00E6, "RAlt"], [0x00E7, "RWin"],
-      [0x0068, "F13"], [0x0069, "F14"], [0x006A, "F15"]
+      [0x0068, "F13"], [0x0069, "F14"], [0x006A, "F15"], [0x006B, "F16"]
     ]);
     for (let i = 0; i < 26; i++) map.set(0x0004 + i, String.fromCharCode(65 + i));
     for (let i = 1; i <= 9; i++) map.set(0x001E + (i - 1), String(i));
@@ -1117,10 +1121,15 @@
       .replace(/"/g, "&quot;");
   }
 
+  function getRunningGame() {
+    const g = state.snapshot?.runningGame;
+    return g && g.isCurrentlyRunning ? g : null;
+  }
+
   function getActiveGame() {
     const snap = state.snapshot;
     if (!snap) return null;
-    if (snap.runningGame) return snap.runningGame;
+    if (snap.runningGame && snap.runningGame.isCurrentlyRunning) return snap.runningGame;
     if (snap.activeInspectGame) return snap.activeInspectGame;
     return (snap.games || [])[0] || null;
   }
@@ -1291,7 +1300,7 @@
     const hw = sys.hardwareService || {};
     const settings = snap.settings || {};
     const frozen = snap.frozenGames || [];
-    const active = getActiveGame();
+    const active = getRunningGame();
     const layoutMode = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
 
     const curTdp = settings.currentTdpWatts || 40;
@@ -1339,8 +1348,9 @@
     const fanBadgeText = hw.ecReady && hw.fanRpm > 0
       ? `${hw.fanRpm} RPM`
       : (hw.serviceRunning ? "SMU 就绪" : "待授权");
-    const steadyMode = String(settings.steadyEcoMode || "off").toLowerCase();
-    const steadyBadge = formatSteadyBadge(sys, settings);
+    const boostMode = sys.cpuBoostMode || "off";
+    const boostBadgeText = boostMode === "off" ? "已关睿频" : (boostMode === "efficient" ? "智能平衡" : "积极满血");
+    const savedProfileCount = Object.values(perGameProfiles).filter((p) => p && p.enabled).length;
 
     const sunSvg = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>`;
     const volSvg = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`;
@@ -1358,9 +1368,6 @@
       const gpuBarPct = Math.max(5, Math.min(100, sys.gpuUsagePercent || 0));
       const tempBarPct = Math.max(8, Math.min(100, ((maxTemp || 35) / 95) * 100));
       const fanBarPct = Math.max(8, pwmPctNow > 0 ? pwmPctNow : (hw.fanRpm > 0 ? Math.min(100, Math.round((hw.fanRpm / 5200) * 100)) : 18));
-      const steadyCpuOn = settings.steadyEcoCpuEnabled !== false;
-      const steadyBgOn = settings.steadyEcoBackgroundEnabled !== false;
-      const steadyPerOn = settings.steadyEcoPeripheralEnabled !== false;
       const inj = active?.injection;
 
       return `
@@ -1425,10 +1432,10 @@
           </div>
 
           <div class="cockpit-matrix-3">
-            <!-- Col 1: Power Engine, CPU Allocation & Live 60s Power/Temp Sparkline -->
+            <!-- Col 1: Power Engine, CPU Boost & Live 60s Power/Temp Sparkline -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">功耗引擎与核心调度</span>
+                <span class="hh-card-title">功耗引擎与核心睿频</span>
                 <span id="consoleTdpBadge" class="hh-card-badge live">${hw.hwStapmLimitWatts != null ? `PM实读 ${hw.hwStapmLimitWatts.toFixed(0)}W` : `目标 ${curTdp}W`}</span>
               </div>
 
@@ -1451,29 +1458,26 @@
 
               <div class="ck-group-box">
                 <div class="ck-group-row">
+                  <span class="ck-seg-label">CPU 睿频模式</span>
+                  ${renderSegmented("data-cpu-boost", [
+                    { value: "off", label: "关睿频" },
+                    { value: "efficient", label: "平衡" },
+                    { value: "aggressive", label: "满血" }
+                  ], boostMode, "compact")}
+                </div>
+                <div class="ck-group-row">
+                  <div>
+                    <span class="ck-seg-label">插拔电自动切功耗</span>
+                    <span class="ck-muted" style="margin-left:5px;">电池 ${settings.batteryTdpWatts || 25}W / 插电 ${settings.acTdpWatts || 55}W</span>
+                  </div>
+                  ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
+                </div>
+                <div class="ck-group-row">
                   <div>
                     <span class="ck-seg-label">稳态功耗锁</span>
                     <span class="ck-muted" style="margin-left:5px;">SPL = sPPT = fPPT</span>
                   </div>
                   ${renderSwitch("swFlatLock", flatLock)}
-                </div>
-                <div class="ck-group-row">
-                  <span class="ck-seg-label">CPU 频率上限</span>
-                  ${renderSegmented("data-cpu-max-mhz", [
-                    { value: "0", label: "不限" },
-                    { value: "2600", label: "2.6G" },
-                    { value: "3000", label: "3.0G" },
-                    { value: "3200", label: "3.2G" },
-                    { value: "3600", label: "3.6G" }
-                  ], String(sys.cpuMaxFreqMhz ?? settings.cpuMaxFreqMhz ?? 0), "compact")}
-                </div>
-                <div class="ck-group-row">
-                  <span class="ck-seg-label">CPU 睿频策略</span>
-                  ${renderSegmented("data-cpu-boost", [
-                    { value: "off", label: "关睿频" },
-                    { value: "efficient", label: "平衡" },
-                    { value: "aggressive", label: "满血" }
-                  ], sys.cpuBoostMode || "off", "compact")}
                 </div>
               </div>
 
@@ -1588,11 +1592,11 @@
               </div>
             </section>
 
-            <!-- Col 3: Active Game Hero Box, Steady Eco Sub-Switches & 2x4 Quick Actions -->
+            <!-- Col 3: Running Game Status & 2x4 Quick Actions -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">当前游戏 · 稳帧省电 · 快捷操作</span>
-                <span id="steadyStatusBadge" class="hh-card-badge ${steadyBadge.live ? "live" : ""}">${esc(steadyBadge.text)}</span>
+                <span class="hh-card-title">前台游戏与掌机工具箱</span>
+                <span class="hh-card-badge ${active ? "live" : ""}">${active ? "游戏运行中" : "桌面待命"}</span>
               </div>
 
               ${active && gamePerf ? `
@@ -1617,34 +1621,24 @@
                       <button id="btnGamePerfTdpInc" class="step-btn" data-focusable="true">+</button>
                     </div>
                     ${renderSegmented("data-game-perf-hz", [
-                      { value: "0", label: "默认" },
+                      { value: "0", label: "跟随全局" },
                       { value: "60", label: "60Hz" },
+                      { value: "120", label: "120Hz" },
                       { value: "-1", label: "动态" }
                     ], String(gamePerf.refreshRateHz || 0), "compact")}
-                    <button class="bento-link-pill" data-quick-game-scene="vn" data-focusable="true">10W省电</button>
-                    <button class="bento-link-pill" data-quick-game-scene="act" data-focusable="true">25W动作</button>
                   </div>
                 </div>
-              ` : ""}
-
-              <div class="ck-group-box">
-                <div class="ck-group-row">
-                  <span class="ck-seg-label">稳帧省电</span>
-                  ${renderSegmented("data-steady-mode", [
-                    { value: "off", label: "关闭" },
-                    { value: "auto", label: "游戏时自动" },
-                    { value: "always", label: "始终开启" }
-                  ], steadyMode, "compact")}
-                </div>
-                <div class="ck-group-row">
-                  <span class="ck-seg-label">优化细项</span>
-                  <div style="display:flex;gap:5px;">
-                    <button class="pill-btn small ${steadyCpuOn ? "active" : ""}" data-steady-sub="cpuEnabled" data-focusable="true">核心休眠</button>
-                    <button class="pill-btn small ${steadyBgOn ? "active" : ""}" data-steady-sub="backgroundEnabled" data-focusable="true">后台绑核</button>
-                    <button class="pill-btn small ${steadyPerOn ? "active" : ""}" data-steady-sub="peripheralEnabled" data-focusable="true">外设节能</button>
+              ` : `
+                <div class="ck-game-hero-box" style="justify-content:center;gap:6px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <div>
+                      <strong style="font-size:13px;">当前处于桌面待命状态</strong>
+                      <span class="ck-muted" style="display:block;margin-top:2px;">启动游戏后可在此绑定独立功耗与刷新率${savedProfileCount > 0 ? `（已保存 ${savedProfileCount} 款专属方案）` : ""}</span>
+                    </div>
+                    <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">游戏与超分 ▸</button>
                   </div>
                 </div>
-              </div>
+              `}
 
               <div class="ck-tools-widget">
                 <div class="ck-widget-head">
@@ -1668,13 +1662,13 @@
       `;
     }
 
-    // Default Layout: Handheld Bento Tile Deck (Balanced 2-Column Grid, Zero Empty Chasms, Normal Horizontal OSD)
+    // Default Layout: Handheld Bento Tile Deck
     return `
       <div class="bento-home-shell">
         ${svcAlertHtml}
 
         <div class="bento-balanced-grid">
-          <!-- Left Column: Power & CPU Deck + Dedicated Active Game Card -->
+          <!-- Left Column: Power Deck + Dedicated Running Game Card -->
           <div class="bento-col-left">
             <section class="hh-card bento-power-card">
               <div class="bento-power-top">
@@ -1723,19 +1717,13 @@
 
               <div class="bento-power-subbar">
                 <div class="bento-subbar-item">
-                  <span class="bento-subbar-label" title="锁定 SPL = sPPT = fPPT，消除瞬时功耗冲高抢电">稳态功耗锁</span>
-                  ${renderSwitch("swFlatLock", flatLock)}
+                  <span class="bento-subbar-label">插拔电自动切 (${settings.batteryTdpWatts || 25}W/${settings.acTdpWatts || 55}W)</span>
+                  ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
                 </div>
                 <div class="bento-subbar-divider"></div>
-                <div class="bento-subbar-item" style="flex:1;justify-content:space-between;">
-                  <span class="bento-subbar-label">CPU 频率上限</span>
-                  ${renderSegmented("data-cpu-max-mhz", [
-                    { value: "0", label: "不限" },
-                    { value: "2600", label: "2.6G" },
-                    { value: "3000", label: "3.0G" },
-                    { value: "3200", label: "3.2G" },
-                    { value: "3600", label: "3.6G" }
-                  ], String(sys.cpuMaxFreqMhz ?? settings.cpuMaxFreqMhz ?? 0), "compact")}
+                <div class="bento-subbar-item">
+                  <span class="bento-subbar-label" title="锁定 SPL = sPPT = fPPT">稳态功耗锁</span>
+                  ${renderSwitch("swFlatLock", flatLock)}
                 </div>
               </div>
             </section>
@@ -1749,11 +1737,11 @@
                   <div class="bento-game-meta">
                     <div class="bento-game-title-row">
                       <strong class="bento-game-fulltitle">${esc(active.title)}</strong>
-                      ${active.isCurrentlyRunning ? `<span class="hh-card-badge live">运行中</span>` : `<span class="hh-card-badge">${gamePerf.enabled ? "已启用专属档" : "当前选中游戏"}</span>`}
+                      <span class="hh-card-badge live">正在运行</span>
                     </div>
                     <span class="bento-game-desc">${gamePerf.enabled
-                      ? `启动时自动切换为 ${gamePerf.tdpWatts}W${gamePerf.refreshRateHz === -1 ? " · 动态刷新率" : (gamePerf.refreshRateHz > 0 ? ` · ${gamePerf.refreshRateHz}Hz` : "")}${gamePerf.cpuMaxFreqMhz ? ` · CPU ${(gamePerf.cpuMaxFreqMhz / 1000).toFixed(1)}G` : ""}，退出恢复全局`
-                      : "开启右侧开关可为该游戏绑定独立功耗与刷新率，退出游戏自动恢复"}</span>
+                      ? `已绑定专属方案：${gamePerf.tdpWatts}W${gamePerf.refreshRateHz === -1 ? " · 动态刷新率" : (gamePerf.refreshRateHz > 0 ? ` · ${gamePerf.refreshRateHz}Hz` : "")}，退游恢复全局`
+                      : "调整下方瓦数或刷新率即可为当前游戏自动保存专属方案"}</span>
                   </div>
                   <div class="bento-game-top-actions">
                     <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">超分与插帧 ▸</button>
@@ -1775,24 +1763,20 @@
                       { value: "-1", label: "动态" }
                     ], String(gamePerf.refreshRateHz || 0), "compact")}
                   </div>
-                  <div class="bento-game-templates">
-                    <button class="pill-btn small" data-quick-game-scene="vn" data-focusable="true" title="一键设为 10W + 60Hz 省电方案">10W 省电</button>
-                    <button class="pill-btn small" data-quick-game-scene="act" data-focusable="true" title="一键设为 25W + 动态刷新率 + CPU 3.0G 让电方案">25W 动作</button>
-                  </div>
                 </div>
               ` : `
                 <div class="bento-game-empty">
                   <div>
-                    <strong class="hh-card-title">当前游戏专属配置</strong>
-                    <span class="bento-game-desc" style="display:block;margin-top:3px;">暂未发现本地游戏，可前往「游戏与超分」扫描目录或添加游戏主程序</span>
+                    <strong class="hh-card-title">桌面待命 · 当前未运行游戏</strong>
+                    <span class="bento-game-desc" style="display:block;margin-top:4px;">进入游戏后此处自动识别并可绑定该游戏独立功耗与刷新率${savedProfileCount > 0 ? `（已保存 ${savedProfileCount} 款游戏专属方案）` : "；也可前往「游戏与超分」提前配置 FSR 4 超分"}</span>
                   </div>
-                  <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">前往游戏库 ▸</button>
+                  <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">游戏与超分 ▸</button>
                 </div>
               `}
             </section>
           </div>
 
-          <!-- Right Column: Display & Audio + Clean Horizontal Modes Card + 2x4 Handheld Toolbox -->
+          <!-- Right Column: Display & Audio + Clean Horizontal Modes Card (OSD + CPU Boost + Fan) + 2x4 Handheld Toolbox -->
           <div class="bento-col-right">
             <section class="hh-card bento-av-card">
               <div class="bento-av-head">
@@ -1844,14 +1828,14 @@
 
               <div class="bento-ctrl-row">
                 <div class="bento-ctrl-meta">
-                  <span class="bento-ctrl-title">稳帧省电</span>
-                  <span id="steadyStatusBadge" class="hh-card-badge ${steadyBadge.live ? "live" : ""}">${esc(steadyBadge.text)}</span>
+                  <span class="bento-ctrl-title">CPU 睿频</span>
+                  <span class="hh-card-badge ${boostMode !== "off" ? "live" : ""}">${boostBadgeText}</span>
                 </div>
-                ${renderSegmented("data-steady-mode", [
-                  { value: "off", label: "关闭" },
-                  { value: "auto", label: "游戏时自动" },
-                  { value: "always", label: "始终开启" }
-                ], steadyMode, "compact")}
+                ${renderSegmented("data-cpu-boost", [
+                  { value: "off", label: "关闭睿频" },
+                  { value: "efficient", label: "智能平衡" },
+                  { value: "aggressive", label: "积极满血" }
+                ], boostMode, "compact")}
               </div>
 
               <div class="bento-ctrl-row">
@@ -2023,49 +2007,29 @@
 
           <div class="hh-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">CPU 次基频分配 · 稳帧子项 · 三段功耗</span>
+              <span class="hh-card-title">CPU 睿频模式与三段功耗策略</span>
               <span class="hh-card-badge">${esc(sys.cpuTopologyBadge || "单CCD 8核 · 32MB L3")}</span>
             </div>
 
             <div class="cw-group">
               <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">CPU 频率上限（向 8060S 让渡功耗）</span>
-                  <span class="cw-row-sub">常驻关睿频下选 2.6G–3.2G 可再省 3–5W 给核显提频</span>
+                  <span class="cw-row-title">CPU 睿频模式</span>
+                  <span class="cw-row-sub">掌机推荐关闭睿频，省电降温并将封装功耗优先分配给 8060S 核显</span>
                 </div>
-                ${renderSegmented("data-cpu-max-mhz", [
-                  { value: "0", label: "不限" },
-                  { value: "2600", label: "2.6G" },
-                  { value: "3000", label: "3.0G" },
-                  { value: "3200", label: "3.2G" },
-                  { value: "3600", label: "3.6G" },
-                  { value: "4200", label: "4.2G" }
-                ], String(sys.cpuMaxFreqMhz ?? settings.cpuMaxFreqMhz ?? 0), "compact")}
+                ${renderSegmented("data-cpu-boost", [
+                  { value: "off", label: "关闭睿频" },
+                  { value: "efficient", label: "智能平衡" },
+                  { value: "aggressive", label: "积极满血" }
+                ], sys.cpuBoostMode || "off", "compact")}
               </div>
 
               <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                <span class="cw-row-title">CPU 睿频开关 & EPP 能效偏置</span>
-                <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                  ${renderSegmented("data-cpu-boost", [
-                    { value: "off", label: "关睿频" },
-                    { value: "efficient", label: "平衡" },
-                    { value: "aggressive", label: "满血" }
-                  ], sys.cpuBoostMode || "off", "compact")}
-                  ${renderSegmented("data-steady-epp", [
-                    { value: "65", label: "EPP 65" },
-                    { value: "70", label: "70" },
-                    { value: "80", label: "80" }
-                  ], steadyEppSnap, "compact")}
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">拔插电源自动切功耗</span>
+                  <span class="cw-row-sub">电池续航 ${settings.batteryTdpWatts || 25}W · 外接电源 ${settings.acTdpWatts || 55}W</span>
                 </div>
-              </div>
-
-              <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                <span class="cw-row-title">省电优化细项 (${steadyMode === "off" ? "已关闭" : steadyMode === "always" ? "始终开启" : "游戏时自动"})</span>
-                <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                  <button class="pill-btn small ${steadyCpuOn ? "active" : ""}" data-steady-sub="cpuEnabled" data-focusable="true">CPU 动态降频</button>
-                  <button class="pill-btn small ${steadyBgOn ? "active" : ""}" data-steady-sub="backgroundEnabled" data-focusable="true">后台绑定尾核</button>
-                  <button class="pill-btn small ${steadyPerOn ? "active" : ""}" data-steady-sub="peripheralEnabled" data-focusable="true">后台解码省电</button>
-                </div>
+                ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
               </div>
 
               <div class="cw-row" style="min-height:40px;padding:8px 12px;">
@@ -2280,9 +2244,9 @@
 
     ensureGpdControllerLoaded();
 
+    const consoleButtons = settings.consoleGamepadCombo?.buttons || ["BACK", "LB"];
     const qamButtons = settings.qamGamepadCombo?.buttons || ["BACK", "RB"];
     const osdButtons = settings.osdGamepadCombo?.buttons || ["BACK", "Y"];
-    const mouseButtons = settings.mouseModeGamepadCombo?.buttons || ["BACK", "LB"];
     const insButtons = settings.insertGamepadCombo?.buttons || ["BACK", "START"];
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
     const dirtyGpd = hasPendingGpdChanges(gpd, draft);
@@ -2379,6 +2343,13 @@
 
               <div class="hotkey-list" style="margin-top:8px;">
                 <div class="hotkey-row">
+                  <div class="cw-row-title">呼出前端主界面</div>
+                  <div class="comp-actions">
+                    ${renderKeycaps(consoleButtons)}
+                    <button id="btnRecordConsoleCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "console" ? "请按键..." : "录制"}</button>
+                  </div>
+                </div>
+                <div class="hotkey-row">
                   <div class="cw-row-title">呼出快捷侧栏</div>
                   <div class="comp-actions">
                     ${renderKeycaps(qamButtons)}
@@ -2419,15 +2390,9 @@
                     </div>
                   </div>
                   <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                    <span class="cw-row-title">桌面鼠标手柄热键</span>
-                    <div class="comp-actions">
-                      ${renderKeycaps(mouseButtons)}
-                      <button id="btnRecordMouseCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "mouse" ? "请按键..." : "录制"}</button>
-                    </div>
-                  </div>
-                  <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                     <span class="cw-row-title">键盘全局热键</span>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button id="btnHotkeyConsole" class="btn btn-sm" data-focusable="true">主界面: ${esc(settings.consoleHotkey?.displayText || "Ctrl+Shift+O")}</button>
                       <button id="btnHotkeyQam" class="btn btn-sm" data-focusable="true">侧栏: ${esc(settings.qamHotkey?.displayText || "Ctrl+Alt+O")}</button>
                       <button id="btnHotkeyOsd" class="btn btn-sm" data-focusable="true">OSD: ${esc(settings.osdHotkey?.displayText || "Ctrl+Alt+M")}</button>
                       <button id="btnHotkeyIns" class="btn btn-sm" data-focusable="true">菜单: ${esc(settings.insertHotkey?.displayText || "Ctrl+Alt+I")}</button>
@@ -2625,18 +2590,10 @@
                     ${renderSegmented("data-game-perf-hz", [
                       { value: "0", label: "跟随全局" },
                       { value: "60", label: "60Hz" },
+                      { value: "120", label: "120Hz" },
                       { value: "-1", label: "动态" }
                     ], String(gamePerf.refreshRateHz || 0), "compact")}
                   </div>
-                </div>
-                <div class="game-perf-cell">
-                  <span>CPU 频率上限</span>
-                  ${renderSegmented("data-game-perf-cpu", [
-                    { value: "0", label: "跟随全局" },
-                    { value: "2600", label: "2.6G" },
-                    { value: "3000", label: "3.0G 甜点" },
-                    { value: "3200", label: "3.2G" }
-                  ], String(gamePerf.cpuMaxFreqMhz || 0), "compact")}
                 </div>
               </div>
             </div>
@@ -3055,17 +3012,18 @@
         ? settings.customTdpPresets
         : [10, 15, 20, 25, 30, 45, 60];
       const fanMode = normalizeFanModeUi(settings.fanMode);
-      const steadyMode = String(settings.steadyEcoMode || "off").toLowerCase();
+      const boostMode = sys.cpuBoostMode || "off";
       const osdLevel = settings.overlayLevel ?? 0;
       const apuStr = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--W";
       const rpm = hw.fanRpm || 0;
       const hzOptions = buildRefreshOptions(sys);
       const activeRefreshVal = sys.isDynamicRefreshRate ? "drr" : String(sys.refreshRateHz || 120);
+      const runningNow = getRunningGame();
 
       const perGameProfiles = settings.perGameProfiles || {};
-      const gamePerf = active ? (perGameProfiles[active.id] || {
-        gameId: active.id,
-        gameName: active.title,
+      const gamePerf = runningNow ? (perGameProfiles[runningNow.id] || {
+        gameId: runningNow.id,
+        gameName: runningNow.title,
         enabled: false,
         tdpWatts: curTdp,
         refreshRateHz: 0,
@@ -3101,11 +3059,11 @@
             </div>
           </div>
 
-          <!-- 2. Active Game Instant Binding -->
-          ${active && gamePerf ? `
+          <!-- 2. Active Running Game Instant Binding -->
+          ${runningNow && gamePerf ? `
             <div class="qam-section compact-pad qam-game-bind-card">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
-                <strong style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">《${esc(active.title)}》专属配置</strong>
+                <strong style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">《${esc(runningNow.title)}》专属配置</strong>
                 ${renderSwitch("swGamePerfEnabled", !!gamePerf.enabled)}
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;gap:5px;">
@@ -3136,7 +3094,7 @@
             </div>
           </div>
 
-          <!-- 4. Clean 3-Row Labeled Segmented Controls: OSD + Steady Eco + Fan -->
+          <!-- 4. Clean 3-Row Labeled Segmented Controls: OSD + CPU Boost + Fan -->
           <div class="qam-section compact-pad qam-modes-list">
             <div class="qam-labeled-row">
               <span class="qam-row-label">性能悬浮窗</span>
@@ -3154,12 +3112,12 @@
             </div>
 
             <div class="qam-labeled-row">
-              <span class="qam-row-label">稳帧省电</span>
-              ${renderSegmented("data-steady-mode", [
-                { value: "off", label: "关闭" },
-                { value: "auto", label: "游戏自动" },
-                { value: "always", label: "始终开启" }
-              ], steadyMode, "compact")}
+              <span class="qam-row-label">CPU 睿频</span>
+              ${renderSegmented("data-cpu-boost", [
+                { value: "off", label: "关睿频" },
+                { value: "efficient", label: "平衡" },
+                { value: "aggressive", label: "满血" }
+              ], boostMode, "compact")}
             </div>
 
             <div class="qam-labeled-row">
@@ -3230,15 +3188,13 @@
           </div>
 
           <div class="qam-section">
-            <div class="qam-section-title"><span>CPU 次基频分配 & 定速风扇</span></div>
+            <div class="qam-section-title"><span>CPU 睿频与定速风扇</span></div>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              ${renderSegmented("data-cpu-max-mhz", [
-                { value: "0", label: "不限" },
-                { value: "2600", label: "2.6G" },
-                { value: "3000", label: "3.0G" },
-                { value: "3200", label: "3.2G" },
-                { value: "3600", label: "3.6G" }
-              ], String(sys.cpuMaxFreqMhz ?? settings.cpuMaxFreqMhz ?? 0), "compact full")}
+              ${renderSegmented("data-cpu-boost", [
+                { value: "off", label: "关闭睿频" },
+                { value: "efficient", label: "智能平衡" },
+                { value: "aggressive", label: "积极满血" }
+              ], sys.cpuBoostMode || "off", "compact full")}
               ${fanMode === "manual" ? `
                 <div style="display:flex;align-items:center;gap:6px;">
                   <button id="btnFanPctDec" class="step-btn qam-step" data-focusable="true">−5%</button>
@@ -3487,7 +3443,8 @@
       return;
     }
 
-    const active = getActiveGame();
+    const runningNow = getRunningGame();
+    const inspectTarget = state.tab === "opti" ? getActiveGame() : runningNow;
     const settings = state.snapshot?.settings || {};
     const inOptiTune = state.tab === "opti" && state.optiSubTab === "tune";
     legend.innerHTML = `
@@ -3500,7 +3457,7 @@
       </div>
       <div class="legend-group" style="color:var(--text-muted);font-size:11px;">
         <span>TDP 设定: ${settings.currentTdpWatts || 45}W · 风扇: ${esc(formatFanModeLabel(settings.fanMode))}</span>
-        ${active ? `<span>目标: ${esc(active.title)}</span>` : ""}
+        <span>${inspectTarget ? (runningNow ? `正在运行: ${esc(runningNow.title)}` : `超分目标: ${esc(inspectTarget.title)}`) : "状态: 桌面待命"}</span>
       </div>
     `;
   }
@@ -4139,9 +4096,10 @@
     document.getElementById("swMouseMode")?.addEventListener("click", toggleMouseMode);
     document.getElementById("swQamMouseMode")?.addEventListener("click", toggleMouseMode);
 
-    // Per-game performance profile
+    // Per-game performance profile (adjusting Watts or Hz automatically enables & persists the profile)
+    const resolveGamePerfTarget = () => (IS_QAM || state.tab === "handheld") ? getRunningGame() : getActiveGame();
     const saveGamePerf = async (patch) => {
-      const active = getActiveGame();
+      const active = resolveGamePerfTarget();
       if (!active) return;
       const curMap = state.snapshot?.settings?.perGameProfiles || {};
       const existing = curMap[active.id] || {
@@ -4155,37 +4113,22 @@
       await rpc("saveGamePerfProfile", { ...existing, ...patch, gameId: active.id, gameName: active.title });
     };
     document.getElementById("swGamePerfEnabled")?.addEventListener("click", () => {
-      const active = getActiveGame();
+      const active = resolveGamePerfTarget();
       const cur = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.enabled;
       saveGamePerf({ enabled: !cur });
     });
     document.getElementById("btnGamePerfTdpDec")?.addEventListener("click", () => {
-      const active = getActiveGame();
+      const active = resolveGamePerfTarget();
       const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
-      saveGamePerf({ tdpWatts: Math.max(8, curW - 1) });
+      saveGamePerf({ enabled: true, tdpWatts: Math.max(8, curW - 1) });
     });
     document.getElementById("btnGamePerfTdpInc")?.addEventListener("click", () => {
-      const active = getActiveGame();
+      const active = resolveGamePerfTarget();
       const curW = state.snapshot?.settings?.perGameProfiles?.[active?.id]?.tdpWatts || state.snapshot?.settings?.currentTdpWatts || 40;
-      saveGamePerf({ tdpWatts: Math.min(120, curW + 1) });
+      saveGamePerf({ enabled: true, tdpWatts: Math.min(120, curW + 1) });
     });
     document.querySelectorAll("[data-game-perf-hz]").forEach((el) => {
-      el.addEventListener("click", () => saveGamePerf({ refreshRateHz: Number(el.dataset.gamePerfHz) }));
-    });
-    document.querySelectorAll("[data-game-perf-cpu]").forEach((el) => {
-      el.addEventListener("click", () => saveGamePerf({ cpuMaxFreqMhz: Number(el.dataset.gamePerfCpu) }));
-    });
-    document.querySelectorAll("[data-quick-game-scene]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const scene = el.dataset.quickGameScene;
-        if (scene === "vn") {
-          await saveGamePerf({ enabled: true, tdpWatts: 10, refreshRateHz: 60, cpuMaxFreqMhz: 0 });
-          showToast("已一键绑定「文字轻游档」：10W · 60Hz（退游自动恢复）", "success");
-        } else if (scene === "act") {
-          await saveGamePerf({ enabled: true, tdpWatts: 25, refreshRateHz: -1, cpuMaxFreqMhz: 3000 });
-          showToast("已一键绑定「动作甜点档」：25W · 动态Hz · 3.0G 让电给 8060S", "success");
-        }
-      });
+      el.addEventListener("click", () => saveGamePerf({ enabled: true, refreshRateHz: Number(el.dataset.gamePerfHz) }));
     });
     document.getElementById("btnHomeGoOpti")?.addEventListener("click", () => {
       state.tab = "opti";
@@ -4299,10 +4242,10 @@
         const r4Combo = Array.isArray(state.gpdDraft.r4Combo) ? normalizeComboCodesList(state.gpdDraft.r4Combo) : [];
         const l4Single = l4Combo.length === 1 ? l4Combo[0] : (l4Combo.length >= 2 ? null : (state.gpdDraft.l4Key >= 0 ? state.gpdDraft.l4Key : null));
         const r4Single = r4Combo.length === 1 ? r4Combo[0] : (r4Combo.length >= 2 ? null : (state.gpdDraft.r4Key >= 0 ? state.gpdDraft.r4Key : null));
-        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A].includes(l4Single) ||
-          [0x0068, 0x0069, 0x006A].includes(r4Single) ||
-          l4Combo.some((c) => c >= 0x0068 && c <= 0x006A) ||
-          r4Combo.some((c) => c >= 0x0068 && c <= 0x006A);
+        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A, 0x006B].includes(l4Single) ||
+          [0x0068, 0x0069, 0x006A, 0x006B].includes(r4Single) ||
+          l4Combo.some((c) => c >= 0x0068 && c <= 0x006B) ||
+          r4Combo.some((c) => c >= 0x0068 && c <= 0x006B);
         if (usesHaloDeckFn && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
           await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
         }
@@ -4326,10 +4269,23 @@
     });
 
     // Hotkeys & Settings
+    document.getElementById("btnRecordConsoleCombo")?.addEventListener("click", () => startRecordCombo("console"));
     document.getElementById("btnRecordQamCombo")?.addEventListener("click", () => startRecordCombo("qam"));
     document.getElementById("btnRecordOsdCombo")?.addEventListener("click", () => startRecordCombo("osd"));
-    document.getElementById("btnRecordMouseCombo")?.addEventListener("click", () => startRecordCombo("mouse"));
     document.getElementById("btnRecordInsCombo")?.addEventListener("click", () => startRecordCombo("insert"));
+
+    document.getElementById("btnHotkeyConsole")?.addEventListener("click", async () => {
+      const choices = [
+        { modifiers: 6, virtualKey: 0x4F, displayText: "Ctrl + Shift + O" },
+        { modifiers: 3, virtualKey: 0x48, displayText: "Ctrl + Alt + H" },
+        { modifiers: 0, virtualKey: 0x7B, displayText: "F12" }
+      ];
+      const s = state.snapshot.settings;
+      const curIdx = choices.findIndex((c) => c.displayText === s.consoleHotkey?.displayText);
+      const next = choices[(curIdx + 1) % choices.length];
+      await rpc("saveSettings", { ...s, consoleHotkey: next });
+      showToast(`前端主界面键盘热键已切换为 ${next.displayText}`, "success");
+    });
 
     document.getElementById("btnHotkeyQam")?.addEventListener("click", async () => {
       const choices = [
@@ -5107,7 +5063,8 @@
     state.recordingTarget = null;
     if (target && buttons?.length && state.snapshot?.settings) {
       const next = { ...state.snapshot.settings };
-      if (target === "qam") next.qamGamepadCombo = { buttons };
+      if (target === "console") next.consoleGamepadCombo = { buttons };
+      else if (target === "qam") next.qamGamepadCombo = { buttons };
       else if (target === "osd") next.osdGamepadCombo = { buttons };
       else if (target === "mouse") next.mouseModeGamepadCombo = { buttons };
       else if (target === "insert") next.insertGamepadCombo = { buttons };
