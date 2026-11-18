@@ -60,7 +60,13 @@ public sealed class BackgroundEcoIsolator : IDisposable
         "GPDTool",
         "GPDKeyboard",
         "GPDKeyboardTools",
+        "steam",          // Protect Steam client & Steamworks/Steam Input IPC during gameplay
+        "steamwebhelper",
         "GameOverlayUI",  // Keep Steam Shift+Tab overlay responsive
+        "PresentMon",
+        "RTSS",
+        "RTSSHooksLoader64",
+        "CapFrameX",
         "Discord",        // Preserve real-time voice chat latency
         "KOOK",
         "TeamSpeak3",
@@ -69,7 +75,6 @@ public sealed class BackgroundEcoIsolator : IDisposable
 
     private static readonly HashSet<string> BackgroundClutterProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "steamwebhelper",
         "EpicGamesLauncher",
         "EpicWebHelper",
         "GalaxyClient",

@@ -121,6 +121,7 @@ public sealed class SystemControlService : IDisposable
     };
 
     private readonly string _cpuName;
+    private readonly PowerPeripheralOptimizer? _powerOptimizer;
     private readonly AmdGpuTelemetryService _telemetry = new();
     private readonly HardwareServiceClient _hwClient = new();
     private readonly object _cpuLock = new();
@@ -152,9 +153,15 @@ public sealed class SystemControlService : IDisposable
 
     private readonly object _displayCacheLock = new();
     private DateTime _lastDisplayEnumUtc = DateTime.MinValue;
+    private DateTime _lastDisplayCcdUtc = DateTime.MinValue;
     private uint _cachedDisplayWidth;
     private uint _cachedDisplayHeight;
     private uint _cachedDisplayOrient;
+    private int _cachedRefreshRateHz;
+    private int _cachedBaseRefreshRateHz;
+    private bool _cachedIsDynamicRefreshRate;
+    private int _cachedDynamicCeilingHz;
+    private bool _cachedDynamicSupported;
     private List<int> _cachedSupportedRates = new();
     private List<string> _cachedSupportedResolutions = new();
 
@@ -169,14 +176,25 @@ public sealed class SystemControlService : IDisposable
 
     public HardwareServiceClient HardwareClient => _hwClient;
 
-    public SystemControlService()
+    public SystemControlService(PowerPeripheralOptimizer? powerOptimizer = null)
     {
+        _powerOptimizer = powerOptimizer;
         _cpuName = ReadCpuNameFromRegistry();
+        SystemEvents.DisplaySettingsChanged += OnSystemDisplaySettingsChanged;
         // Seed initial GetSystemTimes baseline so the next GetState call yields a valid delta
         SampleCpuUsagePercent();
     }
 
-    public SystemControlState GetState(bool includeHardwareRefresh = false, int targetPid = 0)
+    private void OnSystemDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        InvalidateDisplayCache();
+    }
+
+    public SystemControlState GetState(
+        bool includeHardwareRefresh = false,
+        int targetPid = 0,
+        bool uiVisible = true,
+        bool osdVisible = false)
     {
         var topo = CpuTopologyInspector.GetCurrent();
         var state = new SystemControlState
@@ -190,7 +208,7 @@ public sealed class SystemControlService : IDisposable
         };
 
         PopulateMemoryStats(state);
-        PopulateDisplayInfo(state);
+        PopulateDisplayInfo(state, uiVisible);
         PopulatePowerStatus(state);
 
         var hw = _hwClient.GetStatus(includeHardwareRefresh, targetPid);
@@ -200,8 +218,8 @@ public sealed class SystemControlService : IDisposable
         _telemetry.RecordHistoryPoint(amd, state.CpuUsagePercent, hw.CurrentFps);
         _skipThermalZoneWmi = hw.CpuTempC > 0 || amd.CpuTempDirect;
 
-        PopulateWmiCachedInfo(state);
-        PopulateAudioInfo(state);
+        PopulateWmiCachedInfo(state, uiVisible, osdVisible);
+        PopulateAudioInfo(state, uiVisible);
         state.CpuBoostMode = ReadCpuBoostMode(state.IsAcOnline);
         state.CpuMaxFreqMhz = ReadCpuMaxFreqMhz(state.IsAcOnline);
 
@@ -238,6 +256,7 @@ public sealed class SystemControlService : IDisposable
 
     public void Dispose()
     {
+        SystemEvents.DisplaySettingsChanged -= OnSystemDisplaySettingsChanged;
         _telemetry.Dispose();
     }
 
@@ -490,11 +509,32 @@ public sealed class SystemControlService : IDisposable
 
     public SystemControlState SetCpuMaxFreqMhz(int mhz)
     {
-        uint clamped = mhz <= 0 ? 0u : (uint)Math.Clamp(mhz, 1600, 5500);
+        int normalized = mhz <= 0 ? 0 : Math.Clamp(mhz, 1600, 5500);
+        if (_powerOptimizer is not null)
+        {
+            if (!_powerOptimizer.SetCpuMaxFreqMhz(normalized) && normalized > 0)
+            {
+                throw new InvalidOperationException("应用 CPU 最高频率限制失败。");
+            }
+
+            _lastCpuSchemeQueryUtc = DateTime.MinValue;
+            return GetState();
+        }
+
+        uint clamped = (uint)normalized;
         Guid scheme = GetActivePowerSchemeGuid();
         var sub = SubProcessor;
         var p0 = ProcFreqMax;
         var p1 = ProcFreqMax1;
+
+        if (clamped > 0)
+        {
+            Guid emptyOverlay = Guid.Empty;
+            PowerSetActiveOverlayScheme(ref emptyOverlay);
+            var minGuid = PowerPeripheralOptimizer.SettingProcThrottleMin;
+            PowerWriteACValueIndex(0, ref scheme, ref sub, ref minGuid, 5u);
+            PowerWriteDCValueIndex(0, ref scheme, ref sub, ref minGuid, 5u);
+        }
 
         uint rcAc0 = PowerWriteACValueIndex(0, ref scheme, ref sub, ref p0, clamped);
         uint rcDc0 = PowerWriteDCValueIndex(0, ref scheme, ref sub, ref p0, clamped);
@@ -600,11 +640,33 @@ public sealed class SystemControlService : IDisposable
         lock (_displayCacheLock)
         {
             _lastDisplayEnumUtc = DateTime.MinValue;
+            _lastDisplayCcdUtc = DateTime.MinValue;
         }
     }
 
-    private void PopulateDisplayInfo(SystemControlState state)
+    private void PopulateDisplayInfo(SystemControlState state, bool uiVisible = true)
     {
+        lock (_displayCacheLock)
+        {
+            // When Console & QAM are hidden during gameplay, serve cached display state without touching DWM/CCD APIs
+            if (!uiVisible &&
+                _cachedDisplayWidth > 0 &&
+                _cachedDisplayHeight > 0 &&
+                (DateTime.UtcNow - _lastDisplayCcdUtc) < TimeSpan.FromSeconds(20))
+            {
+                state.ScreenWidth = (int)_cachedDisplayWidth;
+                state.ScreenHeight = (int)_cachedDisplayHeight;
+                state.RefreshRateHz = _cachedRefreshRateHz;
+                state.BaseRefreshRateHz = _cachedBaseRefreshRateHz;
+                state.IsDynamicRefreshRate = _cachedIsDynamicRefreshRate;
+                state.DynamicCeilingHz = _cachedDynamicCeilingHz;
+                state.DynamicRefreshSupported = _cachedDynamicSupported;
+                state.SupportedRefreshRates = _cachedSupportedRates;
+                state.SupportedResolutions = _cachedSupportedResolutions;
+                return;
+            }
+        }
+
         try
         {
             var devName = ResolvePrimaryDisplayDevice();
@@ -711,6 +773,18 @@ public sealed class SystemControlService : IDisposable
                 state.IsDynamicRefreshRate,
                 state.RefreshRateHz);
             state.DynamicRefreshSupported = state.DynamicCeilingHz > 0;
+
+            lock (_displayCacheLock)
+            {
+                _cachedDisplayWidth = dm.dmPelsWidth;
+                _cachedDisplayHeight = dm.dmPelsHeight;
+                _cachedRefreshRateHz = state.RefreshRateHz;
+                _cachedBaseRefreshRateHz = state.BaseRefreshRateHz;
+                _cachedIsDynamicRefreshRate = state.IsDynamicRefreshRate;
+                _cachedDynamicCeilingHz = state.DynamicCeilingHz;
+                _cachedDynamicSupported = state.DynamicRefreshSupported;
+                _lastDisplayCcdUtc = DateTime.UtcNow;
+            }
         }
         catch
         {
@@ -881,16 +955,25 @@ public sealed class SystemControlService : IDisposable
         state.IsCharging = state.HasBattery && ((sps.BatteryFlag & 8) != 0);
     }
 
-    private void PopulateWmiCachedInfo(SystemControlState state)
+    private void PopulateWmiCachedInfo(SystemControlState state, bool uiVisible, bool osdVisible)
     {
         lock (_wmiCacheLock)
         {
-            if ((DateTime.UtcNow - _batteryCachedAtUtc) > TimeSpan.FromMilliseconds(800))
+            // Avoid ACPI EC / DDC WMI queries completely while HaloDeck is hidden in tray without OSD
+            bool needBatteryWmi = uiVisible || osdVisible || _batteryCachedAtUtc == DateTime.MinValue;
+            if (needBatteryWmi)
             {
-                RefreshBatteryWmiFastLocked();
+                var batteryInterval = uiVisible
+                    ? TimeSpan.FromSeconds(2.5)
+                    : (state.IsAcOnline ? TimeSpan.FromSeconds(15) : TimeSpan.FromSeconds(6));
+                if ((DateTime.UtcNow - _batteryCachedAtUtc) > batteryInterval)
+                {
+                    RefreshBatteryWmiFastLocked();
+                }
             }
 
-            if ((DateTime.UtcNow - _wmiCachedAtUtc) > TimeSpan.FromSeconds(5))
+            bool needSlowWmi = uiVisible || _wmiCachedAtUtc == DateTime.MinValue;
+            if (needSlowWmi && (DateTime.UtcNow - _wmiCachedAtUtc) > TimeSpan.FromSeconds(10))
             {
                 RefreshWmiCacheLocked();
             }
@@ -1117,11 +1200,12 @@ public sealed class SystemControlService : IDisposable
         _wmiCachedAtUtc = DateTime.UtcNow;
     }
 
-    private void PopulateAudioInfo(SystemControlState state)
+    private void PopulateAudioInfo(SystemControlState state, bool uiVisible)
     {
         lock (_audioLock)
         {
-            if ((DateTime.UtcNow - _lastAudioQueryUtc) < TimeSpan.FromSeconds(3))
+            if ((!uiVisible && _lastAudioQueryUtc != DateTime.MinValue) ||
+                (DateTime.UtcNow - _lastAudioQueryUtc) < TimeSpan.FromSeconds(4))
             {
                 state.VolumePercent = _cachedVolPct;
                 state.IsMuted = _cachedIsMuted;
@@ -1473,6 +1557,9 @@ public sealed class SystemControlService : IDisposable
 
     [DllImport("powrprof.dll")]
     private static extern uint PowerSetActiveScheme(nint UserRootPowerKey, ref Guid SchemeGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerSetActiveOverlayScheme([In] ref Guid OverlaySchemeGuid);
 
     [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
     private class MMDeviceEnumeratorComObject { }

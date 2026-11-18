@@ -2062,9 +2062,9 @@
               <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                 <span class="cw-row-title">省电优化细项 (${steadyMode === "off" ? "已关闭" : steadyMode === "always" ? "始终开启" : "游戏时自动"})</span>
                 <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                  <button class="pill-btn small ${steadyCpuOn ? "active" : ""}" data-steady-sub="cpuEnabled" data-focusable="true">空闲核心休眠</button>
+                  <button class="pill-btn small ${steadyCpuOn ? "active" : ""}" data-steady-sub="cpuEnabled" data-focusable="true">CPU 动态降频</button>
                   <button class="pill-btn small ${steadyBgOn ? "active" : ""}" data-steady-sub="backgroundEnabled" data-focusable="true">后台绑定尾核</button>
-                  <button class="pill-btn small ${steadyPerOn ? "active" : ""}" data-steady-sub="peripheralEnabled" data-focusable="true">外设闲置节能</button>
+                  <button class="pill-btn small ${steadyPerOn ? "active" : ""}" data-steady-sub="peripheralEnabled" data-focusable="true">后台解码省电</button>
                 </div>
               </div>
 

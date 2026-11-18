@@ -39,7 +39,7 @@ public sealed class WebUiBridge : IDisposable
         .Any(a => a.StartsWith("--verify-", StringComparison.OrdinalIgnoreCase) ||
                   string.Equals(a, "--capture-docs", StringComparison.OrdinalIgnoreCase));
 
-    private readonly SystemControlService _systemControl = new();
+    private readonly SystemControlService _systemControl;
     private readonly GpdControllerService _gpdController = new();
     private readonly HandheldToolboxService _toolbox = new();
     private readonly GameXInputIsolator _xinputIsolator = new();
@@ -63,6 +63,8 @@ public sealed class WebUiBridge : IDisposable
     private DateTime _lastSteadyGameSeenUtc = DateTime.MinValue;
     private DateTime _lastBackgroundIsolatePassUtc = DateTime.MinValue;
     private int _lastSteadyIsolatedGamePid;
+    private DateTime _lastFanCurvePushUtc = DateTime.MinValue;
+    private int _lastFanCurveTempC = -999;
     private SystemControlState? _latestSystemState;
     private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
     private readonly SemaphoreSlim _brightFastGate = new(1, 1);
@@ -107,8 +109,9 @@ public sealed class WebUiBridge : IDisposable
         else
         {
             _powerOptimizer = new PowerPeripheralOptimizer();
-            _powerOptimizer.RecoverIfStaleBackupExists();
+            _powerOptimizer.RecoverIfStaleBackupExists(_settings.CpuMaxFreqMhz);
         }
+        _systemControl = new SystemControlService(_powerOptimizer);
 
         _inputHub.GamepadCountChanged += count =>
             BroadcastEvent("gamepadStatus", new { connectedCount = count });
@@ -259,7 +262,7 @@ public sealed class WebUiBridge : IDisposable
         BroadcastStateSnapshot();
     }
 
-    public void PollRunningAndAutoInjectTick(bool runAutoInjectPass)
+    public void PollRunningAndAutoInjectTick(bool runAutoInjectPass, bool uiVisible = true, bool osdVisible = false)
     {
         var updatedRunning = _runningTracker.Poll(_cachedGames);
         bool changed = !Equals(updatedRunning?.Id, _runningGame?.Id) ||
@@ -275,26 +278,35 @@ public sealed class WebUiBridge : IDisposable
             changed = true;
         }
 
-        var sys = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
+        var sys = EnrichSystemState(
+            _systemControl.GetState(
+                targetPid: ResolveTargetRenderPid(),
+                uiVisible: uiVisible,
+                osdVisible: osdVisible),
+            allowWifiHardwareQuery: uiVisible);
         _latestSystemState = sys;
 
-        // Fan curve temperature heartbeat when daemon is online & using active curve mode
+        // Fan curve temperature heartbeat when daemon is online & using active curve mode (throttled to >=3.5s or >=2°C delta)
         if (sys.HardwareService.ServiceRunning &&
             sys.HardwareService.EcReady &&
             _settings.FanMode is "curve" or "silent" or "balanced")
         {
             int peakTemp = Math.Max(sys.GpuTempC, sys.CpuTempC);
-            if (peakTemp > 0)
+            if (peakTemp > 0 &&
+                ((DateTime.UtcNow - _lastFanCurvePushUtc) >= TimeSpan.FromSeconds(3.5) ||
+                 Math.Abs(peakTemp - _lastFanCurveTempC) >= 2))
             {
                 var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
                 _systemControl.HardwareClient.SetFan("curve", _settings.ManualFanPercent, peakTemp, activeCurve.Points);
+                _lastFanCurvePushUtc = DateTime.UtcNow;
+                _lastFanCurveTempC = peakTemp;
             }
         }
 
         // Handle per-game performance profile & AC/Battery power linkage transitions
         ApplyDynamicPowerAutomation(sys, updatedRunning);
 
-        if (changed)
+        if (changed && uiVisible)
         {
             BroadcastStateSnapshot();
         }
@@ -1209,11 +1221,11 @@ public sealed class WebUiBridge : IDisposable
         return st;
     }
 
-    private SystemControlState EnrichSystemState(SystemControlState state)
+    private SystemControlState EnrichSystemState(SystemControlState state, bool allowWifiHardwareQuery = true)
     {
         state.SteadyEcoActive = _steadyEcoActive;
         state.IsolatedProcessCount = _steadyEcoIsolator.IsolatedCount;
-        var (wifiSupported, wifiOff) = _toolbox.GetWifiRadioStatus(forceRefresh: false);
+        var (wifiSupported, wifiOff) = _toolbox.GetWifiRadioStatus(forceRefresh: false, allowHardwareQuery: allowWifiHardwareQuery);
         state.WifiRadioSupported = wifiSupported;
         state.WifiRadioOff = wifiOff;
         return state;
@@ -1409,10 +1421,10 @@ public sealed class WebUiBridge : IDisposable
             int activePid = gameRunningNow ? (running?.RunningPid ?? 0) : 0;
             if (_settings.SteadyEcoBackgroundEnabled && !IsVerifyOrCaptureCliRun)
             {
+                // Run background isolation once on activation or game PID switch (never rescan Process.GetProcesses() periodically mid-game)
                 bool duePass = newlyActivated ||
                                forceImmediate ||
-                               activePid != _lastSteadyIsolatedGamePid ||
-                               (DateTime.UtcNow - _lastBackgroundIsolatePassUtc) >= TimeSpan.FromSeconds(15);
+                               (activePid > 0 && activePid != _lastSteadyIsolatedGamePid);
                 if (duePass)
                 {
                     _steadyEcoIsolator.ApplyPass(
@@ -1436,7 +1448,7 @@ public sealed class WebUiBridge : IDisposable
                 BroadcastEvent("toast", new
                 {
                     kind = "info",
-                    message = $"已随《{running!.Title}》开启稳帧净空 · 周边省电与净空隔离生效"
+                    message = $"已随《{running!.Title}》开启稳帧省电 · CPU EPP 与净空隔离生效"
                 });
             }
         }
@@ -1446,6 +1458,7 @@ public sealed class WebUiBridge : IDisposable
     {
         private readonly Guid _scheme = new("381b4222-f694-41f0-9685-ff5bb260df2e");
         private readonly Dictionary<(Guid, Guid), (uint Ac, uint Dc)> _values = new();
+        private Guid _overlay = new("ded574b5-45a0-4f42-8737-46345c09c238");
 
         public Guid GetActiveScheme() => _scheme;
 
@@ -1469,6 +1482,18 @@ public sealed class WebUiBridge : IDisposable
         }
 
         public bool ActivateScheme(Guid scheme) => true;
+
+        public bool TryGetOverlayScheme(out Guid overlayScheme)
+        {
+            overlayScheme = _overlay;
+            return true;
+        }
+
+        public bool TrySetOverlayScheme(Guid overlayScheme)
+        {
+            _overlay = overlayScheme;
+            return true;
+        }
     }
 
     private object SetCpuMaxFreq(JsonElement payload)
@@ -1550,6 +1575,14 @@ public sealed class WebUiBridge : IDisposable
     {
         int watts = Math.Clamp(payload.GetProperty("watts").GetInt32(), 8, 120);
         _settings.CurrentTdpWatts = watts;
+
+        // If a running game has an active per-game profile, sync its TDP so it never silently snaps back to an old watt limit
+        if (_runningGame is { IsCurrentlyRunning: true } &&
+            _settings.PerGameProfiles.TryGetValue(_runningGame.Id, out var runningProf) &&
+            runningProf.Enabled)
+        {
+            runningProf.TdpWatts = watts;
+        }
 
         if (payload.TryGetProperty("unlockThreeStage", out var ulProp))
         {

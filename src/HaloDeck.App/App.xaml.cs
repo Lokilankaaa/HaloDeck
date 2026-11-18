@@ -30,6 +30,7 @@ public partial class App : System.Windows.Application
     private OverlayHudWindow? _overlayHudWindow;
     private HwndSource? _hiddenHotkeyHost;
     private int _pollCounter;
+    private int _pollInFlight;
     private DispatcherTimer? _topmostGuardTimer;
     private nint _winEventHookForeground;
     private nint _winEventHookMinimizeEnd;
@@ -162,21 +163,50 @@ public partial class App : System.Windows.Application
         };
         _pollTimer.Tick += (_, _) =>
         {
+            if (Interlocked.CompareExchange(ref _pollInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+
             _pollCounter++;
             bool runAutoInject = _pollCounter % 19 == 0;
-            _bridge.PollRunningAndAutoInjectTick(runAutoInject);
+            bool uiVisible = (_mainWindow?.IsVisible == true && !_isConsoleClosingShieldActive) ||
+                             (_qamWindow?.IsVisible == true);
+            bool osdVisible = _bridge.Settings.OverlayLevel > 0;
 
-            var latestSys = _bridge.LatestSystemState;
-            if (_bridge.Settings.OverlayLevel > 0 && _overlayHudWindow is not null)
+            _ = Task.Run(() =>
             {
-                _overlayHudWindow.UpdateMetrics(latestSys, _bridge.RunningGame, _bridge.Settings.CurrentTdpWatts);
-            }
+                try
+                {
+                    _bridge.PollRunningAndAutoInjectTick(runAutoInject, uiVisible, osdVisible);
+                    if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
 
-            if ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true))
-            {
-                _bridge.BroadcastLatestTelemetry();
-            }
-            UpdateUiActiveFlag();
+                    _ = Dispatcher.BeginInvoke(() =>
+                    {
+                        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished || _bridge is null) return;
+
+                        var latestSys = _bridge.LatestSystemState;
+                        if (_bridge.Settings.OverlayLevel > 0 && _overlayHudWindow is not null)
+                        {
+                            _overlayHudWindow.UpdateMetrics(latestSys, _bridge.RunningGame, _bridge.Settings.CurrentTdpWatts);
+                        }
+
+                        if ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true))
+                        {
+                            _bridge.BroadcastLatestTelemetry();
+                        }
+                        UpdateUiActiveFlag();
+                    });
+                }
+                catch
+                {
+                    // Ignore transient background telemetry exceptions
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _pollInFlight, 0);
+                }
+            });
         };
         _pollTimer.Start();
 
@@ -608,6 +638,15 @@ public partial class App : System.Windows.Application
 
     private void OnTopmostGuardTick(object? sender, EventArgs e)
     {
+        bool anyVisible = (_mainWindow is { IsVisible: true }) ||
+                          (_qamWindow is { IsVisible: true }) ||
+                          (_bridge?.Settings.OverlayLevel > 0) ||
+                          (_inputHub?.IsUiActive == true);
+        if (!anyVisible)
+        {
+            return;
+        }
+
         CheckAutoDismissQamOnExternalFocus();
         EnforceOverlayZOrder(forceReband: false);
         UpdateUiActiveFlag();

@@ -763,11 +763,16 @@ public sealed class HandheldToolboxService : IDisposable
     private bool _cachedWifiRadioOff;
     private bool _wifiSuspendedBySession;
 
-    public (bool Supported, bool IsRadioOff) GetWifiRadioStatus(bool forceRefresh = false)
+    public (bool Supported, bool IsRadioOff) GetWifiRadioStatus(bool forceRefresh = false, bool allowHardwareQuery = true)
     {
         lock (_wifiLock)
         {
-            if (!forceRefresh && (DateTime.UtcNow - _lastWifiQueryUtc) < TimeSpan.FromSeconds(3))
+            if (!forceRefresh && !allowHardwareQuery && _lastWifiQueryUtc != DateTime.MinValue)
+            {
+                return (_cachedWifiSupported, _cachedWifiRadioOff);
+            }
+
+            if (!forceRefresh && (DateTime.UtcNow - _lastWifiQueryUtc) < TimeSpan.FromSeconds(30))
             {
                 return (_cachedWifiSupported, _cachedWifiRadioOff);
             }

@@ -16,6 +16,8 @@ public sealed class PowerSettingEntryBackup
 public sealed class SteadyEcoBackupDocument
 {
     public Guid SchemeGuid { get; set; }
+    public bool HasOriginalOverlayScheme { get; set; }
+    public Guid OriginalOverlaySchemeGuid { get; set; }
     public DateTime CapturedAtUtc { get; set; }
     public List<PowerSettingEntryBackup> Entries { get; set; } = new();
 }
@@ -33,6 +35,8 @@ public interface IPowerSchemeBackend
     bool TryReadAcDcValues(Guid scheme, Guid subGroup, Guid setting, out uint acValue, out uint dcValue);
     bool TryWriteAcDcValues(Guid scheme, Guid subGroup, Guid setting, uint acValue, uint dcValue);
     bool ActivateScheme(Guid scheme);
+    bool TryGetOverlayScheme(out Guid overlayScheme);
+    bool TrySetOverlayScheme(Guid overlayScheme);
 }
 
 public sealed class Win32PowerSchemeBackend : IPowerSchemeBackend
@@ -74,11 +78,42 @@ public sealed class Win32PowerSchemeBackend : IPowerSchemeBackend
         return PowerSetActiveScheme(0, ref scheme) == 0;
     }
 
+    public bool TryGetOverlayScheme(out Guid overlayScheme)
+    {
+        try
+        {
+            return PowerGetEffectiveOverlayScheme(out overlayScheme) == 0;
+        }
+        catch
+        {
+            overlayScheme = Guid.Empty;
+            return false;
+        }
+    }
+
+    public bool TrySetOverlayScheme(Guid overlayScheme)
+    {
+        try
+        {
+            return PowerSetActiveOverlayScheme(ref overlayScheme) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     [DllImport("kernel32.dll")]
     private static extern nint LocalFree(nint hMem);
 
     [DllImport("powrprof.dll")]
     private static extern uint PowerGetActiveScheme(nint UserRootPowerKey, out nint ActivePolicyGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerGetEffectiveOverlayScheme(out Guid EffectiveOverlayPolicyGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerSetActiveOverlayScheme([In] ref Guid OverlaySchemeGuid);
 
     [DllImport("powrprof.dll")]
     private static extern uint PowerReadACValueIndex(
@@ -117,15 +152,19 @@ public sealed class Win32PowerSchemeBackend : IPowerSchemeBackend
 }
 
 /// <summary>
-/// Crash-safe Windows PowrProf optimizer for Steady &amp; Eco Mode.
-/// Snapshots exact user AC/DC values to steady_eco_backup.json before any modification
-/// and guarantees full rollback on game exit, mode disable, app shutdown, or next boot after power loss.
+/// Crash-safe Windows PowrProf &amp; Power Mode Overlay coordinator for Steady &amp; Eco Mode and CPU Frequency Cap.
+/// Snapshots exact user AC/DC values and Windows 11 Power Overlay GUID to steady_eco_backup.json before any modification
+/// and guarantees full rollback on game exit, mode disable, uncapping, app shutdown, or next boot after power loss.
+/// Never modifies NVMe APST sleep, SATA link sleep, Wi-Fi Max Power Save, or homogeneous core parking to prevent frame stutters.
 /// </summary>
 public sealed class PowerPeripheralOptimizer : IDisposable
 {
     public static readonly Guid SubProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
     public static readonly Guid SettingPerfEpp0 = new("36687f9e-e3a5-4dbf-b1dc-15eb381c6863");
     public static readonly Guid SettingPerfEpp1 = new("36687f9e-e3a5-4dbf-b1dc-15eb381c6864");
+    public static readonly Guid SettingProcThrottleMin = new("893dee8e-2bef-41e0-89c6-b55d0929964c");
+    public static readonly Guid SettingProcFreqMax = new("75b0ae3f-bce0-45a7-8c89-c9611c25e100");
+    public static readonly Guid SettingProcFreqMax1 = new("75b0ae3f-bce0-45a7-8c89-c9611c25e101");
     public static readonly Guid SettingCoreParkMin = new("0cc5b647-c1df-4637-891a-dec35c318583");
     public static readonly Guid SettingHeteroPolicy = new("7f2f5cfa-f10c-4823-b5e1-e93ae85f46b5");
 
@@ -150,6 +189,8 @@ public sealed class PowerPeripheralOptimizer : IDisposable
     private readonly string _backupFilePath;
     private readonly object _lock = new();
     private SteadyEcoBackupDocument? _activeBackup;
+    private SteadyEcoPowerOptions? _currentSteadyOptions;
+    private int _currentCpuMaxFreqMhz;
     private bool _isApplied;
 
     public PowerPeripheralOptimizer(IPowerSchemeBackend? backend = null, string? customBackupPath = null)
@@ -171,16 +212,36 @@ public sealed class PowerPeripheralOptimizer : IDisposable
         }
     }
 
+    public int CurrentCpuMaxFreqMhz
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentCpuMaxFreqMhz;
+            }
+        }
+    }
+
     public string BackupFilePath => _backupFilePath;
 
     /// <summary>
-    /// Checks if a stale steady_eco_backup.json survived an unexpected crash or power loss
-    /// and restores original AC/DC settings before starting normal operation.
+    /// Checks if a stale steady_eco_backup.json survived an unexpected crash or power loss.
+    /// When persistedCpuMaxFreqMhz &lt;= 0, restores all original AC/DC settings and Windows 11 Power Overlay.
+    /// When persistedCpuMaxFreqMhz &gt; 0, restores any stale SteadyEco keys while preserving the original Overlay backup and re-applying the user's CPU cap.
     /// </summary>
-    public bool RecoverIfStaleBackupExists()
+    public bool RecoverIfStaleBackupExists(int persistedCpuMaxFreqMhz = 0)
     {
         lock (_lock)
         {
+            if (persistedCpuMaxFreqMhz > 0)
+            {
+                _currentSteadyOptions = null;
+                _currentCpuMaxFreqMhz = Math.Clamp(persistedCpuMaxFreqMhz, 1600, 5500);
+                ReconcileLocked();
+                return true;
+            }
+
             if (!File.Exists(_backupFilePath))
             {
                 return false;
@@ -190,7 +251,7 @@ public sealed class PowerPeripheralOptimizer : IDisposable
             {
                 string json = File.ReadAllText(_backupFilePath);
                 var doc = JsonSerializer.Deserialize<SteadyEcoBackupDocument>(json, BackupJsonOptions);
-                if (doc is not null && doc.Entries.Count > 0)
+                if (doc is not null && (doc.Entries.Count > 0 || doc.HasOriginalOverlayScheme))
                 {
                     RestoreFromDocumentLocked(doc);
                 }
@@ -203,6 +264,8 @@ public sealed class PowerPeripheralOptimizer : IDisposable
             {
                 TryDeleteBackupFileLocked();
                 _activeBackup = null;
+                _currentSteadyOptions = null;
+                _currentCpuMaxFreqMhz = 0;
                 _isApplied = false;
             }
 
@@ -216,137 +279,41 @@ public sealed class PowerPeripheralOptimizer : IDisposable
         {
             if (!options.EnableCpuCoreEco && !options.EnablePeripheralEco)
             {
-                Restore();
+                _currentSteadyOptions = null;
+                ReconcileLocked();
                 return false;
             }
 
-            Guid scheme;
-            try
-            {
-                scheme = _backend.GetActiveScheme();
-            }
-            catch
-            {
-                return false;
-            }
-
-            // If power scheme changed externally since backup was created, restore old scheme first
-            if (_activeBackup is not null && _activeBackup.SchemeGuid != scheme)
-            {
-                RestoreFromDocumentLocked(_activeBackup);
-                _activeBackup = null;
-            }
-
-            _activeBackup ??= new SteadyEcoBackupDocument
-            {
-                SchemeGuid = scheme,
-                CapturedAtUtc = DateTime.UtcNow
-            };
-
-            var desired = BuildDesiredTargets(options);
-            var desiredKeys = new HashSet<string>(desired.Select(d => d.Key), StringComparer.OrdinalIgnoreCase);
-
-            // 1. Capture original values for any newly requested keys BEFORE writing
-            bool backupDirty = false;
-            foreach (var target in desired)
-            {
-                if (_activeBackup.Entries.All(e => !string.Equals(e.Key, target.Key, StringComparison.OrdinalIgnoreCase)))
-                {
-                    if (_backend.TryReadAcDcValues(scheme, target.SubGroup, target.Setting, out uint origAc, out uint origDc))
-                    {
-                        _activeBackup.Entries.Add(new PowerSettingEntryBackup
-                        {
-                            Key = target.Key,
-                            SubGroupGuid = target.SubGroup,
-                            SettingGuid = target.Setting,
-                            OriginalAcValue = origAc,
-                            OriginalDcValue = origDc
-                        });
-                        backupDirty = true;
-                    }
-                }
-            }
-
-            // Persist backup snapshot to disk BEFORE modifying OS power settings
-            if (backupDirty || !File.Exists(_backupFilePath))
-            {
-                PersistBackupLocked(_activeBackup);
-            }
-
-            // 2. Restore any previously applied keys whose sub-switch was just turned off
-            foreach (var existing in _activeBackup.Entries.ToList())
-            {
-                if (!desiredKeys.Contains(existing.Key))
-                {
-                    _backend.TryWriteAcDcValues(
-                        scheme,
-                        existing.SubGroupGuid,
-                        existing.SettingGuid,
-                        existing.OriginalAcValue,
-                        existing.OriginalDcValue);
-                    _activeBackup.Entries.Remove(existing);
-                    backupDirty = true;
-                }
-            }
-
-            if (backupDirty)
-            {
-                PersistBackupLocked(_activeBackup);
-            }
-
-            // 3. Write desired steady/eco AC & DC values
-            bool anyWritten = false;
-            foreach (var target in desired)
-            {
-                // Only write keys that existed & were backed up on this machine
-                if (_activeBackup.Entries.Any(e => string.Equals(e.Key, target.Key, StringComparison.OrdinalIgnoreCase)))
-                {
-                    if (_backend.TryWriteAcDcValues(scheme, target.SubGroup, target.Setting, target.AcValue, target.DcValue))
-                    {
-                        anyWritten = true;
-                    }
-                }
-            }
-
-            if (anyWritten)
-            {
-                _backend.ActivateScheme(scheme);
-                _isApplied = true;
-            }
-
+            _currentSteadyOptions = options;
+            ReconcileLocked();
             return _isApplied;
         }
     }
 
+    public bool SetCpuMaxFreqMhz(int mhz)
+    {
+        lock (_lock)
+        {
+            _currentCpuMaxFreqMhz = mhz <= 0 ? 0 : Math.Clamp(mhz, 1600, 5500);
+            return ReconcileLocked();
+        }
+    }
+
+    /// <summary>
+    /// Restores Steady &amp; Eco power changes while keeping any explicit global CPU Max Frequency cap active.
+    /// If no CPU Max Frequency cap is active, restores all backed-up settings and the original Windows 11 Power Overlay.
+    /// </summary>
     public bool Restore()
     {
         lock (_lock)
         {
-            SteadyEcoBackupDocument? doc = _activeBackup;
-            if (doc is null && File.Exists(_backupFilePath))
+            _currentSteadyOptions = null;
+            if (_currentCpuMaxFreqMhz > 0)
             {
-                try
-                {
-                    doc = JsonSerializer.Deserialize<SteadyEcoBackupDocument>(
-                        File.ReadAllText(_backupFilePath),
-                        BackupJsonOptions);
-                }
-                catch
-                {
-                    doc = null;
-                }
+                return ReconcileLocked();
             }
 
-            bool restored = false;
-            if (doc is not null && doc.Entries.Count > 0)
-            {
-                restored = RestoreFromDocumentLocked(doc);
-            }
-
-            _activeBackup = null;
-            _isApplied = false;
-            TryDeleteBackupFileLocked();
-            return restored;
+            return RestoreAllLocked();
         }
     }
 
@@ -355,46 +322,234 @@ public sealed class PowerPeripheralOptimizer : IDisposable
         Restore();
     }
 
+    private bool RestoreAllLocked()
+    {
+        SteadyEcoBackupDocument? doc = _activeBackup ?? TryLoadBackupDocumentLocked();
+        bool restored = false;
+        if (doc is not null && (doc.Entries.Count > 0 || doc.HasOriginalOverlayScheme))
+        {
+            restored = RestoreFromDocumentLocked(doc);
+        }
+
+        _activeBackup = null;
+        _currentSteadyOptions = null;
+        _isApplied = false;
+        TryDeleteBackupFileLocked();
+        return restored;
+    }
+
+    private bool ReconcileLocked()
+    {
+        bool enableCpuEco = _currentSteadyOptions?.EnableCpuCoreEco == true;
+        bool enablePerEco = _currentSteadyOptions?.EnablePeripheralEco == true;
+        uint clampedMhz = _currentCpuMaxFreqMhz <= 0 ? 0u : (uint)Math.Clamp(_currentCpuMaxFreqMhz, 1600, 5500);
+        bool needOverlayBypass = enableCpuEco || clampedMhz > 0;
+
+        var desired = BuildDesiredTargets(_currentSteadyOptions, clampedMhz);
+        if (desired.Count == 0 && !needOverlayBypass)
+        {
+            return RestoreAllLocked();
+        }
+
+        Guid scheme;
+        try
+        {
+            scheme = _backend.GetActiveScheme();
+        }
+        catch
+        {
+            _isApplied = false;
+            return false;
+        }
+
+        _activeBackup ??= TryLoadBackupDocumentLocked();
+
+        // If power scheme changed externally since backup was created, restore old scheme first
+        if (_activeBackup is not null && _activeBackup.SchemeGuid != Guid.Empty && _activeBackup.SchemeGuid != scheme)
+        {
+            RestoreFromDocumentLocked(_activeBackup);
+            _activeBackup = null;
+        }
+
+        _activeBackup ??= new SteadyEcoBackupDocument
+        {
+            SchemeGuid = scheme,
+            CapturedAtUtc = DateTime.UtcNow
+        };
+
+        var desiredKeys = new HashSet<string>(desired.Select(d => d.Key), StringComparer.OrdinalIgnoreCase);
+        bool backupDirty = false;
+
+        // 1. Capture original Windows 11 Power Mode Overlay GUID BEFORE setting Guid.Empty
+        if (needOverlayBypass && !_activeBackup.HasOriginalOverlayScheme)
+        {
+            if (_backend.TryGetOverlayScheme(out Guid currentOverlay))
+            {
+                _activeBackup.OriginalOverlaySchemeGuid = currentOverlay;
+                _activeBackup.HasOriginalOverlayScheme = true;
+                backupDirty = true;
+            }
+        }
+
+        // 2. Capture original AC/DC values for any newly requested keys BEFORE writing
+        foreach (var target in desired)
+        {
+            if (_activeBackup.Entries.All(e => !string.Equals(e.Key, target.Key, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (_backend.TryReadAcDcValues(scheme, target.SubGroup, target.Setting, out uint origAc, out uint origDc))
+                {
+                    _activeBackup.Entries.Add(new PowerSettingEntryBackup
+                    {
+                        Key = target.Key,
+                        SubGroupGuid = target.SubGroup,
+                        SettingGuid = target.Setting,
+                        OriginalAcValue = origAc,
+                        OriginalDcValue = origDc
+                    });
+                    backupDirty = true;
+                }
+            }
+        }
+
+        // Persist backup snapshot to disk BEFORE modifying OS power settings or overlay
+        if (backupDirty || !File.Exists(_backupFilePath))
+        {
+            PersistBackupLocked(_activeBackup);
+        }
+
+        // 3. Restore any previously applied keys whose feature/sub-switch was turned off
+        bool anyRestored = false;
+        foreach (var existing in _activeBackup.Entries.ToList())
+        {
+            if (!desiredKeys.Contains(existing.Key))
+            {
+                if (_backend.TryWriteAcDcValues(
+                    scheme,
+                    existing.SubGroupGuid,
+                    existing.SettingGuid,
+                    existing.OriginalAcValue,
+                    existing.OriginalDcValue))
+                {
+                    anyRestored = true;
+                }
+                _activeBackup.Entries.Remove(existing);
+                backupDirty = true;
+            }
+        }
+
+        bool restoreOverlayAfterActivate = false;
+        Guid overlayToRestore = Guid.Empty;
+        if (!needOverlayBypass && _activeBackup.HasOriginalOverlayScheme)
+        {
+            restoreOverlayAfterActivate = true;
+            overlayToRestore = _activeBackup.OriginalOverlaySchemeGuid;
+            _activeBackup.HasOriginalOverlayScheme = false;
+            backupDirty = true;
+        }
+
+        if (backupDirty)
+        {
+            PersistBackupLocked(_activeBackup);
+        }
+
+        // 4. Bypass Windows 11 "Best Performance" Overlay so PROCFREQMAX, PROCTHROTTLEMIN & PERFEPP take hardware effect
+        if (needOverlayBypass)
+        {
+            _backend.TrySetOverlayScheme(Guid.Empty);
+        }
+
+        // 5. Write desired AC & DC values
+        bool anyWritten = false;
+        foreach (var target in desired)
+        {
+            if (_activeBackup.Entries.Any(e => string.Equals(e.Key, target.Key, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (_backend.TryWriteAcDcValues(scheme, target.SubGroup, target.Setting, target.AcValue, target.DcValue))
+                {
+                    anyWritten = true;
+                }
+            }
+        }
+
+        if (anyWritten || anyRestored)
+        {
+            _backend.ActivateScheme(scheme);
+        }
+
+        if (restoreOverlayAfterActivate)
+        {
+            _backend.TrySetOverlayScheme(overlayToRestore);
+        }
+
+        _isApplied = (enableCpuEco || enablePerEco) && anyWritten;
+        return anyWritten || anyRestored || needOverlayBypass;
+    }
+
     private static List<(string Key, Guid SubGroup, Guid Setting, uint AcValue, uint DcValue)> BuildDesiredTargets(
-        SteadyEcoPowerOptions options)
+        SteadyEcoPowerOptions? steadyOptions,
+        uint clampedCpuMaxFreqMhz)
     {
         var list = new List<(string Key, Guid SubGroup, Guid Setting, uint AcValue, uint DcValue)>();
+        bool enableCpuEco = steadyOptions?.EnableCpuCoreEco == true;
+        bool enablePerEco = steadyOptions?.EnablePeripheralEco == true;
 
-        if (options.EnableCpuCoreEco)
+        if (enableCpuEco || clampedCpuMaxFreqMhz > 0)
         {
-            uint eppAc = (uint)Math.Clamp(options.CpuEppIndex, 45, 95);
-            uint eppDc = (uint)Math.Clamp(Math.Max(options.CpuEppIndex, 75), 45, 95);
+            // Allow Zen 5 cores to scale cleanly below 80% (e.g. 2.6 GHz cap or ~800 MHz idle downclock)
+            list.Add(("cpu_throttle_min", SubProcessor, SettingProcThrottleMin, 5u, 5u));
+        }
+
+        if (clampedCpuMaxFreqMhz > 0)
+        {
+            list.Add(("cpu_freq_max0", SubProcessor, SettingProcFreqMax, clampedCpuMaxFreqMhz, clampedCpuMaxFreqMhz));
+            list.Add(("cpu_freq_max1", SubProcessor, SettingProcFreqMax1, clampedCpuMaxFreqMhz, clampedCpuMaxFreqMhz));
+        }
+
+        if (enableCpuEco && steadyOptions is not null)
+        {
+            uint eppAc = (uint)Math.Clamp(steadyOptions.CpuEppIndex, 45, 95);
+            uint eppDc = (uint)Math.Clamp(Math.Max(steadyOptions.CpuEppIndex, 75), 45, 95);
 
             list.Add(("cpu_epp0", SubProcessor, SettingPerfEpp0, eppAc, eppDc));
             list.Add(("cpu_epp1", SubProcessor, SettingPerfEpp1, eppAc, eppDc));
-            // Allow up to 75% of cores (e.g. 6 of 8 cores on 388, or secondary CCD on 395) to enter deep CC6 sleep when idle
-            list.Add(("cpu_min_cores", SubProcessor, SettingCoreParkMin, 25u, 25u));
 
-            if (options.TopologyKind == CpuTopologyKind.HybridBigLittle)
+            // NOTE: Homogeneous 8-core APUs (388) intentionally keep user's unparked core count (no CPMINCORES=25)
+            // to guarantee zero core-unpark scheduling stalls during action game combat.
+            if (steadyOptions.TopologyKind == CpuTopologyKind.HybridBigLittle)
             {
-                // Dynamic hetero scheduling (4) pairs foreground game threads to Zen 5 and EcoQoS background threads to Zen 5c
                 list.Add(("cpu_hetero_policy", SubProcessor, SettingHeteroPolicy, 4u, 4u));
             }
         }
 
-        if (options.EnablePeripheralEco)
+        if (enablePerEco)
         {
-            // Fast NVMe APST idle transition: keeps secondary/non-game SSD in milliwatt PS3/PS4 sleep
-            list.Add(("nvme_primary_idle_ms", SubDisk, SettingPrimaryNvmeIdleMs, 100u, 30u));
-            list.Add(("nvme_secondary_idle_ms", SubDisk, SettingSecondaryNvmeIdleMs, 100u, 60u));
-            list.Add(("ahci_hipm_dipm", SubDisk, SettingAhciLinkPower, 2u, 2u));
-
-            // Wi-Fi RF power saving: max power save (3) for single-player to cut RF draw & background scan DPC spikes;
-            // gentle low power save (1) when online anti-cheat multiplayer is running to preserve network latency.
-            uint wifiIdx = options.IsOnlineAntiCheatGame ? 1u : 3u;
-            list.Add(("wifi_power_save", SubWireless, SettingWirelessPowerSave, wifiIdx, wifiIdx));
-
-            // Prevent background browser/launcher video decoders from locking SoC clocks high
+            // Zero-stutter background media decode policy only.
+            // NVMe APST sleep (30-100ms), SATA HIPM/DIPM, and Wi-Fi Max Power Save (3) are strictly excluded
+            // because they induce periodic 20ms-300ms asset-streaming and NDIS DPC frame-time spikes in games.
             list.Add(("media_quality_bias", SubMultimedia, SettingVideoQualityBias, 0u, 0u));
             list.Add(("media_play_policy", SubMultimedia, SettingWhenPlayingVideo, 2u, 2u));
         }
 
         return list;
+    }
+
+    private SteadyEcoBackupDocument? TryLoadBackupDocumentLocked()
+    {
+        if (!File.Exists(_backupFilePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<SteadyEcoBackupDocument>(
+                File.ReadAllText(_backupFilePath),
+                BackupJsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private bool RestoreFromDocumentLocked(SteadyEcoBackupDocument doc)
@@ -436,6 +591,14 @@ public sealed class PowerPeripheralOptimizer : IDisposable
         catch
         {
             // Ignore secondary scheme activation check
+        }
+
+        if (doc.HasOriginalOverlayScheme)
+        {
+            if (_backend.TrySetOverlayScheme(doc.OriginalOverlaySchemeGuid))
+            {
+                anyRestored = true;
+            }
         }
 
         return anyRestored;

@@ -640,7 +640,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             return;
         }
 
-        if (!force && (DateTime.UtcNow - _lastPmReadUtc) < TimeSpan.FromMilliseconds(900))
+        if (!force && (DateTime.UtcNow - _lastPmReadUtc) < TimeSpan.FromSeconds(10))
         {
             return;
         }
@@ -747,9 +747,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         return hr >= 0;
     }
 
+    private DateTime _lastEcPwmWriteUtc = DateTime.MinValue;
+
     private void ApplyFanModeLocked(string mode, int manualPct, int tempC)
     {
         string normalized = mode.Trim().ToLowerInvariant();
+        string prevMode = _fanMode;
         _fanMode = normalized switch
         {
             "auto" => "auto",
@@ -763,9 +766,13 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
         if (_fanMode == "auto")
         {
-            _appliedFanPwm = 0;
-            EcWriteByte(0x047A, 0);
-            EcWriteByte(0x047B, 0);
+            if (prevMode != "auto" || _appliedFanPwm != 0)
+            {
+                _appliedFanPwm = 0;
+                EcWriteByte(0x047A, 0);
+                EcWriteByte(0x047B, 0);
+                _lastEcPwmWriteUtc = DateTime.UtcNow;
+            }
             return;
         }
 
@@ -774,9 +781,13 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             : FanCurveEvaluator.Evaluate(tempC, _activeCurvePoints);
 
         byte pwm = (byte)Math.Clamp((int)Math.Round(pct / 100.0 * 244.0), 36, 244);
-        _appliedFanPwm = pwm;
-        EcWriteByte(0x047A, pwm);
-        EcWriteByte(0x047B, pwm);
+        if (prevMode != _fanMode || _appliedFanPwm != pwm || (DateTime.UtcNow - _lastEcPwmWriteUtc) >= TimeSpan.FromSeconds(8))
+        {
+            _appliedFanPwm = pwm;
+            EcWriteByte(0x047A, pwm);
+            EcWriteByte(0x047B, pwm);
+            _lastEcPwmWriteUtc = DateTime.UtcNow;
+        }
     }
 
     private int ReadFanRpmInternal()

@@ -107,16 +107,18 @@ public sealed class SteadyEcoModeTests
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(
             5150, "steamwebhelper", @"D:\SteamLibrary\steamapps\common\Nioh3\bin\steamwebhelper.exe", gamePid, gameDir, gameDir));
 
-        // Critical OS, HaloDeck WebView2, Steam Overlay, and Voice Chat apps are protected
+        // Critical OS, HaloDeck WebView2, Steam client/webhelper/overlay, and Voice Chat apps are protected
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1200, "dwm", null, gamePid, gameDir, gameDir));
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1201, "audiodg", null, gamePid, gameDir, gameDir));
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1202, "msedgewebview2", null, gamePid, gameDir, gameDir));
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1203, "Discord", null, gamePid, gameDir, gameDir));
         Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1204, "GameOverlayUI", null, gamePid, gameDir, gameDir));
+        Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1205, "steam", @"C:\Program Files (x86)\Steam\steam.exe", gamePid, gameDir, gameDir));
+        Assert.False(BackgroundEcoIsolator.ShouldIsolateProcess(1206, "steamwebhelper", @"C:\Program Files (x86)\Steam\bin\cef\cef.win7x64\steamwebhelper.exe", gamePid, gameDir, gameDir));
 
-        // External launcher webhelpers, browsers, and sync clutter ARE isolated
+        // Non-Steam background launchers, browsers, and sync clutter ARE isolated
         Assert.True(BackgroundEcoIsolator.ShouldIsolateProcess(
-            8801, "steamwebhelper", @"C:\Program Files (x86)\Steam\bin\cef\cef.win7x64\steamwebhelper.exe", gamePid, gameDir, gameDir));
+            8801, "EpicWebHelper", @"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicWebHelper.exe", gamePid, gameDir, gameDir));
         Assert.True(BackgroundEcoIsolator.ShouldIsolateProcess(
             8802, "msedge.exe", @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", gamePid, gameDir, gameDir));
         Assert.True(BackgroundEcoIsolator.ShouldIsolateProcess(
@@ -124,16 +126,20 @@ public sealed class SteadyEcoModeTests
     }
 
     [Fact]
-    public void PowerPeripheralOptimizer_AppliesRestoresAndRecoversFromCrashSnapshot()
+    public void PowerPeripheralOptimizer_BypassesWin11Overlay_NeverTouchesDiskWifiOrCorePark_AndCoordinatesWithCpuCap()
     {
         string tempBackup = Path.Combine(Path.GetTempPath(), $"steady_eco_test_{Guid.NewGuid():N}.json");
+        var bestPerfOverlay = new Guid("ded574b5-45a0-4f42-8737-46345c09c238");
         try
         {
-            var backend = new FakePowerBackend();
+            var backend = new FakePowerBackend { CurrentOverlay = bestPerfOverlay };
             // Seed exact GPD Win 5 baseline values
             backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp0, 25u, 90u);
             backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp1, 33u, 50u);
-            backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingCoreParkMin, 50u, 50u);
+            backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcThrottleMin, 80u, 5u);
+            backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcFreqMax, 0u, 0u);
+            backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcFreqMax1, 0u, 0u);
+            backend.Seed(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingCoreParkMin, 100u, 100u);
             backend.Seed(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingPrimaryNvmeIdleMs, 200u, 30u);
             backend.Seed(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingSecondaryNvmeIdleMs, 2000u, 1000u);
             backend.Seed(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingAhciLinkPower, 1u, 1u);
@@ -143,7 +149,13 @@ public sealed class SteadyEcoModeTests
 
             var opt = new PowerPeripheralOptimizer(backend, tempBackup);
 
-            // 1. Apply single-player Steady & Eco
+            // 1. Apply CPU Max Frequency Cap (2600 MHz): must clear Best Performance overlay & lower ThrottleMin to 5%
+            Assert.True(opt.SetCpuMaxFreqMhz(2600));
+            Assert.Equal(Guid.Empty, backend.CurrentOverlay);
+            Assert.Equal((2600u, 2600u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcFreqMax));
+            Assert.Equal((5u, 5u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcThrottleMin));
+
+            // 2. Also enable Steady & Eco on top of 2600 MHz cap: must NOT lose bestPerfOverlay backup and MUST NOT touch NVMe/Wi-Fi/CorePark
             bool applied = opt.Apply(new SteadyEcoPowerOptions(
                 EnableCpuCoreEco: true,
                 EnablePeripheralEco: true,
@@ -152,43 +164,44 @@ public sealed class SteadyEcoModeTests
                 IsOnlineAntiCheatGame: false));
 
             Assert.True(applied);
-            Assert.True(File.Exists(tempBackup));
+            Assert.Equal(Guid.Empty, backend.CurrentOverlay);
             Assert.Equal((70u, 75u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp0));
-            Assert.Equal((25u, 25u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingCoreParkMin));
-            Assert.Equal((100u, 60u), backend.Read(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingSecondaryNvmeIdleMs));
-            Assert.Equal((3u, 3u), backend.Read(PowerPeripheralOptimizer.SubWireless, PowerPeripheralOptimizer.SettingWirelessPowerSave));
+            Assert.Equal((100u, 100u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingCoreParkMin));
+            Assert.Equal((200u, 30u), backend.Read(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingPrimaryNvmeIdleMs));
+            Assert.Equal((2000u, 1000u), backend.Read(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingSecondaryNvmeIdleMs));
+            Assert.Equal((0u, 2u), backend.Read(PowerPeripheralOptimizer.SubWireless, PowerPeripheralOptimizer.SettingWirelessPowerSave));
+            Assert.Equal((0u, 0u), backend.Read(PowerPeripheralOptimizer.SubMultimedia, PowerPeripheralOptimizer.SettingVideoQualityBias));
 
-            // 2. Online anti-cheat game automatically caps Wi-Fi power saving to index 1 (low latency)
+            // 3. Disable Steady & Eco while 2600 MHz cap remains active: EPP & Media restore, but Overlay=Empty & 2600 MHz stay active!
+            opt.Restore();
+            Assert.Equal((25u, 90u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp0));
+            Assert.Equal((1u, 0u), backend.Read(PowerPeripheralOptimizer.SubMultimedia, PowerPeripheralOptimizer.SettingVideoQualityBias));
+            Assert.Equal(Guid.Empty, backend.CurrentOverlay);
+            Assert.Equal((2600u, 2600u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcFreqMax));
+            Assert.Equal((5u, 5u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcThrottleMin));
+
+            // 4. Remove CPU cap (0): everything including Best Performance overlay & ThrottleMin=80 restores cleanly
+            opt.SetCpuMaxFreqMhz(0);
+            Assert.False(File.Exists(tempBackup));
+            Assert.Equal(bestPerfOverlay, backend.CurrentOverlay);
+            Assert.Equal((0u, 0u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcFreqMax));
+            Assert.Equal((80u, 5u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcThrottleMin));
+
+            // 5. Simulate sudden power loss during Steady & Eco: fresh instance on next boot recovers both values and Win11 Overlay
             opt.Apply(new SteadyEcoPowerOptions(
                 EnableCpuCoreEco: true,
                 EnablePeripheralEco: true,
                 CpuEppIndex: 70,
                 TopologyKind: CpuTopologyKind.SingleCcdHomogeneous,
-                IsOnlineAntiCheatGame: true));
-            Assert.Equal((1u, 1u), backend.Read(PowerPeripheralOptimizer.SubWireless, PowerPeripheralOptimizer.SettingWirelessPowerSave));
-
-            // 3. Turning off Peripheral sub-switch mid-game immediately restores NVMe & Wi-Fi while keeping CPU EPP/Parking
-            opt.Apply(new SteadyEcoPowerOptions(
-                EnableCpuCoreEco: true,
-                EnablePeripheralEco: false,
-                CpuEppIndex: 70,
-                TopologyKind: CpuTopologyKind.SingleCcdHomogeneous,
                 IsOnlineAntiCheatGame: false));
-            Assert.Equal((2000u, 1000u), backend.Read(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingSecondaryNvmeIdleMs));
-            Assert.Equal((0u, 2u), backend.Read(PowerPeripheralOptimizer.SubWireless, PowerPeripheralOptimizer.SettingWirelessPowerSave));
-            Assert.Equal((70u, 75u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp0));
+            Assert.Equal(Guid.Empty, backend.CurrentOverlay);
 
-            // 4. Simulate sudden power loss / crash: create a fresh optimizer instance on next boot and run RecoverIfStaleBackupExists()
             var nextBootOpt = new PowerPeripheralOptimizer(backend, tempBackup);
             Assert.True(nextBootOpt.RecoverIfStaleBackupExists());
             Assert.False(File.Exists(tempBackup));
-
-            // Every setting is 100% back to user's pre-Steady baseline
+            Assert.Equal(bestPerfOverlay, backend.CurrentOverlay);
             Assert.Equal((25u, 90u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp0));
-            Assert.Equal((33u, 50u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingPerfEpp1));
-            Assert.Equal((50u, 50u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingCoreParkMin));
-            Assert.Equal((2000u, 1000u), backend.Read(PowerPeripheralOptimizer.SubDisk, PowerPeripheralOptimizer.SettingSecondaryNvmeIdleMs));
-            Assert.Equal((0u, 2u), backend.Read(PowerPeripheralOptimizer.SubWireless, PowerPeripheralOptimizer.SettingWirelessPowerSave));
+            Assert.Equal((80u, 5u), backend.Read(PowerPeripheralOptimizer.SubProcessor, PowerPeripheralOptimizer.SettingProcThrottleMin));
         }
         finally
         {
@@ -199,6 +212,7 @@ public sealed class SteadyEcoModeTests
     private sealed class FakePowerBackend : IPowerSchemeBackend
     {
         public Guid ActiveScheme { get; } = new("381b4222-f694-41f0-96c1-ff5bb260df2e");
+        public Guid CurrentOverlay { get; set; } = Guid.Empty;
         private readonly Dictionary<(Guid, Guid), (uint Ac, uint Dc)> _store = new();
 
         public void Seed(Guid sub, Guid setting, uint ac, uint dc) => _store[(sub, setting)] = (ac, dc);
@@ -227,6 +241,18 @@ public sealed class SteadyEcoModeTests
         }
 
         public bool ActivateScheme(Guid scheme) => scheme == ActiveScheme;
+
+        public bool TryGetOverlayScheme(out Guid overlayScheme)
+        {
+            overlayScheme = CurrentOverlay;
+            return true;
+        }
+
+        public bool TrySetOverlayScheme(Guid overlayScheme)
+        {
+            CurrentOverlay = overlayScheme;
+            return true;
+        }
     }
 
     [Fact]

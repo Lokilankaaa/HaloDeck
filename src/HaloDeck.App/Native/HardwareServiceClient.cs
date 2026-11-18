@@ -31,6 +31,20 @@ public sealed class HardwareServiceClient
         }
         _lastTargetPid = targetPid;
 
+        // Fast path: when service was already running, talk directly over the Named Pipe without opening SCM handles every second
+        if (_cachedStatus.ServiceRunning)
+        {
+            var (fastOk, _, fastStatus) = SendPipeRequest(new { op = "status", targetPid });
+            if (fastOk && fastStatus is not null)
+            {
+                fastStatus.ServiceInstalled = true;
+                fastStatus.ServiceRunning = true;
+                _cachedStatus = fastStatus;
+                _lastStatusAtUtc = DateTime.UtcNow;
+                return _cachedStatus;
+            }
+        }
+
         var (installed, running) = PawnIoHardwareDaemon.ProbeWindowsServiceState(PawnIoHardwareDaemon.WindowsServiceName);
         var (gpdExists, gpdRunning) = PawnIoHardwareDaemon.ProbeWindowsServiceState("GPDToolService");
 

@@ -87,6 +87,14 @@ public sealed class RunningGameTracker
         var snapshot = _foregroundProbe();
         if (snapshot is not null && !IsIgnoredProcess(snapshot))
         {
+            // Fast O(1) zero-I/O path when the active foreground game PID has not changed
+            if (_lastActiveGame is { IsCurrentlyRunning: true } &&
+                snapshot.ProcessId > 4 &&
+                snapshot.ProcessId == _lastActivePid)
+            {
+                return _lastActiveGame;
+            }
+
             var matched = MatchLibraryGame(snapshot.ExecutablePath, libraryGames);
             if (matched is not null)
             {
@@ -121,21 +129,20 @@ public sealed class RunningGameTracker
             }
         }
 
-        // Preserve last active game when user switches to QAM overlay or desktop
+        // Preserve last active game when user switches to QAM overlay or desktop without touching disk
         if (_lastActiveGame is not null)
         {
             bool stillAlive = IsProcessRunning(_lastActivePid);
             _lastActiveGame.IsCurrentlyRunning = stillAlive;
             _lastActiveGame.RunningPid = stillAlive ? _lastActivePid : null;
-            _libraryService.RefreshInjectionStatus(_lastActiveGame);
             if (stillAlive)
             {
                 return _lastActiveGame;
             }
         }
 
-        // Fallback every 2.5s: detect running library games even when HaloDeck Console/QAM, Steam, or LockScreen owns focus
-        if (libraryGames.Count > 0 && (DateTime.UtcNow - _lastProcessScanUtc) >= TimeSpan.FromSeconds(2.5))
+        // Fallback every 8s when idle: detect running library games launched while Console/Steam owns focus
+        if (libraryGames.Count > 0 && (DateTime.UtcNow - _lastProcessScanUtc) >= TimeSpan.FromSeconds(8.0))
         {
             _lastProcessScanUtc = DateTime.UtcNow;
             var bgMatched = TryFindRunningLibraryGame(libraryGames, out int bgPid);
@@ -378,17 +385,23 @@ public sealed class RunningGameTracker
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool QueryFullProcessImageNameW(nint hProcess, uint dwFlags, ref char lpExeName, ref uint lpdwSize);
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetExitCodeProcess(nint hProcess, out uint lpExitCode);
+
     private static bool IsProcessRunning(int pid)
     {
-        if (pid <= 0) return false;
+        if (pid <= 4) return false;
+        const uint ProcessQueryLimitedInformation = 0x1000;
+        nint h = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (h == 0) return false;
         try
         {
-            using var p = System.Diagnostics.Process.GetProcessById(pid);
-            return !p.HasExited;
+            return GetExitCodeProcess(h, out uint exitCode) && exitCode == 259u /* STILL_ACTIVE */;
         }
-        catch
+        finally
         {
-            return false;
+            CloseHandle(h);
         }
     }
 

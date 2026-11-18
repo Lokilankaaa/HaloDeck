@@ -115,6 +115,10 @@ public partial class OverlayHudWindow : Window
                 _ => $"{sys.BatteryPercent}% (-{sys.SystemDrawWatts:F1}W{(etaShort != "" ? $" · {etaShort}" : "")})"
             };
 
+        int shownTargetWatts = sys.HardwareService.ServiceRunning && sys.HardwareService.AppliedTdpWatts > 0
+            ? sys.HardwareService.AppliedTdpWatts
+            : targetTdpWatts;
+
         if (_level == 1)
         {
             CompactLineText.Visibility = Visibility.Visible;
@@ -139,7 +143,7 @@ public partial class OverlayHudWindow : Window
                 : "";
             double vramGb = sys.VramUsedMb / 1024.0;
             CompactLineText.Text =
-                $"{fpsPart}APU {sys.ApuPowerWatts}W/{targetTdpWatts}W | GPU {sys.GpuUsagePercent}% {sys.GpuTempC}°C VRAM {vramGb:F1}G | CPU {sys.CpuUsagePercent}% {sys.CpuTempC}°C{fanPart} | {batStr}";
+                $"{fpsPart}APU {sys.ApuPowerWatts}W/{shownTargetWatts}W | GPU {sys.GpuUsagePercent}% {sys.GpuTempC}°C VRAM {vramGb:F1}G | CPU {sys.CpuUsagePercent}% {sys.CpuTempC}°C{fanPart} | {batStr}";
         }
         else
         {
@@ -161,7 +165,7 @@ public partial class OverlayHudWindow : Window
                 ? $"帧率: {sys.CurrentFps} FPS ({sys.FrameTimeMs:F1} ms)"
                 : (sys.HardwareService.DaemonVersion >= 3 ? "帧率: 待检测 DX/全屏渲染" : "帧率: 升级硬件服务 v3 解锁");
 
-            string smuBadge = sys.HardwareService.SmuReady ? $" (设定 {targetTdpWatts}W)" : "";
+            string smuBadge = sys.HardwareService.SmuReady ? $" (设定 {shownTargetWatts}W)" : "";
             ApuLineText.Text = $"APU: {sys.ApuPowerWatts} W{smuBadge}";
             GpuLineText.Text = $"GPU: {sys.GpuUsagePercent}% · {sys.GfxClockMhz} MHz · {sys.GpuTempC}°C";
             CpuLineText.Text = $"CPU: {sys.CpuUsagePercent}% · {sys.CpuClockMhz} MHz · {sys.CpuTempC}°C";
