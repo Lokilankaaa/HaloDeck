@@ -1006,7 +1006,7 @@
   }
 
   function syncConfigFromActiveGame(snap) {
-    const active = snap?.runningGame || snap?.activeInspectGame || (snap?.games || [])[0] || null;
+    const active = snap?.activeInspectGame || snap?.runningGame || (snap?.games || [])[0] || null;
     const nextGameId = active?.id || null;
     const gameChanged = nextGameId !== state.activeGameId;
 
@@ -1129,8 +1129,8 @@
   function getActiveGame() {
     const snap = state.snapshot;
     if (!snap) return null;
-    if (snap.runningGame && snap.runningGame.isCurrentlyRunning) return snap.runningGame;
     if (snap.activeInspectGame) return snap.activeInspectGame;
+    if (snap.runningGame && snap.runningGame.isCurrentlyRunning) return snap.runningGame;
     return (snap.games || [])[0] || null;
   }
 
@@ -1336,11 +1336,20 @@
     }) : null;
 
     const daemonVer = hw.daemonVersion || 0;
-    const showSvcAlert = !hw.serviceRunning || daemonVer < 4;
+    const hwDriverMissing = hw.serviceRunning && !hw.smuReady;
+    const showSvcAlert = !hw.serviceRunning || hwDriverMissing || daemonVer < 4;
+    const svcAlertText = !hw.serviceRunning
+      ? "当前普通用户态运行（开启硬件服务可免 UAC 直控 8–120W 功耗与双风扇）"
+      : hwDriverMissing
+        ? (hw.lastError || "PawnIO 内核驱动未就绪，请先安装或启动官方 PawnIO 驱动后重试")
+        : "检测到新版 PawnIO 硬件协议 v4，点击右侧可热升级";
     const svcAlertHtml = !showSvcAlert ? "" : `
       <div class="bento-svc-strip">
-        <span>${!hw.serviceRunning ? "当前普通用户态运行（开启硬件服务可免 UAC 直控 8–120W 功耗与双风扇）" : "检测到新版 PawnIO 硬件协议 v4，点击右侧可热升级"}</span>
-        <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : "热升级 v4"}</button>
+        <span>${esc(svcAlertText)}</span>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          ${hwDriverMissing ? `<button id="btnOpenPawnIo" class="btn btn-sm" data-focusable="true">下载 PawnIO</button>` : ""}
+          <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : (hwDriverMissing ? "重试启动驱动" : "热升级 v4")}</button>
+        </div>
       </div>
     `;
 
@@ -2244,10 +2253,10 @@
 
     ensureGpdControllerLoaded();
 
-    const consoleButtons = settings.consoleGamepadCombo?.buttons || ["BACK", "LB"];
-    const qamButtons = settings.qamGamepadCombo?.buttons || ["BACK", "RB"];
-    const osdButtons = settings.osdGamepadCombo?.buttons || ["BACK", "Y"];
-    const insButtons = settings.insertGamepadCombo?.buttons || ["BACK", "START"];
+    const consoleButtons = Array.isArray(settings.consoleGamepadCombo?.buttons) ? settings.consoleGamepadCombo.buttons : ["BACK", "LB"];
+    const qamButtons = Array.isArray(settings.qamGamepadCombo?.buttons) ? settings.qamGamepadCombo.buttons : ["BACK", "RB"];
+    const osdButtons = Array.isArray(settings.osdGamepadCombo?.buttons) ? settings.osdGamepadCombo.buttons : ["BACK", "Y"];
+    const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
     const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
@@ -2339,6 +2348,13 @@
                   </div>
                   ${renderSwitch("swInterceptOsk", interceptOsk)}
                 </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">侧栏开启时屏蔽游戏后台手柄</span>
+                    <span class="cw-row-sub">防《仁王 3》等后台串键；如《剑星》切回失灵请保持关闭</span>
+                  </div>
+                  ${renderSwitch("swMuteGameGamepad", !!settings.muteGameGamepadInOverlay)}
+                </div>
               </div>
 
               <div class="hotkey-list" style="margin-top:8px;">
@@ -2347,6 +2363,7 @@
                   <div class="comp-actions">
                     ${renderKeycaps(consoleButtons)}
                     <button id="btnRecordConsoleCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "console" ? "请按键..." : "录制"}</button>
+                    <button id="btnClearConsoleCombo" class="btn btn-sm" data-focusable="true" ${consoleButtons.length === 0 ? "disabled" : ""}>取消</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
@@ -2354,6 +2371,7 @@
                   <div class="comp-actions">
                     ${renderKeycaps(qamButtons)}
                     <button id="btnRecordQamCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "qam" ? "请按键..." : "录制"}</button>
+                    <button id="btnClearQamCombo" class="btn btn-sm" data-focusable="true" ${qamButtons.length === 0 ? "disabled" : ""}>取消</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
@@ -2361,6 +2379,7 @@
                   <div class="comp-actions">
                     ${renderKeycaps(osdButtons)}
                     <button id="btnRecordOsdCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "osd" ? "请按键..." : "录制"}</button>
+                    <button id="btnClearOsdCombo" class="btn btn-sm" data-focusable="true" ${osdButtons.length === 0 ? "disabled" : ""}>取消</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
@@ -2368,6 +2387,7 @@
                   <div class="comp-actions">
                     ${renderKeycaps(insButtons)}
                     <button id="btnRecordInsCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "insert" ? "请按键..." : "录制"}</button>
+                    <button id="btnClearInsCombo" class="btn btn-sm" data-focusable="true" ${insButtons.length === 0 ? "disabled" : ""}>取消</button>
                   </div>
                 </div>
               </div>
@@ -3039,6 +3059,11 @@
 
           ${!hw.serviceRunning ? `
             <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="width:100%;" data-focusable="true">一键启用 TDP / 风扇直控</button>
+          ` : !hw.smuReady ? `
+            <div style="display:flex;gap:6px;width:100%;">
+              <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" style="flex:1;" data-focusable="true">重试启动 PawnIO 驱动</button>
+              <button id="btnOpenPawnIo" class="btn btn-sm" data-focusable="true">下载驱动</button>
+            </div>
           ` : ""}
 
           <!-- 1. TDP Power Slider -->
@@ -3969,9 +3994,17 @@
 
     document.getElementById("btnInstallHwSvc")?.addEventListener("click", async () => {
       try {
-        showToast("正在请求一次性管理员授权更新 HaloDeckHardwareSvc...");
+        showToast("正在请求一次性管理员授权并检查 PawnIO 驱动...");
         const res = await rpc("installHardwareService", {});
-        showToast(res?.message || "底层硬件服务已启用", "success");
+        showToast(res?.message || "底层硬件服务已启用", res?.ok === false ? "warn" : "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+    document.getElementById("btnOpenPawnIo")?.addEventListener("click", async () => {
+      try {
+        await rpc("openPawnIoDownload", {});
+        showToast("已打开官方 PawnIO 驱动下载页，安装后重启电脑即可直控功耗", "info");
       } catch (err) {
         showToast(err.message, "error");
       }
@@ -4225,6 +4258,13 @@
       await rpc("saveSettings", { ...s, interceptPhysicalOskButton: next });
       showToast(next ? "已开启机身键盘键 (Ctrl+Win+O) 接管" : "已恢复系统默认键盘键响应", "info");
     });
+    document.getElementById("swMuteGameGamepad")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = !s.muteGameGamepadInOverlay;
+      await rpc("saveSettings", { ...s, muteGameGamepadInOverlay: next });
+      showToast(next ? "已开启侧栏期间屏蔽游戏后台手柄输入" : "已关闭游戏后台手柄屏蔽（更兼容《剑星》等游戏）", "info");
+    });
     document.getElementById("btnTestOsk")?.addEventListener("click", async () => {
       try {
         const res = await rpc("runToolboxAction", { action: "osk", fromQam: IS_QAM });
@@ -4273,57 +4313,65 @@
     document.getElementById("btnRecordQamCombo")?.addEventListener("click", () => startRecordCombo("qam"));
     document.getElementById("btnRecordOsdCombo")?.addEventListener("click", () => startRecordCombo("osd"));
     document.getElementById("btnRecordInsCombo")?.addEventListener("click", () => startRecordCombo("insert"));
+    document.getElementById("btnClearConsoleCombo")?.addEventListener("click", () => clearGamepadCombo("console"));
+    document.getElementById("btnClearQamCombo")?.addEventListener("click", () => clearGamepadCombo("qam"));
+    document.getElementById("btnClearOsdCombo")?.addEventListener("click", () => clearGamepadCombo("osd"));
+    document.getElementById("btnClearInsCombo")?.addEventListener("click", () => clearGamepadCombo("insert"));
 
     document.getElementById("btnHotkeyConsole")?.addEventListener("click", async () => {
       const choices = [
         { modifiers: 6, virtualKey: 0x4F, displayText: "Ctrl + Shift + O" },
         { modifiers: 3, virtualKey: 0x48, displayText: "Ctrl + Alt + H" },
-        { modifiers: 0, virtualKey: 0x7B, displayText: "F12" }
+        { modifiers: 0, virtualKey: 0x7B, displayText: "F12" },
+        { modifiers: 0, virtualKey: 0, displayText: "已关闭" }
       ];
       const s = state.snapshot.settings;
       const curIdx = choices.findIndex((c) => c.displayText === s.consoleHotkey?.displayText);
       const next = choices[(curIdx + 1) % choices.length];
       await rpc("saveSettings", { ...s, consoleHotkey: next });
-      showToast(`前端主界面键盘热键已切换为 ${next.displayText}`, "success");
+      showToast(next.virtualKey === 0 ? "已取消前端主界面键盘热键" : `前端主界面键盘热键已切换为 ${next.displayText}`, next.virtualKey === 0 ? "info" : "success");
     });
 
     document.getElementById("btnHotkeyQam")?.addEventListener("click", async () => {
       const choices = [
         { modifiers: 3, virtualKey: 0x4F, displayText: "Ctrl + Alt + O" },
         { modifiers: 6, virtualKey: 0x4F, displayText: "Ctrl + Shift + O" },
-        { modifiers: 3, virtualKey: 0x51, displayText: "Ctrl + Alt + Q" }
+        { modifiers: 3, virtualKey: 0x51, displayText: "Ctrl + Alt + Q" },
+        { modifiers: 0, virtualKey: 0, displayText: "已关闭" }
       ];
       const s = state.snapshot.settings;
       const curIdx = choices.findIndex((c) => c.displayText === s.qamHotkey?.displayText);
       const next = choices[(curIdx + 1) % choices.length];
       await rpc("saveSettings", { ...s, qamHotkey: next });
-      showToast(`QAM 键盘热键已切换为 ${next.displayText}`, "success");
+      showToast(next.virtualKey === 0 ? "已取消快捷侧栏键盘热键" : `QAM 键盘热键已切换为 ${next.displayText}`, next.virtualKey === 0 ? "info" : "success");
     });
 
     document.getElementById("btnHotkeyOsd")?.addEventListener("click", async () => {
       const choices = [
         { modifiers: 3, virtualKey: 0x4D, displayText: "Ctrl + Alt + M" },
         { modifiers: 6, virtualKey: 0x4D, displayText: "Ctrl + Shift + M" },
-        { modifiers: 0, virtualKey: 0x79, displayText: "F10" }
+        { modifiers: 0, virtualKey: 0x79, displayText: "F10" },
+        { modifiers: 0, virtualKey: 0, displayText: "已关闭" }
       ];
       const s = state.snapshot.settings;
       const curIdx = choices.findIndex((c) => c.displayText === s.osdHotkey?.displayText);
       const next = choices[(curIdx + 1) % choices.length];
       await rpc("saveSettings", { ...s, osdHotkey: next });
-      showToast(`OSD 键盘热键已切换为 ${next.displayText}`, "success");
+      showToast(next.virtualKey === 0 ? "已取消 OSD 键盘热键" : `OSD 键盘热键已切换为 ${next.displayText}`, next.virtualKey === 0 ? "info" : "success");
     });
 
     document.getElementById("btnHotkeyIns")?.addEventListener("click", async () => {
       const choices = [
         { modifiers: 3, virtualKey: 0x49, displayText: "Ctrl + Alt + I" },
         { modifiers: 6, virtualKey: 0x49, displayText: "Ctrl + Shift + I" },
-        { modifiers: 0, virtualKey: 0x7A, displayText: "F11" }
+        { modifiers: 0, virtualKey: 0x7A, displayText: "F11" },
+        { modifiers: 0, virtualKey: 0, displayText: "已关闭" }
       ];
       const s = state.snapshot.settings;
       const curIdx = choices.findIndex((c) => c.displayText === s.insertHotkey?.displayText);
       const next = choices[(curIdx + 1) % choices.length];
       await rpc("saveSettings", { ...s, insertHotkey: next });
-      showToast(`菜单键盘热键已切换为 ${next.displayText}`, "success");
+      showToast(next.virtualKey === 0 ? "已取消菜单键盘热键" : `菜单键盘热键已切换为 ${next.displayText}`, next.virtualKey === 0 ? "info" : "success");
     });
 
     document.getElementById("setFullscreenBoot")?.addEventListener("click", async () => {
@@ -5052,16 +5100,51 @@
   }
 
   async function startRecordCombo(target) {
+    if (state.recordingTarget === target) {
+      state.recordingTarget = null;
+      await rpc("cancelRecordGamepadCombo");
+      render();
+      showToast("已取消组合键录制", "info");
+      return;
+    }
     state.recordingTarget = target;
     render();
     await rpc("beginRecordGamepadCombo");
     showToast("请在手柄上同时按下目标组合键后松开...", "info");
   }
 
+  async function clearGamepadCombo(target) {
+    if (!state.snapshot?.settings) return;
+    if (state.recordingTarget === target) {
+      state.recordingTarget = null;
+      await rpc("cancelRecordGamepadCombo");
+    }
+    const next = { ...state.snapshot.settings };
+    const labels = {
+      console: "呼出前端主界面",
+      qam: "呼出快捷侧栏",
+      osd: "切换帧率悬浮窗",
+      mouse: "手柄鼠标模式",
+      insert: "呼出超分菜单"
+    };
+    if (target === "console") next.consoleGamepadCombo = { buttons: [] };
+    else if (target === "qam") next.qamGamepadCombo = { buttons: [] };
+    else if (target === "osd") next.osdGamepadCombo = { buttons: [] };
+    else if (target === "mouse") next.mouseModeGamepadCombo = { buttons: [] };
+    else if (target === "insert") next.insertGamepadCombo = { buttons: [] };
+    await rpc("saveSettings", next);
+    showToast(`已取消「${labels[target] || target}」手柄快捷键`, "info");
+  }
+
   async function finishGamepadComboRecord(buttons) {
     const target = state.recordingTarget;
     state.recordingTarget = null;
-    if (target && buttons?.length && state.snapshot?.settings) {
+    if (target && buttons?.length && buttons.length < 2) {
+      render();
+      showToast("为避免占用游戏内单键（如 Start/A/B），全局快捷键请至少同时按下 2 个按键组合", "warn");
+      return;
+    }
+    if (target && buttons?.length >= 2 && state.snapshot?.settings) {
       const next = { ...state.snapshot.settings };
       if (target === "console") next.consoleGamepadCombo = { buttons };
       else if (target === "qam") next.qamGamepadCombo = { buttons };

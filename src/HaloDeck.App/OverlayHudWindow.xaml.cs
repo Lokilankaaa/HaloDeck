@@ -13,14 +13,27 @@ namespace HaloDeck.App;
 public partial class OverlayHudWindow : Window
 {
     private int _level;
+    private int _lastSizedLevel = -1;
+    private double _latchedMinWidth;
     private string _position = "top-center";
     private double _opacity = 0.86;
 
     public OverlayHudWindow()
     {
         InitializeComponent();
-        SizeChanged += (_, _) => RepositionWindow();
+        SizeChanged += OnOverlaySizeChanged;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    private void OnOverlaySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ActualWidth > _latchedMinWidth + 1.0)
+        {
+            // Quantize width upward into 16px buckets so 1-2px digit jitter never recreates the layered surface every second.
+            _latchedMinWidth = Math.Ceiling(ActualWidth / 16.0) * 16.0;
+            RootCard.MinWidth = _latchedMinWidth;
+        }
+        RepositionWindow();
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -64,20 +77,31 @@ public partial class OverlayHudWindow : Window
         if (hwnd == 0) return;
 
         ApplyClickThroughStyles();
-        Win32Interop.RaiseTopmostNoActivate(hwnd, forceReband);
+        // Never demote OSD to HWND_NOTOPMOST before re-raising: doing so drops a frame behind the game and causes visible flicker.
+        Win32Interop.RaiseTopmostNoActivate(hwnd, forceReband: false);
     }
 
     public void ApplySettings(int level, string position, double opacity)
     {
-        _level = Math.Clamp(level, 0, 4);
-        _position = string.IsNullOrWhiteSpace(position) ? "top-center" : position;
+        int nextLevel = Math.Clamp(level, 0, 4);
+        string nextPos = string.IsNullOrWhiteSpace(position) ? "top-center" : position;
+        bool layoutChanged = nextLevel != _level || !string.Equals(nextPos, _position, StringComparison.OrdinalIgnoreCase);
+
+        _level = nextLevel;
+        _position = nextPos;
         _opacity = Math.Clamp(opacity, 0.35, 1.0);
         RootCard.Opacity = _opacity;
+        ApplyEdgeDockStyle();
 
         if (_level <= 0)
         {
             if (IsVisible) Hide();
             return;
+        }
+
+        if (layoutChanged || _lastSizedLevel != _level)
+        {
+            ResetLatchedWidthForLevel(_level);
         }
 
         bool newlyShown = !IsVisible;
@@ -87,7 +111,35 @@ public partial class OverlayHudWindow : Window
             ApplyClickThroughStyles();
         }
         RepositionWindow();
-        EnsureTopmostZOrder(forceReband: newlyShown);
+        EnsureTopmostZOrder(forceReband: false);
+    }
+
+    private void ApplyEdgeDockStyle()
+    {
+        RootCard.CornerRadius = _position switch
+        {
+            "top-left" => new CornerRadius(0, 0, 8, 0),
+            "top-right" => new CornerRadius(0, 0, 0, 8),
+            _ => new CornerRadius(0, 0, 8, 8)
+        };
+        RootCard.BorderThickness = _position switch
+        {
+            "top-left" => new Thickness(0, 0, 1, 1),
+            "top-right" => new Thickness(1, 0, 0, 1),
+            _ => new Thickness(1, 0, 1, 1)
+        };
+    }
+
+    private void ResetLatchedWidthForLevel(int level)
+    {
+        _lastSizedLevel = level;
+        _latchedMinWidth = level switch
+        {
+            1 => 340,
+            2 => 520,
+            _ => 312
+        };
+        RootCard.MinWidth = _latchedMinWidth;
     }
 
     public void UpdateMetrics(SystemControlState sys, GameEntry? runningGame, int targetTdpWatts)
@@ -245,15 +297,23 @@ public partial class OverlayHudWindow : Window
     private void RepositionWindow()
     {
         double screenW = SystemParameters.PrimaryScreenWidth;
-        double w = ActualWidth > 0 ? ActualWidth : 280;
-        const double margin = 16;
+        double w = ActualWidth > 0 ? ActualWidth : (_latchedMinWidth > 0 ? _latchedMinWidth : 312);
 
-        Top = margin;
-        Left = _position switch
+        double targetTop = 0;
+        double targetLeft = _position switch
         {
-            "top-left" => margin,
-            "top-right" => Math.Max(margin, screenW - w - margin),
-            _ => Math.Max(margin, (screenW - w) / 2.0)
+            "top-left" => 0,
+            "top-right" => Math.Max(0, screenW - w),
+            _ => Math.Max(0, Math.Round((screenW - w) / 2.0))
         };
+
+        if (Math.Abs(Top - targetTop) >= 0.5)
+        {
+            Top = targetTop;
+        }
+        if (Math.Abs(Left - targetLeft) >= 0.5)
+        {
+            Left = targetLeft;
+        }
     }
 }

@@ -93,6 +93,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private bool _pmTableUnavailable;
     private DateTime _lastPmReadUtc = DateTime.MinValue;
     private DateTime _lastGpdSvcCheckUtc = DateTime.MinValue;
+    private DateTime _lastPawnIoInitAttemptUtc = DateTime.MinValue;
     private bool _cachedGpdSvcExists;
     private bool _cachedGpdSvcRunning;
     private readonly ulong[] _pmTableBuf = new ulong[1024];
@@ -194,14 +195,43 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     {
         lock (_hwLock)
         {
-            _dmiBoard = ReadDmiBoardLabel();
-            _pawnIoInstalled = File.Exists(PawnIoDllPath);
-            if (!_pawnIoInstalled)
-            {
-                _lastError = $"未检测到 PawnIOLib.dll ({PawnIoDllPath})";
-                return;
-            }
+            InitializePawnIoLocked();
+        }
+    }
 
+    private void TryEnsurePawnIoReadyLocked()
+    {
+        bool needEc = IsSupportedGpdEcBoard(_dmiBoard) && (!_ecReady || _ecHandle == 0);
+        if (_smuReady && _smuHandle != 0 && !needEc)
+        {
+            return;
+        }
+
+        if ((DateTime.UtcNow - _lastPawnIoInitAttemptUtc) < TimeSpan.FromSeconds(8))
+        {
+            return;
+        }
+
+        InitializePawnIoLocked();
+    }
+
+    private void InitializePawnIoLocked()
+    {
+        _lastPawnIoInitAttemptUtc = DateTime.UtcNow;
+        if (string.IsNullOrEmpty(_dmiBoard))
+        {
+            _dmiBoard = ReadDmiBoardLabel();
+        }
+
+        _pawnIoInstalled = File.Exists(PawnIoDllPath);
+        if (!_pawnIoInstalled)
+        {
+            _lastError = $"未检测到 PawnIO 驱动 ({PawnIoDllPath})，请先安装官方 PawnIO 驱动（pawnio.eu）";
+            return;
+        }
+
+        if (_pawnIoLib == 0)
+        {
             try
             {
                 if (!NativeLibrary.TryLoad(PawnIoDllPath, out _pawnIoLib))
@@ -220,8 +250,18 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 _lastError = $"初始化 PawnIO 导出函数失败: {ex.Message}";
                 return;
             }
+        }
 
-            string modDir = Path.Combine(AppContext.BaseDirectory, "Assets", "PawnIO");
+        if (_pawnOpen is null || _pawnLoad is null || _pawnExecute is null || _pawnClose is null)
+        {
+            return;
+        }
+
+        _lastError = string.Empty;
+        string modDir = Path.Combine(AppContext.BaseDirectory, "Assets", "PawnIO");
+
+        if (!_smuReady || _smuHandle == 0)
+        {
             string smuPath = Path.Combine(modDir, "RyzenSMU.bin");
             if (File.Exists(smuPath))
             {
@@ -245,7 +285,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                     }
                     else
                     {
-                        _lastError = $"pawnio_open(SMU) 失败 (0x{hr:X8})";
+                        _lastError = FormatPawnIoOpenError("SMU", hr);
                     }
                 }
                 catch (Exception ex)
@@ -253,48 +293,62 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                     _lastError = $"RyzenSMU 初始化异常: {ex.Message}";
                 }
             }
+        }
 
-            // Only unlock SuperIO / EC writes on confirmed GPD handheld boards (G1618-05 Win5 / G1622-01 Win4/Mini)
-            if (IsSupportedGpdEcBoard(_dmiBoard))
+        // Only unlock SuperIO / EC writes on confirmed GPD handheld boards (G1618-05 Win5 / G1622-01 Win4/Mini)
+        if ((!_ecReady || _ecHandle == 0) && IsSupportedGpdEcBoard(_dmiBoard))
+        {
+            string lpcPath = Path.Combine(modDir, "LpcIO.bin");
+            if (File.Exists(lpcPath))
             {
-                string lpcPath = Path.Combine(modDir, "LpcIO.bin");
-                if (File.Exists(lpcPath))
+                try
                 {
-                    try
+                    byte[] lpcBlob = File.ReadAllBytes(lpcPath);
+                    int hr = _pawnOpen(out _ecHandle);
+                    if (hr >= 0 && _ecHandle != 0)
                     {
-                        byte[] lpcBlob = File.ReadAllBytes(lpcPath);
-                        int hr = _pawnOpen(out _ecHandle);
-                        if (hr >= 0 && _ecHandle != 0)
+                        hr = _pawnLoad(_ecHandle, lpcBlob, (nuint)lpcBlob.Length);
+                        if (hr >= 0)
                         {
-                            hr = _pawnLoad(_ecHandle, lpcBlob, (nuint)lpcBlob.Length);
-                            if (hr >= 0)
+                            WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
                             {
-                                WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
+                                var inBuf = new ulong[] { 1 }; // Slot 1 -> 0x4E/0x4F
+                                var outBuf = Array.Empty<ulong>();
+                                int rc = _pawnExecute(_ecHandle, "ioctl_select_slot", inBuf, 1, outBuf, 0, out _);
+                                if (rc >= 0)
                                 {
-                                    var inBuf = new ulong[] { 1 }; // Slot 1 -> 0x4E/0x4F
-                                    var outBuf = Array.Empty<ulong>();
-                                    int rc = _pawnExecute(_ecHandle, "ioctl_select_slot", inBuf, 1, outBuf, 0, out _);
-                                    if (rc >= 0)
-                                    {
-                                        _ecReady = true;
-                                        _lastFanRpm = ReadFanRpmInternal();
-                                    }
-                                });
-                            }
-                            else
-                            {
-                                _pawnClose(_ecHandle);
-                                _ecHandle = 0;
-                            }
+                                    _ecReady = true;
+                                    _lastFanRpm = ReadFanRpmInternal();
+                                }
+                            });
+                        }
+                        else
+                        {
+                            _pawnClose(_ecHandle);
+                            _ecHandle = 0;
                         }
                     }
-                    catch (Exception ex)
+                    else if (string.IsNullOrEmpty(_lastError))
                     {
-                        _lastError = string.IsNullOrEmpty(_lastError) ? $"LpcIO 初始化异常: {ex.Message}" : _lastError;
+                        _lastError = FormatPawnIoOpenError("EC", hr);
                     }
+                }
+                catch (Exception ex)
+                {
+                    _lastError = string.IsNullOrEmpty(_lastError) ? $"LpcIO 初始化异常: {ex.Message}" : _lastError;
                 }
             }
         }
+    }
+
+    internal static string FormatPawnIoOpenError(string channel, int hr)
+    {
+        return unchecked((uint)hr) switch
+        {
+            0x80070002 => "PawnIO 内核驱动未启动或未安装 (0x80070002)：请安装官方 PawnIO 驱动（pawnio.eu）后重启电脑，或检查杀毒软件/内核隔离拦截",
+            0x80070005 => "PawnIO 内核驱动访问被拒绝 (0x80070005)：请确认以系统服务模式运行并检查安全软件拦截",
+            _ => $"pawnio_open({channel}) 失败 (0x{hr:X8})"
+        };
     }
 
     private static string ReadDmiBoardLabel()
@@ -438,6 +492,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                 lock (_hwLock)
                 {
+                    TryEnsurePawnIoReadyLocked();
                     if (_ecReady && _ecHandle != 0)
                     {
                         WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () => _lastFanRpm = ReadFanRpmInternal());
@@ -471,6 +526,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                 lock (_hwLock)
                 {
+                    TryEnsurePawnIoReadyLocked();
                     bool ok = ApplyStrixHaloTdpLocked(watts, slowWatts, fastWatts, out string err);
                     return new { ok, error = err, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                 }
@@ -491,6 +547,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                 lock (_hwLock)
                 {
+                    TryEnsurePawnIoReadyLocked();
                     _lastTempC = tempC;
                     _lastFanHeartbeatUtc = DateTime.UtcNow;
                     if (parsedCurve is { Count: > 0 })
@@ -870,10 +927,31 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
     // ---------------- Elevation CLI Install / Uninstall Helpers ----------------
 
+    private static void EnsurePawnIoDriverRunning()
+    {
+        try
+        {
+            // Kernel driver service "PawnIO" may be installed with Demand start or stopped by another tool.
+            // Ensure it is configured for Auto start and running before HaloDeckHardwareSvc opens \\.\PawnIO.
+            if (RunScCommand("query PawnIO") == 0)
+            {
+                RunScCommand("config PawnIO start= auto");
+                RunScCommand("start PawnIO");
+                Thread.Sleep(250);
+            }
+        }
+        catch
+        {
+            // Non-fatal: HaloDeckHardwareSvc will surface the exact diagnostic error if PawnIO is unavailable.
+        }
+    }
+
     public static int InstallAndStartService()
     {
         try
         {
+            EnsurePawnIoDriverRunning();
+
             string exePath = Environment.ProcessPath
                 ?? throw new InvalidOperationException("无法确定当前 HaloDeck.exe 路径。");
             string quotedBin = $"\\\"{exePath}\\\" --hw-service";

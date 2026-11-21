@@ -208,19 +208,59 @@ public sealed class GameXInputIsolator : IDisposable
                 return;
             }
             pids = _mutedPids.ToArray();
-            _mutedPids.Clear();
         }
 
+        var stillMuted = new List<int>();
         foreach (int pid in pids)
         {
             try
             {
-                TrySetProcessXInputEnabled(pid, enabled: true);
+                if (!IsLiveProcess(pid))
+                {
+                    continue;
+                }
+
+                bool restored = TrySetProcessXInputEnabled(pid, enabled: true);
+                if (!restored && IsLiveProcess(pid))
+                {
+                    Thread.Sleep(40);
+                    restored = TrySetProcessXInputEnabled(pid, enabled: true);
+                }
+
+                if (!restored && IsLiveProcess(pid))
+                {
+                    stillMuted.Add(pid);
+                }
             }
             catch
             {
                 // Ignore if game already exited
             }
+        }
+
+        lock (_sync)
+        {
+            foreach (int pid in pids)
+            {
+                if (!stillMuted.Contains(pid))
+                {
+                    _mutedPids.Remove(pid);
+                }
+            }
+        }
+    }
+
+    private static bool IsLiveProcess(int pid)
+    {
+        if (pid <= 4) return false;
+        try
+        {
+            using var proc = System.Diagnostics.Process.GetProcessById(pid);
+            return !proc.HasExited;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -359,8 +399,11 @@ public sealed class GameXInputIsolator : IDisposable
                 {
                     try
                     {
-                        WaitForSingleObject(hThread, 100);
-                        anyApplied = true;
+                        uint waitRc = WaitForSingleObject(hThread, 350);
+                        if (waitRc == 0)
+                        {
+                            anyApplied = true;
+                        }
                     }
                     finally
                     {

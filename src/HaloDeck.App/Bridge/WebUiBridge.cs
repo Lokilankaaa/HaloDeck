@@ -52,6 +52,7 @@ public sealed class WebUiBridge : IDisposable
     private AppSettings _settings;
     private IReadOnlyList<GameEntry> _cachedGames = Array.Empty<GameEntry>();
     private GameEntry? _runningGame;
+    private string? _selectedInspectGameId;
 
     private bool? _lastObservedAcOnline;
     private string? _appliedProfileGameId;
@@ -141,6 +142,15 @@ public sealed class WebUiBridge : IDisposable
 
     public void MuteActiveGameControllerInput(nint externalForegroundHwnd)
     {
+        if (!_settings.MuteGameGamepadInOverlay)
+        {
+            if (_xinputIsolator.HasMutedProcesses)
+            {
+                _xinputIsolator.RestoreAll();
+            }
+            return;
+        }
+
         if (_runningGame is { IsCurrentlyRunning: true, RunningPid: > 4 and int runPid })
         {
             bool highRisk = _runningGame.AntiCheat?.RiskLevel == AntiCheatRiskLevel.HighRisk;
@@ -250,17 +260,42 @@ public sealed class WebUiBridge : IDisposable
         core.Navigate($"https://app.halodeck.local/index.html?mode={mode}");
     }
 
-    public GameEntry? ActiveGameSnapshot => _runningGame ?? _cachedGames.FirstOrDefault();
+    private GameEntry? ResolveInspectGame()
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedInspectGameId))
+        {
+            if (_runningGame is not null &&
+                string.Equals(_runningGame.Id, _selectedInspectGameId, StringComparison.OrdinalIgnoreCase))
+            {
+                return _runningGame;
+            }
+
+            var selected = _cachedGames.FirstOrDefault(g =>
+                string.Equals(g.Id, _selectedInspectGameId, StringComparison.OrdinalIgnoreCase));
+            if (selected is not null)
+            {
+                return selected;
+            }
+        }
+
+        return _runningGame ?? _cachedGames.FirstOrDefault();
+    }
+
+    public GameEntry? ActiveGameSnapshot => ResolveInspectGame();
 
     public void RefreshActiveGameForOverlay()
     {
         var current = _runningTracker.Poll(_cachedGames, allowBackgroundScan: true);
-        var target = current ?? _cachedGames.FirstOrDefault();
+        if (current is { IsCurrentlyRunning: true })
+        {
+            _selectedInspectGameId = current.Id;
+        }
+        _runningGame = current;
+        var target = ResolveInspectGame();
         if (target is not null)
         {
             _libraryService.RefreshInjectionStatus(target);
         }
-        _runningGame = current;
         BroadcastStateSnapshot();
     }
 
@@ -270,6 +305,11 @@ public sealed class WebUiBridge : IDisposable
         bool changed = !Equals(updatedRunning?.Id, _runningGame?.Id) ||
                        updatedRunning?.IsCurrentlyRunning != _runningGame?.IsCurrentlyRunning ||
                        updatedRunning?.Injection.IsInjected != _runningGame?.Injection.IsInjected;
+        if (updatedRunning is { IsCurrentlyRunning: true } &&
+            !string.Equals(updatedRunning.Id, _runningGame?.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedInspectGameId = updatedRunning.Id;
+        }
         _runningGame = updatedRunning;
 
         var sys = EnrichSystemState(
@@ -568,6 +608,7 @@ public sealed class WebUiBridge : IDisposable
                 "toggleOfflineWifi" => await ToggleOfflineWifiAsync(payload),
                 "setUiTheme" => SetUiTheme(payload),
                 "setUiLayout" => SetUiLayout(payload),
+                "openPawnIoDownload" => OpenPawnIoDownloadPage(),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -587,7 +628,7 @@ public sealed class WebUiBridge : IDisposable
 
     private object BuildSnapshot()
     {
-        var activeGame = _runningGame ?? _cachedGames.FirstOrDefault();
+        var activeGame = ResolveInspectGame();
         var sysState = EnrichSystemState(_systemControl.GetState(targetPid: ResolveTargetRenderPid()));
         _latestSystemState = sysState;
         return new
@@ -724,12 +765,12 @@ public sealed class WebUiBridge : IDisposable
         var game = _cachedGames.FirstOrDefault(g => string.Equals(g.Id, gameId, StringComparison.OrdinalIgnoreCase));
         if (game is not null)
         {
+            _selectedInspectGameId = game.Id;
             _libraryService.RefreshInjectionStatus(game);
-            _runningTracker.SelectManualFallbackGame(game);
-            _runningGame = _runningTracker.LastActiveGame;
             BroadcastStateSnapshot();
+            return game;
         }
-        return _runningGame;
+        return ResolveInspectGame();
     }
 
     private async Task<InjectionResult> InjectGameAsync(JsonElement payload, bool restartRunning)
@@ -1021,6 +1062,11 @@ public sealed class WebUiBridge : IDisposable
         _settingsStore.Save(_settings);
         _inputHub.UpdateSettings(_settings);
 
+        if (!_settings.MuteGameGamepadInOverlay && _xinputIsolator.HasMutedProcesses)
+        {
+            _xinputIsolator.RestoreAll();
+        }
+
         if (startupChanged)
         {
             ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
@@ -1028,6 +1074,13 @@ public sealed class WebUiBridge : IDisposable
 
         BroadcastStateSnapshot();
         return _settings;
+    }
+
+    private static object OpenPawnIoDownloadPage()
+    {
+        const string url = "https://pawnio.eu/";
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        return new { ok = true, url };
     }
 
     private object BeginRecordGamepadCombo()
@@ -2010,11 +2063,12 @@ public sealed class WebUiBridge : IDisposable
         BroadcastStateSnapshot();
         return new
         {
-            ok = true,
+            ok = sys.HardwareService.SmuReady,
+            smuReady = sys.HardwareService.SmuReady,
             systemControl = sys,
             message = sys.HardwareService.SmuReady
                 ? "已成功启用 HaloDeck 底层硬件服务（后续免 UAC 直控 TDP 与风扇）"
-                : $"服务已启动但部分硬件模块未就绪：{sys.HardwareService.LastError}"
+                : $"服务已启动但底层驱动未就绪：{sys.HardwareService.LastError}"
         };
     }
 

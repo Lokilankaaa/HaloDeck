@@ -397,9 +397,9 @@ public sealed class InputHubService : IDisposable
                         continue;
                     }
 
-                    // 0. Check global Main Console (Frontend) toggle combo (works inside any game or desktop!)
+                    // 0. Check global Main Console (Frontend) toggle combo (require >=2 buttons so single gameplay buttons like Start are never hijacked)
                     var consoleMask = XInputInterop.CombineMask(_settings.ConsoleGamepadCombo?.Buttons ?? []);
-                    if (consoleMask != XInputButtons.None)
+                    if (IsValidGlobalComboMask(consoleMask))
                     {
                         if ((buttons & consoleMask) == consoleMask)
                         {
@@ -419,7 +419,7 @@ public sealed class InputHubService : IDisposable
 
                     // 1. Check global QAM toggle combo (works inside any game!)
                     var qamMask = XInputInterop.CombineMask(_settings.QamGamepadCombo.Buttons);
-                    if (qamMask != XInputButtons.None)
+                    if (IsValidGlobalComboMask(qamMask))
                     {
                         if ((buttons & qamMask) == qamMask)
                         {
@@ -439,7 +439,7 @@ public sealed class InputHubService : IDisposable
 
                     // 2. Check global OptiScaler Insert combo (works inside any game, blocked when HaloDeck UI owns focus)
                     var insertMask = XInputInterop.CombineMask(_settings.InsertGamepadCombo.Buttons);
-                    if (insertMask != XInputButtons.None)
+                    if (IsValidGlobalComboMask(insertMask))
                     {
                         if ((buttons & insertMask) == insertMask)
                         {
@@ -459,7 +459,7 @@ public sealed class InputHubService : IDisposable
 
                     // 2.5 Check global OSD cycle combo & Gamepad Mouse Mode combo
                     var osdMask = XInputInterop.CombineMask(_settings.OsdGamepadCombo.Buttons);
-                    if (osdMask != XInputButtons.None)
+                    if (IsValidGlobalComboMask(osdMask))
                     {
                         if ((buttons & osdMask) == osdMask)
                         {
@@ -478,7 +478,7 @@ public sealed class InputHubService : IDisposable
                     }
 
                     var mouseMask = XInputInterop.CombineMask(_settings.MouseModeGamepadCombo.Buttons);
-                    if (mouseMask != XInputButtons.None)
+                    if (IsValidGlobalComboMask(mouseMask))
                     {
                         if ((buttons & mouseMask) == mouseMask)
                         {
@@ -565,6 +565,9 @@ public sealed class InputHubService : IDisposable
             }
         }
     }
+
+    internal static bool IsValidGlobalComboMask(XInputButtons mask)
+        => mask != XInputButtons.None && System.Numerics.BitOperations.PopCount((uint)mask) >= 2;
 
     private static List<ushort> ExtractV2GamepadCodes(XInputGamepad gp, XInputButtons buttons)
     {

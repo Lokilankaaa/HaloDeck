@@ -90,6 +90,9 @@ public sealed class AppSettings
     public bool InterceptPhysicalOskButton { get; set; } = true;
     public string PreferredOskMode { get; set; } = "tabtip"; // "tabtip" | "osk"
     public bool EnableBackButtonHotkeys { get; set; } = true;
+    // Disabled by default: remote XInputEnable(FALSE) can break controller recovery on UE/Denuvo games (e.g. Stellar Blade).
+    // Players of background-polling engines (e.g. Nioh 3) can opt in from Tab 4 -> Controls.
+    public bool MuteGameGamepadInOverlay { get; set; } = false;
 
     public Dictionary<string, GamePerformanceProfile> PerGameProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> ExcludedGameIds { get; set; } = new();

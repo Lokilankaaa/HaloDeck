@@ -13,12 +13,12 @@
         ResizeMode="NoResize"
         SizeToContent="WidthAndHeight">
     <Border x:Name="RootCard"
-            CornerRadius="10"
-            Padding="10,6"
+            CornerRadius="0,0,8,8"
+            Padding="10,5"
             Background="#DC0B111B"
             BorderBrush="#404DA6FF"
             BorderThickness="1">
-        <StackPanel Orientation="Vertical">
+        <StackPanel Orientation="Vertical" TextElement.FontFamily="Cascadia Code, Consolas, Segoe UI, Microsoft YaHei UI">
             <!-- Level 1 & 2 Compact Line -->
             <TextBlock x:Name="CompactLineText"
                        Foreground="#F2F6FC"
