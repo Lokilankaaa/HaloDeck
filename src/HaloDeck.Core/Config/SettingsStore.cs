@@ -35,7 +35,15 @@ public sealed class SettingsStore
         {
             string raw = File.ReadAllText(_settingsPath);
             bool hasCustomTdp = raw.Contains("\"CustomTdpPresets\"", StringComparison.OrdinalIgnoreCase);
+            bool hasBackHotkeySchema = raw.Contains("\"BackButtonHotkeysSchemaVersion\"", StringComparison.OrdinalIgnoreCase);
             var settings = JsonSerializer.Deserialize<AppSettings>(raw, JsonOptions) ?? new AppSettings();
+            if (!hasBackHotkeySchema)
+            {
+                // One-time migration from <= v0.5.3 where EnableBackButtonHotkeys defaulted to true
+                // and silently hijacked GPD Win 5 firmware's built-in F14/F15 back-button signals.
+                settings.EnableBackButtonHotkeys = false;
+                settings.BackButtonHotkeysSchemaVersion = 1;
+            }
             Normalize(settings, hasCustomTdp);
             return settings;
         }
@@ -114,5 +122,6 @@ public sealed class SettingsStore
 
         string rawOsk = (settings.PreferredOskMode ?? "tabtip").Trim().ToLowerInvariant();
         settings.PreferredOskMode = rawOsk == "osk" ? "osk" : "tabtip";
+        settings.OverlayRenderer = Services.RtssOsdFormatter.NormalizeRendererMode(settings.OverlayRenderer);
     }
 }

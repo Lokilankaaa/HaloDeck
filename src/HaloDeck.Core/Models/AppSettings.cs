@@ -63,10 +63,11 @@ public sealed class AppSettings
     public bool SteadyEcoPeripheralEnabled { get; set; } = true;
     public int SteadyEcoCpuEpp { get; set; } = 70;
 
-    // Native Click-Through Overlay HUD
+    // Native Click-Through Overlay HUD (+ optional RTSSSharedMemoryV2 bridge)
     public int OverlayLevel { get; set; } = 0; // 0=off, 1..4
     public string OverlayPosition { get; set; } = "top-center"; // "top-left" | "top-center" | "top-right"
     public double OverlayOpacity { get; set; } = 0.86;
+    public string OverlayRenderer { get; set; } = "native"; // "native" | "auto_rtss" | "rtss"
 
     // Desktop Gamepad Mouse Mode
     public bool GamepadMouseModeEnabled { get; set; } = false;
@@ -88,8 +89,14 @@ public sealed class AppSettings
     public HotkeyBinding OsdHotkey { get; set; } = new() { Modifiers = 0x0001 | 0x0002, VirtualKey = 0x4D, DisplayText = "Ctrl + Alt + M" };
 
     public bool InterceptPhysicalOskButton { get; set; } = true;
+    // Short-press of GPD Win 5 physical GPD Tool / gamepad-mouse toggle key emits VK_F13 (0x7C).
+    // Kept enabled by default and completely decoupled from L4/R4 back-button F14/F15 takeover.
+    public bool InterceptPhysicalMenuButton { get; set; } = true;
     public string PreferredOskMode { get; set; } = "tabtip"; // "tabtip" | "osk"
-    public bool EnableBackButtonHotkeys { get; set; } = true;
+    // Disabled by default so native L4/R4 back buttons (which emit F14/F15 in GPD Win 5 firmware) are never hijacked in games.
+    public bool EnableBackButtonHotkeys { get; set; } = false;
+    // Schema >= 1 marks settings migrated past the legacy v0.5.3 default (EnableBackButtonHotkeys = true).
+    public int BackButtonHotkeysSchemaVersion { get; set; } = 1;
     // Disabled by default: remote XInputEnable(FALSE) can break controller recovery on UE/Denuvo games (e.g. Stellar Blade).
     // Players of background-polling engines (e.g. Nioh 3) can opt in from Tab 4 -> Controls.
     public bool MuteGameGamepadInOverlay { get; set; } = false;

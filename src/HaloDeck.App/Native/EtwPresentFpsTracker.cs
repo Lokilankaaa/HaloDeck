@@ -301,9 +301,9 @@ public sealed class EtwPresentFpsTracker : IDisposable
                     return;
                 }
 
-                // Enable DXGI (SwapChain Present), D3D9 (IDirect3DDevice9 Present), and DxgKrnl fallback
-                EnableTraceEx2(_sessionHandle, in DxgiProviderGuid, EventControlCodeEnableProvider, TraceLevelInformation, 0x8000000000000002UL, 0, 0, IntPtr.Zero);
-                EnableTraceEx2(_sessionHandle, in D3d9ProviderGuid, EventControlCodeEnableProvider, TraceLevelInformation, 0x8000000000000002UL, 0, 0, IntPtr.Zero);
+                // Enable DXGI (Present / Present1 / PresentMPO), D3D9 (IDirect3DDevice9 Present), and DxgKrnl fallback
+                EnableTraceEx2(_sessionHandle, in DxgiProviderGuid, EventControlCodeEnableProvider, TraceLevelInformation, 0x8000000000000003UL, 0, 0, IntPtr.Zero);
+                EnableTraceEx2(_sessionHandle, in D3d9ProviderGuid, EventControlCodeEnableProvider, TraceLevelInformation, 0x8000000000000003UL, 0, 0, IntPtr.Zero);
                 EnableTraceEx2(_sessionHandle, in DxgKrnlProviderGuid, EventControlCodeEnableProvider, TraceLevelInformation, 0x4000000008000001UL, 0, 0, IntPtr.Zero);
 
                 var logfile = new EVENT_TRACE_LOGFILEW
@@ -495,7 +495,8 @@ public sealed class EtwPresentFpsTracker : IDisposable
         Guid provider = Marshal.PtrToStructure<Guid>(eventRecordPtr + 24);
 
         int source;
-        if (provider == DxgiProviderGuid && task == 9)
+        // DXGI Task 9 = Present, Task 10 = Present1 (RE Engine / UE5 / HDR DX12), Task 15 = PresentMultiplaneOverlay
+        if (provider == DxgiProviderGuid && task is 9 or 10 or 15)
         {
             source = SourceDxgi;
         }

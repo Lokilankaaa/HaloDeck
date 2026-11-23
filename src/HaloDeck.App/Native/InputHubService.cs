@@ -25,6 +25,7 @@ public sealed class InputHubService : IDisposable
     private readonly Dictionary<string, DateTime> _directionRepeatAt = new();
 
     private AppSettings _settings;
+    private HashSet<ushort>? _assignedBackButtonFnHidCodes;
     private nint _hotkeyWindowHwnd;
     private HwndSource? _hwndSource;
     private XInputButtons _prevButtons;
@@ -35,8 +36,10 @@ public sealed class InputHubService : IDisposable
     private bool _mouseComboArmed = true;
     private volatile bool _suppressNavigationUntilRelease;
     private bool _recordingGamepadCombo;
+    private bool _recordGamepadWaitRelease;
     private XInputButtons _recordedMask;
     private volatile bool _recordingBackButtonGamepad;
+    private volatile bool _recordBackWaitRelease;
     private readonly HashSet<ushort> _recordedBackButtonCodes = new();
     private volatile string? _activeUiTarget;
     private volatile bool _gamepadMouseModeEnabled;
@@ -129,6 +132,19 @@ public sealed class InputHubService : IDisposable
         }
     }
 
+    public void UpdateAssignedBackButtonFnCodes(IEnumerable<ushort>? hidCodes)
+    {
+        _assignedBackButtonFnHidCodes = hidCodes is null ? null : new HashSet<ushort>(hidCodes);
+        if (_uiDispatcher is not null && !_uiDispatcher.CheckAccess())
+        {
+            _uiDispatcher.BeginInvoke(RegisterGlobalHotkeys);
+        }
+        else
+        {
+            RegisterGlobalHotkeys();
+        }
+    }
+
     public void AttachHotkeyWindow(nint hwnd)
     {
         _uiDispatcher = Dispatcher.CurrentDispatcher;
@@ -147,24 +163,28 @@ public sealed class InputHubService : IDisposable
     public void BeginRecordGamepadCombo()
     {
         _recordedMask = XInputButtons.None;
+        _recordGamepadWaitRelease = true;
         _recordingGamepadCombo = true;
     }
 
     public void CancelRecordGamepadCombo()
     {
         _recordingGamepadCombo = false;
+        _recordGamepadWaitRelease = false;
         _recordedMask = XInputButtons.None;
     }
 
     public void BeginRecordBackButtonGamepad()
     {
         _recordedBackButtonCodes.Clear();
+        _recordBackWaitRelease = true;
         _recordingBackButtonGamepad = true;
     }
 
     public void CancelRecordBackButtonGamepad()
     {
         _recordingBackButtonGamepad = false;
+        _recordBackWaitRelease = false;
         _recordedBackButtonCodes.Clear();
     }
 
@@ -179,13 +199,28 @@ public sealed class InputHubService : IDisposable
         TryRegisterHotkey(HotkeyConsoleId, _settings.ConsoleHotkey);
         TryRegisterHotkey(HotkeyOsdId, _settings.OsdHotkey);
 
-        // Bare paddle bindings for GPD Win 5 L4/R4 (VK_F13=0x7C, VK_F14=0x7D, VK_F15=0x7E, VK_F16=0x7F)
-        if (_settings.EnableBackButtonHotkeys)
+        // GPD Win 5 physical front quick-menu key (short press of GPD Tool / gamepad-mouse toggle key) emits VK_F13 (0x7C).
+        // Decoupled from L4/R4 back buttons so users can summon QAM with the dedicated physical key while keeping L4/R4 untouched.
+        bool filterByHw = _assignedBackButtonFnHidCodes is not null;
+        bool backF13 = _settings.EnableBackButtonHotkeys && (!filterByHw || _assignedBackButtonFnHidCodes!.Contains(0x0068));
+        if (_settings.InterceptPhysicalMenuButton || backF13)
         {
             Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
-            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id, Win32Interop.MOD_NOREPEAT, 0x7D);
-            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id, Win32Interop.MOD_NOREPEAT, 0x7E);
-            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleConsoleF16Id, Win32Interop.MOD_NOREPEAT, 0x7F);
+        }
+
+        // Bare paddle bindings for GPD Win 5 L4/R4 (HID 0x69..0x6B -> VK_F14..VK_F16).
+        // Off by default so GPD Win 5 firmware's native F14/F15 virtual keyboard output is never hijacked.
+        // When enabled AND the GPD controller mapping is known, only register the specific F14..F16 keys
+        // actually assigned to L4/R4 so an unmapped/game-bound paddle never misfires firmware F14/F15.
+        if (_settings.EnableBackButtonHotkeys)
+        {
+            bool allowF14 = !filterByHw || _assignedBackButtonFnHidCodes!.Contains(0x0069);
+            bool allowF15 = !filterByHw || _assignedBackButtonFnHidCodes!.Contains(0x006A);
+            bool allowF16 = !filterByHw || _assignedBackButtonFnHidCodes!.Contains(0x006B);
+
+            if (allowF14) Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleOsdF14Id, Win32Interop.MOD_NOREPEAT, 0x7D);
+            if (allowF15) Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleInsF15Id, Win32Interop.MOD_NOREPEAT, 0x7E);
+            if (allowF16) Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleConsoleF16Id, Win32Interop.MOD_NOREPEAT, 0x7F);
         }
     }
 
@@ -353,6 +388,16 @@ public sealed class InputHubService : IDisposable
                     if (_recordingBackButtonGamepad)
                     {
                         var curCodes = ExtractV2GamepadCodes(gamepad, buttons);
+                        if (_recordBackWaitRelease)
+                        {
+                            if (curCodes.Count == 0)
+                            {
+                                _recordBackWaitRelease = false;
+                            }
+                            _prevButtons = buttons;
+                            await Task.Delay(12, ct).ConfigureAwait(false);
+                            continue;
+                        }
                         if (curCodes.Count > 0)
                         {
                             foreach (ushort code in curCodes)
@@ -380,6 +425,16 @@ public sealed class InputHubService : IDisposable
 
                     if (_recordingGamepadCombo)
                     {
+                        if (_recordGamepadWaitRelease)
+                        {
+                            if (buttons == XInputButtons.None)
+                            {
+                                _recordGamepadWaitRelease = false;
+                            }
+                            _prevButtons = buttons;
+                            await Task.Delay(12, ct).ConfigureAwait(false);
+                            continue;
+                        }
                         if (buttons != XInputButtons.None)
                         {
                             _recordedMask |= buttons;
@@ -389,6 +444,8 @@ public sealed class InputHubService : IDisposable
                             var captured = XInputInterop.ToButtonNames(_recordedMask);
                             _recordingGamepadCombo = false;
                             _recordedMask = XInputButtons.None;
+                            _suppressNavigationUntilRelease = true;
+                            _directionRepeatAt.Clear();
                             GamepadComboRecorded?.Invoke(captured);
                         }
 

@@ -459,7 +459,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                             return;
                         }
 
-                        ApplyFanModeLocked(_fanMode, _manualFanPercent, _lastTempC);
+                        if (_fanMode == "manual" && _lastSmuCpuTempC > 0)
+                        {
+                            _lastTempC = _lastSmuCpuTempC;
+                        }
+
+                        ApplyFanModeLocked(_fanMode, _manualFanPercent, _lastTempC, forceWrite: false);
                     });
                 }
             }
@@ -562,7 +567,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                     WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
                     {
-                        ApplyFanModeLocked(mode, pct, tempC);
+                        ApplyFanModeLocked(mode, pct, tempC, forceWrite: true);
                         _lastFanRpm = ReadFanRpmInternal();
                     });
                     return new { ok = true, error = string.Empty, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
@@ -806,7 +811,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
     private DateTime _lastEcPwmWriteUtc = DateTime.MinValue;
 
-    private void ApplyFanModeLocked(string mode, int manualPct, int tempC)
+    private void ApplyFanModeLocked(string mode, int manualPct, int tempC, bool forceWrite = false)
     {
         string normalized = mode.Trim().ToLowerInvariant();
         string prevMode = _fanMode;
@@ -823,7 +828,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
         if (_fanMode == "auto")
         {
-            if (prevMode != "auto" || _appliedFanPwm != 0)
+            if (forceWrite || prevMode != "auto" || _appliedFanPwm != 0)
             {
                 _appliedFanPwm = 0;
                 EcWriteByte(0x047A, 0);
@@ -838,7 +843,8 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             : FanCurveEvaluator.Evaluate(tempC, _activeCurvePoints);
 
         byte pwm = (byte)Math.Clamp((int)Math.Round(pct / 100.0 * 244.0), 36, 244);
-        if (prevMode != _fanMode || _appliedFanPwm != pwm || (DateTime.UtcNow - _lastEcPwmWriteUtc) >= TimeSpan.FromSeconds(8))
+        bool regDrifted = !forceWrite && (EcReadByte(0x047A) != pwm || EcReadByte(0x047B) != pwm);
+        if (forceWrite || regDrifted || prevMode != _fanMode || _appliedFanPwm != pwm || (DateTime.UtcNow - _lastEcPwmWriteUtc) >= TimeSpan.FromSeconds(8))
         {
             _appliedFanPwm = pwm;
             EcWriteByte(0x047A, pwm);

@@ -352,6 +352,55 @@ internal static class Win32Interop
         return false;
     }
 
+    /// <summary>
+    /// Ultra-lightweight Z-order check (zero DWM calls) to detect if a visible overlapping window
+    /// (such as a DX12 borderless/RE Engine game re-raising itself after splash/HDR switch) sits above the OSD.
+    /// </summary>
+    public static bool HasLightweightTopmostCover(nint targetHwnd, nint allowedAboveHwnd = 0)
+    {
+        if (targetHwnd == 0 || !IsWindow(targetHwnd) || !GetWindowRect(targetHwnd, out var targetRect))
+        {
+            return false;
+        }
+
+        nint cur = GetWindow(targetHwnd, GW_HWNDPREV);
+        int steps = 0;
+        while (cur != 0 && steps++ < 20)
+        {
+            if (cur != allowedAboveHwnd &&
+                IsWindowVisible(cur) &&
+                GetWindowRect(cur, out var r) &&
+                (r.Right - r.Left) > 8 &&
+                (r.Bottom - r.Top) > 8 &&
+                r.Left < targetRect.Right &&
+                r.Right > targetRect.Left &&
+                r.Top < targetRect.Bottom &&
+                r.Bottom > targetRect.Top)
+            {
+                return true;
+            }
+            cur = GetWindow(cur, GW_HWNDPREV);
+        }
+        return false;
+    }
+
+    [DllImport("shell32.dll")]
+    private static extern int SHQueryUserNotificationState(out int pquns);
+
+    private const int QUNS_RUNNING_D3D_FULL_SCREEN = 3;
+
+    public static bool IsD3DExclusiveFullscreenActive()
+    {
+        try
+        {
+            return SHQueryUserNotificationState(out int state) == 0 && state == QUNS_RUNNING_D3D_FULL_SCREEN;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static void RaiseTopmostNoActivate(nint hwnd, bool forceReband = false, nint allowedAboveHwnd = 0)
     {
         if (hwnd == 0 || !IsWindow(hwnd)) return;

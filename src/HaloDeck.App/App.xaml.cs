@@ -188,9 +188,9 @@ public partial class App : System.Windows.Application
                         if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished || _bridge is null) return;
 
                         var latestSys = _bridge.LatestSystemState;
-                        if (_bridge.Settings.OverlayLevel > 0 && _overlayHudWindow is not null)
+                        if (_overlayHudWindow is not null)
                         {
-                            _overlayHudWindow.UpdateMetrics(latestSys, _bridge.RunningGame, _bridge.Settings.CurrentTdpWatts);
+                            UpdateOverlayPresentation(latestSys, settingsChanged: false, checkZOrderCover: (_pollCounter & 1) == 0);
                         }
 
                         if ((_mainWindow?.IsVisible == true) || (_qamWindow?.IsVisible == true))
@@ -585,7 +585,8 @@ public partial class App : System.Windows.Application
             _qamWindow.EnsureTopmostAboveGame(hudHwnd, forceReband);
         }
 
-        if (_bridge?.Settings.OverlayLevel > 0)
+        if (_bridge?.Settings.OverlayLevel > 0 &&
+            string.Equals(_bridge.ActiveOverlayBackend, RtssOsdFormatter.ModeNative, StringComparison.Ordinal))
         {
             _overlayHudWindow?.EnsureTopmostZOrder(forceReband);
         }
@@ -726,11 +727,99 @@ public partial class App : System.Windows.Application
     private void ApplyOverlayHudFromSettings()
     {
         if (_bridge is null || _overlayHudWindow is null) return;
+        UpdateOverlayPresentation(_bridge.LatestSystemState, settingsChanged: true, checkZOrderCover: false);
+    }
+
+    private void UpdateOverlayPresentation(SystemControlState sys, bool settingsChanged, bool checkZOrderCover)
+    {
+        if (_bridge is null || _overlayHudWindow is null) return;
         var s = _bridge.Settings;
-        _overlayHudWindow.ApplySettings(s.OverlayLevel, s.OverlayPosition, s.OverlayOpacity);
-        if (s.OverlayLevel > 0)
+
+        if (s.OverlayLevel <= 0)
         {
-            _overlayHudWindow.UpdateMetrics(_bridge.LatestSystemState, _bridge.RunningGame, s.CurrentTdpWatts);
+            _bridge.ActiveOverlayBackend = "off";
+            _bridge.RtssClient.ClearOsd();
+            if (settingsChanged || _overlayHudWindow.IsVisible)
+            {
+                _overlayHudWindow.ApplySettings(0, s.OverlayPosition, s.OverlayOpacity);
+            }
+            return;
+        }
+
+        string mode = RtssOsdFormatter.NormalizeRendererMode(s.OverlayRenderer);
+        bool rtssRunning = mode != RtssOsdFormatter.ModeNative &&
+                           _bridge.RtssClient.IsRtssRunning(forceProbe: settingsChanged);
+        bool exclusiveFs = mode == RtssOsdFormatter.ModeAutoRtss &&
+                           rtssRunning &&
+                           Win32Interop.IsD3DExclusiveFullscreenActive();
+        string backend = RtssOsdFormatter.ResolveEffectiveBackend(mode, s.OverlayLevel, rtssRunning, exclusiveFs);
+        bool backendChanged = !string.Equals(_bridge.ActiveOverlayBackend, backend, StringComparison.Ordinal);
+        _bridge.ActiveOverlayBackend = backend;
+        sys.RtssRunning = rtssRunning;
+        sys.ActiveOverlayBackend = backend;
+
+        if (backend == RtssOsdFormatter.ModeRtss)
+        {
+            _overlayHudWindow.HideTemporarilyForExternalRenderer();
+            int shownTargetWatts = sys.HardwareService.ServiceRunning && sys.HardwareService.AppliedTdpWatts > 0
+                ? sys.HardwareService.AppliedTdpWatts
+                : s.CurrentTdpWatts;
+            var metrics = new RtssOsdMetrics(
+                CurrentFps: sys.CurrentFps,
+                FrameTimeMs: sys.FrameTimeMs,
+                ApuPowerWatts: sys.ApuPowerWatts,
+                TargetTdpWatts: shownTargetWatts,
+                GpuUsagePercent: sys.GpuUsagePercent,
+                GfxClockMhz: sys.GfxClockMhz,
+                GpuTempC: sys.GpuTempC,
+                CpuUsagePercent: sys.CpuUsagePercent,
+                CpuClockMhz: sys.CpuClockMhz,
+                CpuTempC: sys.CpuTempC,
+                VramUsedMb: sys.VramUsedMb,
+                VramTotalMb: sys.VramTotalMb,
+                UsedRamGb: sys.UsedRamGb,
+                FanRpm: sys.HardwareService.EcReady ? sys.HardwareService.FanRpm : 0,
+                HasBattery: sys.HasBattery,
+                BatteryPercent: sys.BatteryPercent,
+                SystemDrawWatts: sys.SystemDrawWatts,
+                PowerRuntimeMode: sys.PowerRuntimeMode,
+                BatteryDischargeWatts: sys.BatteryDischargeWatts,
+                BatteryPowerWatts: sys.BatteryPowerWatts,
+                EstimatedStandbyMinutes: sys.EstimatedStandbyMinutes,
+                Position: s.OverlayPosition,
+                Opacity: s.OverlayOpacity);
+
+            var payload = RtssOsdFormatter.BuildPayload(s.OverlayLevel, metrics);
+            if (_bridge.RtssClient.UpdateOsd(payload.Text, payload.EmbeddedObjectBuffer))
+            {
+                return;
+            }
+
+            // RTSS exited mid-frame: gracefully fall back to native WPF overlay
+            _bridge.ActiveOverlayBackend = RtssOsdFormatter.ModeNative;
+            sys.RtssRunning = false;
+            sys.ActiveOverlayBackend = RtssOsdFormatter.ModeNative;
+            backendChanged = true;
+        }
+        else
+        {
+            _bridge.RtssClient.ClearOsd();
+        }
+
+        if (settingsChanged || backendChanged || !_overlayHudWindow.IsVisible)
+        {
+            _overlayHudWindow.ApplySettings(s.OverlayLevel, s.OverlayPosition, s.OverlayOpacity);
+        }
+        _overlayHudWindow.UpdateMetrics(sys, _bridge.RunningGame, s.CurrentTdpWatts);
+
+        if (checkZOrderCover && _overlayHudWindow.IsVisible)
+        {
+            nint hudHwnd = new WindowInteropHelper(_overlayHudWindow).Handle;
+            nint qamHwnd = _qamWindow is { IsVisible: true } ? new WindowInteropHelper(_qamWindow).Handle : 0;
+            if (Win32Interop.HasLightweightTopmostCover(hudHwnd, qamHwnd))
+            {
+                _overlayHudWindow.EnsureTopmostZOrder(forceReband: false);
+            }
         }
     }
 

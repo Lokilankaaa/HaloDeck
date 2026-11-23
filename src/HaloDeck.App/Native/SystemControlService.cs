@@ -78,6 +78,9 @@ public sealed class SystemControlState
     public int IsolatedProcessCount { get; set; }
     public bool WifiRadioSupported { get; set; }
     public bool WifiRadioOff { get; set; }
+    public bool RtssInstalled { get; set; }
+    public bool RtssRunning { get; set; }
+    public string ActiveOverlayBackend { get; set; } = "native";
 
     // PawnIO Hardware Daemon Status (Strix Halo TDP + GPD Dual-Fan EC)
     public HardwareDaemonStatus HardwareService { get; set; } = new();

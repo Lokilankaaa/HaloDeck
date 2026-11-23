@@ -43,6 +43,7 @@ public sealed class WebUiBridge : IDisposable
     private readonly GpdControllerService _gpdController = new();
     private readonly HandheldToolboxService _toolbox = new();
     private readonly GameXInputIsolator _xinputIsolator = new();
+    private readonly RtssSharedMemoryClient _rtssClient = new();
     private readonly PowerPeripheralOptimizer _powerOptimizer;
     private readonly BackgroundEcoIsolator _steadyEcoIsolator = new();
     private readonly object _steadyEcoLock = new();
@@ -136,6 +137,8 @@ public sealed class WebUiBridge : IDisposable
     public AppSettings Settings => _settings;
     public IReadOnlyList<GameEntry> CachedGames => _cachedGames;
     public GameEntry? RunningGame => _runningGame;
+    public RtssSharedMemoryClient RtssClient => _rtssClient;
+    public string ActiveOverlayBackend { get; set; } = RtssOsdFormatter.ModeNative;
     public SystemControlState LatestSystemState => _latestSystemState ?? (_latestSystemState = EnrichSystemState(_systemControl.GetState()));
     public int ResumeAllFrozenGames() => _toolbox.ResumeAllFrozenProcesses();
     public bool SuppressHardwareCleanupOnDispose { get; set; }
@@ -176,6 +179,7 @@ public sealed class WebUiBridge : IDisposable
 
     public void Dispose()
     {
+        _rtssClient.Dispose();
         _xinputIsolator.Dispose();
         FlushPendingSettingsSave();
         try
@@ -208,6 +212,23 @@ public sealed class WebUiBridge : IDisposable
         _cachedGames = await _libraryService.ScanAllAsync(_settings.ExcludedGameIds).ConfigureAwait(false);
         _runningGame = _runningTracker.Poll(_cachedGames);
         _ = RefreshComponentsCatalogSilentAsync();
+        _ = SyncBackButtonHardwareSilentAsync();
+    }
+
+    private async Task SyncBackButtonHardwareSilentAsync()
+    {
+        try
+        {
+            var cfg = await Task.Run(() => _gpdController.ReadConfig(forceRefresh: false)).ConfigureAwait(false);
+            if (cfg.Connected)
+            {
+                _inputHub.UpdateAssignedBackButtonFnCodes(CollectAssignedBackButtonFnCodes(cfg));
+            }
+        }
+        catch
+        {
+            // Non-GPD systems or HID busy during startup; ignore cleanly
+        }
     }
 
     public async Task AttachWebViewAsync(WebView2 webView, string mode)
@@ -320,20 +341,38 @@ public sealed class WebUiBridge : IDisposable
             allowWifiHardwareQuery: uiVisible);
         _latestSystemState = sys;
 
-        // Fan curve temperature heartbeat when daemon is online & using active curve mode (throttled to >=3.5s or >=2°C delta)
-        if (sys.HardwareService.ServiceRunning &&
-            sys.HardwareService.EcReady &&
-            _settings.FanMode is "curve" or "silent" or "balanced")
+        // Fan heartbeat when daemon is online:
+        // - Curve mode: push temperature every >=3.5s or >=2°C delta
+        // - Manual mode: sync on startup/mode drift (e.g. after app restart) and refresh temp every >=5s so thermal floor never stays stale
+        if (sys.HardwareService.ServiceRunning && sys.HardwareService.EcReady)
         {
             int peakTemp = Math.Max(sys.GpuTempC, sys.CpuTempC);
-            if (peakTemp > 0 &&
-                ((DateTime.UtcNow - _lastFanCurvePushUtc) >= TimeSpan.FromSeconds(3.5) ||
-                 Math.Abs(peakTemp - _lastFanCurveTempC) >= 2))
+            if (_settings.FanMode is "curve" or "silent" or "balanced")
             {
-                var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
-                _systemControl.HardwareClient.SetFan("curve", _settings.ManualFanPercent, peakTemp, activeCurve.Points);
-                _lastFanCurvePushUtc = DateTime.UtcNow;
-                _lastFanCurveTempC = peakTemp;
+                bool modeMismatch = !string.Equals(sys.HardwareService.FanMode, "curve", StringComparison.OrdinalIgnoreCase);
+                if (peakTemp > 0 &&
+                    (modeMismatch ||
+                     (DateTime.UtcNow - _lastFanCurvePushUtc) >= TimeSpan.FromSeconds(3.5) ||
+                     Math.Abs(peakTemp - _lastFanCurveTempC) >= 2))
+                {
+                    var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
+                    _systemControl.HardwareClient.SetFan("curve", _settings.ManualFanPercent, peakTemp, activeCurve.Points);
+                    _lastFanCurvePushUtc = DateTime.UtcNow;
+                    _lastFanCurveTempC = peakTemp;
+                }
+            }
+            else if (_settings.FanMode == "manual")
+            {
+                bool modeOrPctMismatch =
+                    !string.Equals(sys.HardwareService.FanMode, "manual", StringComparison.OrdinalIgnoreCase) ||
+                    sys.HardwareService.ManualFanPercent != _settings.ManualFanPercent;
+                if (modeOrPctMismatch || (DateTime.UtcNow - _lastFanCurvePushUtc) >= TimeSpan.FromSeconds(5.0))
+                {
+                    int safeTemp = peakTemp > 0 ? peakTemp : 48;
+                    _systemControl.HardwareClient.SetFan("manual", _settings.ManualFanPercent, safeTemp);
+                    _lastFanCurvePushUtc = DateTime.UtcNow;
+                    _lastFanCurveTempC = safeTemp;
+                }
             }
         }
 
@@ -596,12 +635,13 @@ public sealed class WebUiBridge : IDisposable
                 "saveFanCurves" => SaveFanCurves(payload),
                 "openSettingsJson" => OpenSettingsJson(),
                 "reloadSettingsJson" => ReloadSettingsJson(),
-                "setOverlayHud" => SetOverlayHud(payload),
+                "setOverlayHud" => await SetOverlayHudAsync(payload),
+                "ensureRtssReady" => await EnsureRtssReadyAsync(),
                 "setGamepadMouseMode" => SetGamepadMouseMode(payload),
                 "installHardwareService" => await InstallHardwareServiceAsync(),
                 "toggleGpdService" => await ToggleGpdServiceAsync(payload),
                 "runToolboxAction" => await RunToolboxActionAsync(payload),
-                "getGpdController" => await Task.Run(() => _gpdController.ReadConfig(payload.TryGetProperty("forceRefresh", out var fr) && fr.GetBoolean())),
+                "getGpdController" => await ReadGpdControllerAsync(payload),
                 "saveGpdController" => await SaveGpdControllerAsync(payload),
                 "saveGamePerfProfile" => SaveGamePerfProfile(payload),
                 "setSteadyEco" => await SetSteadyEcoAsync(payload),
@@ -1057,9 +1097,16 @@ public sealed class WebUiBridge : IDisposable
         var updated = JsonSerializer.Deserialize<AppSettings>(payload.GetRawText(), JsonOptions)
                       ?? throw new ArgumentException("无效的设置格式");
 
+        bool backHotkeyToggledOn = updated.EnableBackButtonHotkeys && !_settings.EnableBackButtonHotkeys;
         bool startupChanged = updated.LaunchAtWindowsStartup != _settings.LaunchAtWindowsStartup;
         _settings = updated;
+        _settings.BackButtonHotkeysSchemaVersion = 1;
         _settingsStore.Save(_settings);
+        if (backHotkeyToggledOn && CollectAssignedBackButtonFnCodes(_gpdController.CachedConfig).Count == 0)
+        {
+            // User explicitly enabled F13-F16 hotkey takeover via UI switch
+            _inputHub.UpdateAssignedBackButtonFnCodes(null);
+        }
         _inputHub.UpdateSettings(_settings);
 
         if (!_settings.MuteGameGamepadInOverlay && _xinputIsolator.HasMutedProcesses)
@@ -1263,6 +1310,9 @@ public sealed class WebUiBridge : IDisposable
         var (wifiSupported, wifiOff) = _toolbox.GetWifiRadioStatus(forceRefresh: false, allowHardwareQuery: allowWifiHardwareQuery);
         state.WifiRadioSupported = wifiSupported;
         state.WifiRadioOff = wifiOff;
+        state.RtssInstalled = _rtssClient.IsRtssInstalled();
+        state.RtssRunning = _rtssClient.IsRtssRunning();
+        state.ActiveOverlayBackend = ActiveOverlayBackend;
         return state;
     }
 
@@ -1877,17 +1927,24 @@ public sealed class WebUiBridge : IDisposable
         BroadcastSystemState(nextSys);
         BroadcastStateSnapshot();
 
+        bool gpdConflict = hardwareApplied && mode != "auto" && nextSys.HardwareService.GpdServiceRunning;
         string modeText = mode switch
         {
             "auto" => "EC 自动",
             "manual" => $"直接固定 {manualPct}%",
             _ => $"温度曲线 ({activeCurve.Name})"
         };
+        string msg = !hardwareApplied
+            ? $"已保存风扇策略：{modeText}（启用底层硬件服务后生效）"
+            : gpdConflict
+                ? $"风扇已设为 {modeText}（警告：检测到 GPDToolService 正在运行会覆盖风扇转速，请在硬件监控页暂停 GPD 服务）"
+                : $"风扇模式已切换为 {modeText}";
         return new
         {
             ok = true,
             hardwareApplied,
-            message = hardwareApplied ? $"风扇模式已切换为 {modeText}" : $"已保存风扇策略：{modeText}（启用底层硬件服务后生效）",
+            gpdConflict,
+            message = msg,
             systemControl = nextSys
         };
     }
@@ -1987,7 +2044,7 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
-    private object SetOverlayHud(JsonElement payload)
+    private async Task<object> SetOverlayHudAsync(JsonElement payload)
     {
         if (payload.TryGetProperty("level", out var lvlProp))
         {
@@ -2002,10 +2059,56 @@ public sealed class WebUiBridge : IDisposable
             _settings.OverlayOpacity = Math.Clamp(opProp.GetDouble(), 0.35, 1.0);
         }
 
+        bool rendererRequested = false;
+        if (payload.TryGetProperty("renderer", out var rndProp) && rndProp.GetString() is { Length: > 0 } rnd)
+        {
+            _settings.OverlayRenderer = RtssOsdFormatter.NormalizeRendererMode(rnd);
+            rendererRequested = true;
+        }
+
         _settingsStore.Save(_settings);
+
+        RtssEnsureResult? rtssResult = null;
+        bool autoPrepare = rendererRequested &&
+                           (!payload.TryGetProperty("autoPrepareRtss", out var prepProp) || prepProp.GetBoolean());
+        if (autoPrepare && _settings.OverlayRenderer is RtssOsdFormatter.ModeAutoRtss or RtssOsdFormatter.ModeRtss)
+        {
+            rtssResult = await _rtssClient.EnsureRtssRunningAsync(allowInstall: true).ConfigureAwait(false);
+        }
+
         OverlayHudUpdated?.Invoke();
         BroadcastStateSnapshot();
-        return new { ok = true, settings = _settings };
+
+        bool running = rtssResult?.Running ?? _rtssClient.IsRtssRunning(forceProbe: rendererRequested);
+        bool installed = rtssResult?.Installed ?? _rtssClient.IsRtssInstalled();
+        return new
+        {
+            ok = true,
+            settings = _settings,
+            rtssRunning = running,
+            rtssInstalled = installed,
+            launched = rtssResult?.Launched ?? false,
+            installedNow = rtssResult?.InstalledNow ?? false,
+            message = rtssResult?.Message ?? string.Empty,
+            activeOverlayBackend = ActiveOverlayBackend
+        };
+    }
+
+    private async Task<object> EnsureRtssReadyAsync()
+    {
+        var res = await _rtssClient.EnsureRtssRunningAsync(allowInstall: true).ConfigureAwait(false);
+        OverlayHudUpdated?.Invoke();
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = res.Running,
+            rtssRunning = res.Running,
+            rtssInstalled = res.Installed,
+            launched = res.Launched,
+            installedNow = res.InstalledNow,
+            message = res.Message,
+            activeOverlayBackend = ActiveOverlayBackend
+        };
     }
 
     private object SetGamepadMouseMode(JsonElement payload)
@@ -2172,6 +2275,49 @@ public sealed class WebUiBridge : IDisposable
         return list.Count > 0 ? list : null;
     }
 
+    private static List<ushort> CollectAssignedBackButtonFnCodes(GpdControllerConfig? cfg)
+    {
+        var codes = new HashSet<ushort>();
+        if (cfg is not { Connected: true }) return [];
+
+        static void AddIfFn(HashSet<ushort> dst, ushort code)
+        {
+            if (code is >= 0x0068 and <= 0x006B) dst.Add(code);
+        }
+
+        if (cfg.L4ComboCodes is { Count: >= 2 })
+        {
+            foreach (var c in cfg.L4ComboCodes) AddIfFn(codes, c);
+        }
+        else if (cfg.L4Mode == 0 && cfg.L4Slots > 0)
+        {
+            AddIfFn(codes, cfg.L4KeyCode);
+        }
+
+        if (cfg.R4ComboCodes is { Count: >= 2 })
+        {
+            foreach (var c in cfg.R4ComboCodes) AddIfFn(codes, c);
+        }
+        else if (cfg.R4Mode == 0 && cfg.R4Slots > 0)
+        {
+            AddIfFn(codes, cfg.R4KeyCode);
+        }
+
+        return codes.ToList();
+    }
+
+    private async Task<GpdControllerConfig> ReadGpdControllerAsync(JsonElement payload)
+    {
+        bool force = payload.TryGetProperty("forceRefresh", out var fr) && fr.GetBoolean();
+        var cfg = await Task.Run(() => _gpdController.ReadConfig(force)).ConfigureAwait(false);
+        if (cfg.Connected)
+        {
+            var assigned = CollectAssignedBackButtonFnCodes(cfg);
+            _inputHub.UpdateAssignedBackButtonFnCodes(assigned);
+        }
+        return cfg;
+    }
+
     private async Task<GpdControllerConfig> SaveGpdControllerAsync(JsonElement payload)
     {
         var req = new GpdControllerUpdateRequest
@@ -2185,19 +2331,17 @@ public sealed class WebUiBridge : IDisposable
             RightDeadzone = payload.TryGetProperty("rightDeadzone", out var rdz) ? Math.Clamp(rdz.GetInt32(), -10, 10) : 0
         };
 
-        static bool UsesBackHotkeyHid(int? single, IReadOnlyList<ushort>? combo) =>
-            (single is >= 0x0068 and <= 0x006B) ||
-            (combo is not null && combo.Any(c => c is >= 0x0068 and <= 0x006B));
-
-        if ((UsesBackHotkeyHid(req.L4SingleHidCode, req.L4ComboCodes) ||
-             UsesBackHotkeyHid(req.R4SingleHidCode, req.R4ComboCodes)) &&
-            !_settings.EnableBackButtonHotkeys)
-        {
-            _settings.EnableBackButtonHotkeys = true;
-            ScheduleSaveSettings(50);
-        }
-
         var updated = await Task.Run(() => _gpdController.WriteConfig(req)).ConfigureAwait(false);
+
+        // Bidirectional sync: only keep F13..F16 takeover enabled for the exact F-keys flashed to L4/R4.
+        // Setting back buttons to "关闭背键" (0x0000) or normal gamepad/keyboard keys immediately releases F13..F16!
+        var assignedFn = CollectAssignedBackButtonFnCodes(updated);
+        _settings.EnableBackButtonHotkeys = assignedFn.Count > 0;
+        _settings.BackButtonHotkeysSchemaVersion = 1;
+        _settingsStore.Save(_settings);
+        _inputHub.UpdateAssignedBackButtonFnCodes(assignedFn);
+        _inputHub.UpdateSettings(_settings);
+
         BroadcastStateSnapshot();
         return updated;
     }

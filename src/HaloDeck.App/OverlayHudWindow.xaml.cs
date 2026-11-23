@@ -70,6 +70,14 @@ public partial class OverlayHudWindow : Window
         }
     }
 
+    public void HideTemporarilyForExternalRenderer()
+    {
+        if (IsVisible)
+        {
+            Hide();
+        }
+    }
+
     public void EnsureTopmostZOrder(bool forceReband = false)
     {
         if (_level <= 0 || !IsVisible) return;

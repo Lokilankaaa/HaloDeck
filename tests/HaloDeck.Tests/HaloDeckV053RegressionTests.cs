@@ -1,3 +1,4 @@
+using HaloDeck.Core.Config;
 using HaloDeck.Core.Models;
 using HaloDeck.Core.Process;
 using Xunit;
@@ -11,6 +12,8 @@ public sealed class HaloDeckV053RegressionTests
     {
         var settings = new AppSettings();
         Assert.False(settings.MuteGameGamepadInOverlay);
+        Assert.False(settings.EnableBackButtonHotkeys);
+        Assert.True(settings.InterceptPhysicalMenuButton);
         Assert.True(settings.ConsoleGamepadCombo.Buttons.Count >= 2);
         Assert.True(settings.QamGamepadCombo.Buttons.Count >= 2);
         Assert.True(settings.InsertGamepadCombo.Buttons.Count >= 2);
@@ -34,5 +37,41 @@ public sealed class HaloDeckV053RegressionTests
 
         isolator.RestoreAll();
         Assert.False(isolator.HasMutedProcesses);
+    }
+
+    [Fact]
+    public void SettingsStore_MigratesLegacyBackButtonHotkeyDefaultOnceAndPreservesUserOptIn()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "HaloDeckTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var store = new SettingsStore(tempDir);
+            File.WriteAllText(store.SettingsFilePath, """
+                {
+                  "enableBackButtonHotkeys": true,
+                  "currentTdpWatts": 45
+                }
+                """);
+
+            // Legacy v0.5.3 file without schema version migrates back-button F14-F16 takeover to false once
+            // while keeping physical GPD Win 5 F13 quick-menu button active
+            var migrated = store.Load();
+            Assert.False(migrated.EnableBackButtonHotkeys);
+            Assert.True(migrated.InterceptPhysicalMenuButton);
+            Assert.Equal(1, migrated.BackButtonHotkeysSchemaVersion);
+
+            // Explicit user opt-in is preserved across subsequent Save/Load
+            migrated.EnableBackButtonHotkeys = true;
+            store.Save(migrated);
+
+            var reloaded = store.Load();
+            Assert.True(reloaded.EnableBackButtonHotkeys);
+            Assert.Equal(1, reloaded.BackButtonHotkeysSchemaVersion);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
     }
 }

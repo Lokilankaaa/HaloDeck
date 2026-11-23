@@ -1861,6 +1861,14 @@
                     <button class="seg-btn ${fanMode === opt.value ? "active" : ""}" data-fan-mode="${opt.value}" data-focusable="true">${opt.label}</button>
                   `).join("")}
                 </div>
+                ${fanMode === "manual" ? `
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+                    <button id="btnFanPctDec" class="step-btn" data-focusable="true">−5%</button>
+                    <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="1" value="${manualFanPct}" style="flex:1;" />
+                    <strong id="fanManualVal" style="font-size:12px;min-width:34px;text-align:right;">${manualFanPct}%</strong>
+                    <button id="btnFanPctInc" class="step-btn" data-focusable="true">+5%</button>
+                  </div>
+                ` : ""}
               </div>
             </section>
 
@@ -1895,6 +1903,10 @@
     const level = settings.overlayLevel ?? 0;
     const pos = settings.overlayPosition || "top-center";
     const opacity = settings.overlayOpacity ?? 0.86;
+    const osdRenderer = settings.overlayRenderer || "native";
+    const rtssInstalled = !!sys.rtssInstalled;
+    const rtssRunning = !!sys.rtssRunning;
+    const activeBackend = sys.activeOverlayBackend || "native";
     const daemonVer = hw.daemonVersion || 0;
     const vramUsedGb = ((sys.vramUsedMb || 0) / 1024).toFixed(1);
     const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
@@ -2146,7 +2158,7 @@
           <div class="hh-card">
             <div class="hh-card-head">
               <span class="hh-card-title">OSD 性能悬浮窗样式设置</span>
-              <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}`}</span>
+              <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}${activeBackend === "rtss" ? " · RTSS" : ""}`}</span>
             </div>
             <div class="osd-level-pills" style="margin-bottom:8px;">
               ${[
@@ -2160,6 +2172,20 @@
               `).join("")}
             </div>
             <div class="cw-group">
+              <div class="cw-row" style="min-height:42px;padding:7px 12px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">渲染通道（全屏穿透）</span>
+                  <span class="cw-row-sub">${rtssRunning ? "RTSS 运行中 · 支持独占全屏穿透" : (rtssInstalled ? "已安装 RTSS（未启动）· 点击下方模式自动启动" : "未安装 RTSS · 点击穿透模式将自动安装并启动")}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  ${!rtssRunning && osdRenderer !== "native" ? `<button id="btnEnsureRtss" class="btn btn-sm btn-primary" data-focusable="true">${rtssInstalled ? "启动 RTSS" : "安装 RTSS"}</button>` : ""}
+                  ${renderSegmented("data-osd-renderer", [
+                    { value: "native", label: "原生悬浮窗" },
+                    { value: "auto_rtss", label: "智能回退" },
+                    { value: "rtss", label: "RTSS 穿透" }
+                  ], osdRenderer, "compact")}
+                </div>
+              </div>
               <div class="cw-row" style="min-height:40px;padding:7px 12px;">
                 <span class="cw-row-title">停靠位置</span>
                 ${renderSegmented("data-osd-pos", [
@@ -2258,6 +2284,7 @@
     const osdButtons = Array.isArray(settings.osdGamepadCombo?.buttons) ? settings.osdGamepadCombo.buttons : ["BACK", "Y"];
     const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
+    const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
     const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
     const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
@@ -2330,7 +2357,10 @@
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">输入辅助与快捷呼出</span>
-                <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <button id="btnResetGamepadCombos" class="btn btn-sm" data-focusable="true" title="恢复默认手柄组合键与键盘热键">恢复默认</button>
+                  <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
+                </div>
               </div>
 
               <div class="cw-group">
@@ -2350,10 +2380,24 @@
                 </div>
                 <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                   <div class="cw-row-copy">
+                    <span class="cw-row-title">接管机身快捷菜单键 (F13)</span>
+                    <span class="cw-row-sub">短按 GPD Win 5 原 GPD Tool / 切鼠键呼出 HaloDeck 快捷侧栏</span>
+                  </div>
+                  ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
+                </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
                     <span class="cw-row-title">侧栏开启时屏蔽游戏后台手柄</span>
                     <span class="cw-row-sub">防《仁王 3》等后台串键；如《剑星》切回失灵请保持关闭</span>
                   </div>
                   ${renderSwitch("swMuteGameGamepad", !!settings.muteGameGamepadInOverlay)}
+                </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">接管背键 F14–F16 呼出 HaloDeck</span>
+                    <span class="cw-row-sub">默认关闭以防 L4/R4 原生固件 F14/F15 误触 OSD/超分菜单</span>
+                  </div>
+                  ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
                 </div>
               </div>
 
@@ -3032,6 +3076,7 @@
         ? settings.customTdpPresets
         : [10, 15, 20, 25, 30, 45, 60];
       const fanMode = normalizeFanModeUi(settings.fanMode);
+      const manualFanPct = settings.manualFanPercent || 55;
       const boostMode = sys.cpuBoostMode || "off";
       const osdLevel = settings.overlayLevel ?? 0;
       const apuStr = sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W` : "--W";
@@ -3157,6 +3202,14 @@
                 `).join("")}
               </div>
             </div>
+            ${fanMode === "manual" ? `
+              <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                <button id="btnFanPctDec" class="step-btn qam-step" data-focusable="true">−5%</button>
+                <input id="fanManualRange" class="hh-range" type="range" min="20" max="100" step="1" value="${manualFanPct}" style="flex:1;" />
+                <span id="fanManualVal" style="font-size:12px;font-weight:700;min-width:34px;text-align:right;">${manualFanPct}%</span>
+                <button id="btnFanPctInc" class="step-btn qam-step" data-focusable="true">+5%</button>
+              </div>
+            ` : ""}
           </div>
 
           <!-- 5. Full 2x4 Handheld Quick Actions (Game Fridge Front & Center!) -->
@@ -3178,6 +3231,9 @@
       const level = settings.overlayLevel ?? 0;
       const pos = settings.overlayPosition || "top-center";
       const opacity = settings.overlayOpacity ?? 0.86;
+      const osdRenderer = settings.overlayRenderer || "native";
+      const rtssInstalled = !!sys.rtssInstalled;
+      const rtssRunning = !!sys.rtssRunning;
       const manualFanPct = settings.manualFanPercent || 55;
       const fanMode = normalizeFanModeUi(settings.fanMode);
       return `
@@ -3242,8 +3298,19 @@
           </div>
 
           <div class="qam-section">
-            <div class="qam-section-title"><span>OSD 停靠位置与透明度</span></div>
+            <div class="qam-section-title">
+              <span>OSD 渲染通道与样式</span>
+              <span style="font-size:10.5px;color:${rtssRunning ? "var(--accent-green,#4ade80)" : "var(--text-muted)"};">${rtssRunning ? "RTSS 已就绪" : (rtssInstalled ? "RTSS 未启动" : "未装 RTSS")}</span>
+            </div>
             <div style="display:flex;flex-direction:column;gap:6px;">
+              ${renderSegmented("data-osd-renderer", [
+                { value: "native", label: "原生窗" },
+                { value: "auto_rtss", label: "智能回退" },
+                { value: "rtss", label: "RTSS穿透" }
+              ], osdRenderer, "compact full")}
+              ${!rtssRunning && osdRenderer !== "native" ? `
+                <button id="btnEnsureRtss" class="btn btn-sm btn-primary" style="width:100%;" data-focusable="true">${rtssInstalled ? "立即启动本机 RTSS" : "一键安装并启动 RTSS"}</button>
+              ` : ""}
               ${renderSegmented("data-osd-pos", [
                 { value: "top-left", label: "左上" },
                 { value: "top-center", label: "顶中" },
@@ -3266,6 +3333,7 @@
       const gpd = snap.gpdController || {};
       const draft = state.gpdDraft;
       const interceptOsk = settings.interceptPhysicalOskButton !== false;
+    const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
       const dirtyGpd = hasPendingGpdChanges(gpd, draft);
       const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
       const curLayout = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
@@ -3866,7 +3934,7 @@
             manualPercent: s.manualFanPercent || 55,
             curveId: s.activeFanCurveId || "linear_60"
           });
-          showToast(res?.message || `风扇模式已切换为 ${formatFanModeLabel(mode)}`, res?.hardwareApplied ? "success" : "info");
+          showToast(res?.message || `风扇模式已切换为 ${formatFanModeLabel(mode)}`, res?.gpdConflict ? "warn" : (res?.hardwareApplied ? "success" : "info"));
         } catch (err) {
           showToast(err.message, "error");
         }
@@ -3877,18 +3945,43 @@
       const clamped = Math.max(20, Math.min(100, Math.round(pct)));
       try {
         const res = await rpc("setFanMode", { mode: "manual", manualPercent: clamped });
-        showToast(res?.message || `风扇直接百分比已设为 ${clamped}%`, res?.hardwareApplied ? "success" : "info");
+        showToast(res?.message || `风扇直接百分比已设为 ${clamped}%`, res?.gpdConflict ? "warn" : (res?.hardwareApplied ? "success" : "info"));
       } catch (err) {
         showToast(err.message, "error");
       }
     };
 
     const fanRange = document.getElementById("fanManualRange");
+    const beginFanDrag = () => {
+      state.isDraggingRange = true;
+      state.dragCooldownUntil = Date.now() + 900;
+    };
+    const endFanDrag = () => {
+      state.isDraggingRange = false;
+      state.dragCooldownUntil = Date.now() + 250;
+      if (state.pendingSnapshot) {
+        const nextSnap = state.pendingSnapshot;
+        state.pendingSnapshot = null;
+        applySnapshot(nextSnap);
+      }
+    };
+    fanRange?.addEventListener("pointerdown", beginFanDrag);
+    fanRange?.addEventListener("mousedown", beginFanDrag);
+    fanRange?.addEventListener("touchstart", beginFanDrag, { passive: true });
     fanRange?.addEventListener("input", () => {
+      state.isDraggingRange = true;
+      state.dragCooldownUntil = Date.now() + 600;
       const val = document.getElementById("fanManualVal");
       if (val) val.textContent = `${fanRange.value}%`;
     });
-    fanRange?.addEventListener("change", () => applyDirectFanPct(Number(fanRange.value)));
+    fanRange?.addEventListener("change", async () => {
+      const targetVal = Number(fanRange.value);
+      state.isDraggingRange = false;
+      state.dragCooldownUntil = Date.now() + 250;
+      await applyDirectFanPct(targetVal);
+    });
+    fanRange?.addEventListener("pointerup", endFanDrag);
+    fanRange?.addEventListener("touchend", endFanDrag);
     document.getElementById("btnFanPctDec")?.addEventListener("click", () => applyDirectFanPct((state.snapshot?.settings?.manualFanPercent || 55) - 5));
     document.getElementById("btnFanPctInc")?.addEventListener("click", () => applyDirectFanPct((state.snapshot?.settings?.manualFanPercent || 55) + 5));
     document.querySelectorAll("[data-fan-quick-pct]").forEach((el) => {
@@ -4192,6 +4285,44 @@
         await rpc("setOverlayHud", { opacity: Number(el.dataset.osdOpacity) });
       });
     });
+    document.querySelectorAll("[data-osd-renderer]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const mode = el.dataset.osdRenderer;
+        const sysNow = state.snapshot?.systemControl || {};
+        if (mode !== "native" && !sysNow.rtssRunning) {
+          showToast(sysNow.rtssInstalled
+            ? "检测到已安装 RTSS，正在自动启动并接入共享内存..."
+            : "未检测到 RTSS，正在自动下载安装并启动（请留意系统授权弹窗）...", "info");
+        }
+        try {
+          const res = await rpc("setOverlayHud", { renderer: mode, autoPrepareRtss: true });
+          if (mode === "native") {
+            showToast("OSD 已切换为原生悬浮窗模式", "info");
+          } else if (res?.rtssRunning) {
+            const prefix = mode === "auto_rtss"
+              ? "智能回退已就绪（独占全屏自动切 RTSS）"
+              : "RTSS 共享内存穿透已启用";
+            showToast(res?.launched || res?.installedNow ? `${res.message}` : prefix, "success");
+          } else {
+            showToast(res?.message || "未检测到 RTSS 运行，暂以原生悬浮窗兜底", "warn");
+          }
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+    document.getElementById("btnEnsureRtss")?.addEventListener("click", async () => {
+      const sysNow = state.snapshot?.systemControl || {};
+      showToast(sysNow.rtssInstalled
+        ? "正在启动本机 RTSS..."
+        : "正在通过 winget 自动安装并启动 RTSS（请留意系统授权弹窗）...", "info");
+      try {
+        const res = await rpc("ensureRtssReady", {});
+        showToast(res?.message || (res?.rtssRunning ? "RTSS 已启动就绪" : "RTSS 暂未就绪"), res?.rtssRunning ? "success" : "warn");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
 
     // Controls & GPD V2 events
     document.getElementById("btnReadGpd")?.addEventListener("click", async () => {
@@ -4265,6 +4396,40 @@
       await rpc("saveSettings", { ...s, muteGameGamepadInOverlay: next });
       showToast(next ? "已开启侧栏期间屏蔽游戏后台手柄输入" : "已关闭游戏后台手柄屏蔽（更兼容《剑星》等游戏）", "info");
     });
+    document.getElementById("swInterceptMenuBtn")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = s.interceptPhysicalMenuButton === false;
+      await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
+      showToast(next ? "已开启机身快捷菜单键 (F13) 呼出侧栏" : "已释放机身快捷菜单键 (F13)", "info");
+    });
+    document.getElementById("swBackButtonHotkeys")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = !s.enableBackButtonHotkeys;
+      await rpc("saveSettings", { ...s, enableBackButtonHotkeys: next });
+      showToast(next ? "已开启背键 F14–F16 快捷呼出接管" : "已释放背键 F14–F16，游戏可直接使用原生背键", "info");
+    });
+    document.getElementById("btnResetGamepadCombos")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      if (state.recordingTarget) {
+        state.recordingTarget = null;
+        await rpc("cancelRecordGamepadCombo");
+      }
+      await rpc("saveSettings", {
+        ...s,
+        consoleGamepadCombo: { buttons: ["BACK", "LB"] },
+        qamGamepadCombo: { buttons: ["BACK", "RB"] },
+        osdGamepadCombo: { buttons: ["BACK", "Y"] },
+        insertGamepadCombo: { buttons: ["BACK", "START"] },
+        consoleHotkey: { modifiers: 6, virtualKey: 0x4F, displayText: "Ctrl + Shift + O" },
+        qamHotkey: { modifiers: 3, virtualKey: 0x4F, displayText: "Ctrl + Alt + O" },
+        osdHotkey: { modifiers: 3, virtualKey: 0x4D, displayText: "Ctrl + Alt + M" },
+        insertHotkey: { modifiers: 3, virtualKey: 0x49, displayText: "Ctrl + Alt + I" }
+      });
+      showToast("已恢复默认手柄组合键（Select+LB 主界面 / Select+RB 侧栏）与键盘热键", "success");
+    });
     document.getElementById("btnTestOsk")?.addEventListener("click", async () => {
       try {
         const res = await rpc("runToolboxAction", { action: "osk", fromQam: IS_QAM });
@@ -4282,13 +4447,6 @@
         const r4Combo = Array.isArray(state.gpdDraft.r4Combo) ? normalizeComboCodesList(state.gpdDraft.r4Combo) : [];
         const l4Single = l4Combo.length === 1 ? l4Combo[0] : (l4Combo.length >= 2 ? null : (state.gpdDraft.l4Key >= 0 ? state.gpdDraft.l4Key : null));
         const r4Single = r4Combo.length === 1 ? r4Combo[0] : (r4Combo.length >= 2 ? null : (state.gpdDraft.r4Key >= 0 ? state.gpdDraft.r4Key : null));
-        const usesHaloDeckFn = [0x0068, 0x0069, 0x006A, 0x006B].includes(l4Single) ||
-          [0x0068, 0x0069, 0x006A, 0x006B].includes(r4Single) ||
-          l4Combo.some((c) => c >= 0x0068 && c <= 0x006B) ||
-          r4Combo.some((c) => c >= 0x0068 && c <= 0x006B);
-        if (usesHaloDeckFn && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
-          await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
-        }
         const res = await rpc("saveGpdController", {
           l4Key: l4Single,
           r4Key: r4Single,
@@ -5133,7 +5291,10 @@
     else if (target === "mouse") next.mouseModeGamepadCombo = { buttons: [] };
     else if (target === "insert") next.insertGamepadCombo = { buttons: [] };
     await rpc("saveSettings", next);
-    showToast(`已取消「${labels[target] || target}」手柄快捷键`, "info");
+    const backHint = next.enableBackButtonHotkeys && target !== "mouse"
+      ? "（若背键仍触发 F14/F15，请关闭上方「接管背键 F13–F16」开关）"
+      : "";
+    showToast(`已取消「${labels[target] || target}」手柄快捷键${backHint}`, "info");
   }
 
   async function finishGamepadComboRecord(buttons) {
