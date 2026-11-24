@@ -2537,6 +2537,17 @@
                   ${renderSwitch("setStartup", !!settings.launchAtWindowsStartup)}
                 </div>
 
+                <div class="cw-row" style="min-height:44px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">以管理员权限运行 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
+                    <span class="cw-row-sub">突破《终末地》《异环》等提权游戏的侧栏焦点与 Insert 拦截</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">立即提权重启</button>` : ""}
+                    ${renderSwitch("swRunAsAdmin", !!settings.runAsAdministrator)}
+                  </div>
+                </div>
+
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <span class="cw-row-title">启动时默认全屏掌机模式</span>
                   ${renderSwitch("setFullscreenBoot", !!settings.launchConsoleFullscreen)}
@@ -3378,6 +3389,11 @@
               <span class="cw-row-title">插拔电自动切 (${settings.batteryTdpWatts || 25}W / ${settings.acTdpWatts || 55}W)</span>
               ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
             </div>
+            ${!snap.isElevated ? `
+            <div class="cw-row qam-compact-row">
+              <span class="cw-row-title">管理员权限游戏提权穿透</span>
+              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">提权重启</button>
+            </div>` : ""}
           </div>
 
           <div class="qam-section">
@@ -4543,6 +4559,25 @@
     document.getElementById("setStartup")?.addEventListener("click", async () => {
       const s = state.snapshot.settings;
       await rpc("saveSettings", { ...s, launchAtWindowsStartup: !s.launchAtWindowsStartup });
+    });
+    document.getElementById("swRunAsAdmin")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = !s.runAsAdministrator;
+      await rpc("saveSettings", { ...s, runAsAdministrator: next });
+      if (next && !state.snapshot?.isElevated) {
+        showToast("已开启默认管理员权限运行；点击「立即提权重启」即可立即生效", "info");
+      } else {
+        showToast(next ? "已开启默认管理员权限运行（开机自启将自动使用免 UAC 计划任务）" : "已关闭默认管理员权限运行，下次启动恢复普通权限", "info");
+      }
+    });
+    document.getElementById("btnRelaunchAdmin")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("relaunchAsAdmin", { persist: true });
+        if (res?.message) showToast(res.message, res.ok ? "success" : "warn");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
     });
     document.getElementById("btnRunAutoInject")?.addEventListener("click", async () => {
       const ev = await rpc("runAutoInjectNow");

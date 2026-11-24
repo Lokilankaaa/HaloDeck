@@ -79,7 +79,11 @@ public sealed class WebUiBridge : IDisposable
     public event Action? RequestToggleFullscreen;
     public event Action? RequestMinimizeToTray;
     public event Action? RequestRepositionQam;
+    public event Action? RequestExitForRelaunch;
     public event Action? OverlayHudUpdated;
+
+    public void NotifyToast(string kind, string message)
+        => BroadcastEvent("toast", new { kind, message });
 
     public WebUiBridge(
         SettingsStore settingsStore,
@@ -211,6 +215,10 @@ public sealed class WebUiBridge : IDisposable
     {
         _cachedGames = await _libraryService.ScanAllAsync(_settings.ExcludedGameIds).ConfigureAwait(false);
         _runningGame = _runningTracker.Poll(_cachedGames);
+        if (_settings.LaunchAtWindowsStartup && _settings.RunAsAdministrator && Win32Interop.IsCurrentProcessElevated())
+        {
+            ApplyWindowsStartup(enabled: true, runAsAdmin: true);
+        }
         _ = RefreshComponentsCatalogSilentAsync();
         _ = SyncBackButtonHardwareSilentAsync();
     }
@@ -566,8 +574,23 @@ public sealed class WebUiBridge : IDisposable
             }
         }
 
+        bool selfElevated = Win32Interop.IsCurrentProcessElevated();
+        nint fgHwnd = Win32Interop.GetForegroundWindow();
+        bool fgBlockedByUipi = !selfElevated && Win32Interop.IsWindowProcessElevated(fgHwnd);
+
         await Win32Interop.SendKeyHoldAsync(vk, _settings.InsertHoldDurationMs).ConfigureAwait(false);
-        BroadcastEvent("toast", new { kind = "info", message = $"已向当前前台发送呼出键 (0x{vk:X2})" });
+        if (fgBlockedByUipi)
+        {
+            BroadcastEvent("toast", new
+            {
+                kind = "warn",
+                message = $"前台游戏以管理员权限运行，Windows 安全隔离会拦截发送 (0x{vk:X2})；请在「手柄与设置」开启「以管理员权限运行」后重试（注意：联机反作弊游戏请勿注入 OptiScaler）"
+            });
+        }
+        else
+        {
+            BroadcastEvent("toast", new { kind = "info", message = $"已向当前前台发送呼出键 (0x{vk:X2})" });
+        }
     }
 
     private async Task HandleWebMessageAsync(WebView2 sender, string json)
@@ -649,6 +672,7 @@ public sealed class WebUiBridge : IDisposable
                 "setUiTheme" => SetUiTheme(payload),
                 "setUiLayout" => SetUiLayout(payload),
                 "openPawnIoDownload" => OpenPawnIoDownloadPage(),
+                "relaunchAsAdmin" => RelaunchAsAdmin(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -683,6 +707,7 @@ public sealed class WebUiBridge : IDisposable
             settingsFilePath = _settingsStore.SettingsFilePath,
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
+            isElevated = Win32Interop.IsCurrentProcessElevated(),
             memoryHealth = Win32Interop.GetSystemMemoryHealth(),
             vrrWindowedEnabled = IsWindowedVrrEnabled(),
             systemControl = sysState,
@@ -1098,7 +1123,8 @@ public sealed class WebUiBridge : IDisposable
                       ?? throw new ArgumentException("无效的设置格式");
 
         bool backHotkeyToggledOn = updated.EnableBackButtonHotkeys && !_settings.EnableBackButtonHotkeys;
-        bool startupChanged = updated.LaunchAtWindowsStartup != _settings.LaunchAtWindowsStartup;
+        bool startupChanged = updated.LaunchAtWindowsStartup != _settings.LaunchAtWindowsStartup ||
+                              updated.RunAsAdministrator != _settings.RunAsAdministrator;
         _settings = updated;
         _settings.BackButtonHotkeysSchemaVersion = 1;
         _settingsStore.Save(_settings);
@@ -1116,11 +1142,67 @@ public sealed class WebUiBridge : IDisposable
 
         if (startupChanged)
         {
-            ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
+            ApplyWindowsStartup(_settings.LaunchAtWindowsStartup, _settings.RunAsAdministrator);
         }
 
         BroadcastStateSnapshot();
         return _settings;
+    }
+
+    private object RelaunchAsAdmin(JsonElement payload)
+    {
+        bool persistFlag = !payload.TryGetProperty("persist", out var pp) || pp.GetBoolean();
+        if (Win32Interop.IsCurrentProcessElevated())
+        {
+            if (persistFlag && !_settings.RunAsAdministrator)
+            {
+                _settings.RunAsAdministrator = true;
+                _settingsStore.Save(_settings);
+                if (_settings.LaunchAtWindowsStartup)
+                {
+                    ApplyWindowsStartup(enabled: true, runAsAdmin: true);
+                }
+                BroadcastStateSnapshot();
+            }
+            return new { ok = true, alreadyElevated = true, message = "HaloDeck 当前已处于管理员权限模式" };
+        }
+
+        string? exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+        {
+            throw new InvalidOperationException("无法定位当前 HaloDeck 可执行文件路径。");
+        }
+
+        if (persistFlag)
+        {
+            _settings.RunAsAdministrator = true;
+            _settingsStore.Save(_settings);
+            BroadcastStateSnapshot();
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = $"--relaunch-wait-pid {Environment.ProcessId} --no-auto-elevate",
+                WorkingDirectory = Path.GetDirectoryName(exePath) ?? Environment.CurrentDirectory,
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            return new { ok = false, cancelled = true, message = "已取消管理员提权授权，保持普通权限运行" };
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(120).ConfigureAwait(false);
+            RequestExitForRelaunch?.Invoke();
+        });
+
+        return new { ok = true, relaunching = true, message = "正在以管理员权限重启 HaloDeck..." };
     }
 
     private static object OpenPawnIoDownloadPage()
@@ -2018,7 +2100,7 @@ public sealed class WebUiBridge : IDisposable
             sys = _systemControl.GetState(includeHardwareRefresh: true);
         }
 
-        ApplyWindowsStartup(_settings.LaunchAtWindowsStartup);
+        ApplyWindowsStartup(_settings.LaunchAtWindowsStartup, _settings.RunAsAdministrator);
         _inputHub.GamepadMouseModeEnabled = _settings.GamepadMouseModeEnabled;
         _inputHub.UpdateSettings(_settings);
         OverlayHudUpdated?.Invoke();
@@ -2392,16 +2474,34 @@ public sealed class WebUiBridge : IDisposable
         return new { ok = true, profile };
     }
 
-    private static void ApplyWindowsStartup(bool enabled)
+    private const string ElevatedStartupTaskName = "HaloDeck_AutoStart";
+
+    private static void ApplyWindowsStartup(bool enabled, bool runAsAdmin = false)
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            key?.DeleteValue("HandheldOpti", throwOnMissingValue: false);
+
+            var exePath = Environment.ProcessPath;
+            if (enabled && runAsAdmin && !string.IsNullOrWhiteSpace(exePath) && Win32Interop.IsCurrentProcessElevated())
+            {
+                // HKCU\Run cannot launch elevated apps without UAC prompts; register an ONLOGON HIGHEST task instead.
+                if (TryRegisterElevatedStartupTask(exePath))
+                {
+                    key?.DeleteValue("HaloDeck", throwOnMissingValue: false);
+                    return;
+                }
+            }
+
+            if (Win32Interop.IsCurrentProcessElevated())
+            {
+                TryDeleteElevatedStartupTask();
+            }
+
             if (key is null) return;
-            key.DeleteValue("HandheldOpti", throwOnMissingValue: false);
             if (enabled)
             {
-                var exePath = Environment.ProcessPath;
                 if (!string.IsNullOrWhiteSpace(exePath))
                 {
                     key.SetValue("HaloDeck", $"\"{exePath}\" --minimized");
@@ -2414,8 +2514,45 @@ public sealed class WebUiBridge : IDisposable
         }
         catch
         {
-            // Ignore restricted registry errors
+            // Ignore restricted registry / task scheduler errors
         }
+    }
+
+    private static bool TryRegisterElevatedStartupTask(string exePath)
+    {
+        try
+        {
+            string cmd = $"\\\"{exePath}\\\" --minimized";
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "schtasks.exe",
+                Arguments = $"/Create /TN \"{ElevatedStartupTaskName}\" /SC ONLOGON /RL HIGHEST /F /TR \"{cmd}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            proc?.WaitForExit(4000);
+            return proc is { ExitCode: 0 };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteElevatedStartupTask()
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "schtasks.exe",
+                Arguments = $"/Delete /TN \"{ElevatedStartupTaskName}\" /F",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            proc?.WaitForExit(3000);
+        }
+        catch { }
     }
 
     private void BroadcastStateSnapshot()

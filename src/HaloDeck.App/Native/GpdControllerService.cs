@@ -39,13 +39,16 @@ public sealed class GpdControllerService
                 return _cachedConfig;
             }
 
-            string? path = FindControllerV2Path();
+            string? path = FindControllerV2Path(out ushort? otherGpdPid);
             if (string.IsNullOrWhiteSpace(path))
             {
+                string msg = otherGpdPid.HasValue
+                    ? $"检测到 GPD 手柄 (2F24:{otherGpdPid.Value:X4})，暂未适配该型号背键协议（其他功耗/OSD/超分功能正常）"
+                    : "未检测到 GPD Controller V2 (2F24:0137)；请确认掌机手柄开关处于手柄模式";
                 return new GpdControllerConfig
                 {
                     Connected = false,
-                    StatusMessage = "未检测到 GPD Controller V2 (2F24:0137)；请确认掌机手柄开关处于手柄模式"
+                    StatusMessage = msg
                 };
             }
 
@@ -101,10 +104,13 @@ public sealed class GpdControllerService
     {
         lock (_hidLock)
         {
-            string? path = FindControllerV2Path();
+            string? path = FindControllerV2Path(out ushort? otherGpdPid);
             if (string.IsNullOrWhiteSpace(path))
             {
-                throw new InvalidOperationException("未检测到 GPD Controller V2 (2F24:0137)，无法写入板载配置。");
+                string msg = otherGpdPid.HasValue
+                    ? $"检测到 GPD 手柄 (2F24:{otherGpdPid.Value:X4})，暂未适配该型号背键写入协议。"
+                    : "未检测到 GPD Controller V2 (2F24:0137)，无法写入板载配置。";
+                throw new InvalidOperationException(msg);
             }
 
             using var handle = OpenHidDevice(path);
@@ -345,8 +351,9 @@ public sealed class GpdControllerService
             0,
             0);
 
-    private static string? FindControllerV2Path()
+    private static string? FindControllerV2Path(out ushort? otherGpdPid)
     {
+        otherGpdPid = null;
         HidD_GetHidGuid(out Guid hidGuid);
         const uint digcfPresent = 0x02;
         const uint digcfDeviceInterface = 0x10;
@@ -382,7 +389,12 @@ public sealed class GpdControllerService
 
                     var attrs = new HIDD_ATTRIBUTES { Size = (uint)Marshal.SizeOf<HIDD_ATTRIBUTES>() };
                     if (!HidD_GetAttributes(handle, ref attrs)) continue;
-                    if (attrs.VendorID != GpdVid || attrs.ProductID != GpdV2Pid) continue;
+                    if (attrs.VendorID != GpdVid) continue;
+                    if (attrs.ProductID != GpdV2Pid)
+                    {
+                        otherGpdPid ??= attrs.ProductID;
+                        continue;
+                    }
 
                     if (HidD_GetPreparsedData(handle, out nint ppd) && ppd != 0)
                     {

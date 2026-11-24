@@ -33,6 +33,8 @@ public sealed class AppSettings
     public bool StartMinimizedToTray { get; set; } = false;
     public bool LaunchConsoleFullscreen { get; set; } = false;
     public bool LaunchAtWindowsStartup { get; set; } = false;
+    // Opt-in elevation to break Windows UIPI against admin-elevated games (e.g. Endfield / NTE / anti-cheat launchers).
+    public bool RunAsAdministrator { get; set; } = false;
     public int InsertHoldDurationMs { get; set; } = 65;
 
     // TDP & Power Linkage (v0.3.1 Open Power & Direct Fan Curves)

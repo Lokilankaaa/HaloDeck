@@ -29,9 +29,10 @@ public static class FrontendFocusArbitrator
         bool qamActiveOrForeground,
         bool mainVisible,
         bool mainActiveOrForeground,
-        bool desktopHasNoForeground)
+        bool desktopHasNoForeground,
+        bool qamFocusBlockedByElevation = false)
     {
-        if (qamInteractiveVisible && (qamActiveOrForeground || desktopHasNoForeground))
+        if (qamInteractiveVisible && (qamActiveOrForeground || desktopHasNoForeground || qamFocusBlockedByElevation))
         {
             return "qam";
         }
@@ -64,7 +65,9 @@ public static class FrontendFocusArbitrator
         nint foregroundHwnd,
         uint foregroundPid,
         uint selfPid,
-        bool tabTipVisible)
+        bool tabTipVisible,
+        bool externalForegroundIsElevated = false,
+        bool selfIsElevated = false)
     {
         if (!qamInteractiveVisible || foregroundHwnd == 0 || tabTipVisible)
         {
@@ -72,6 +75,14 @@ public static class FrontendFocusArbitrator
         }
 
         if (foregroundPid == 0 || foregroundPid == selfPid)
+        {
+            return false;
+        }
+
+        // When a non-elevated HaloDeck opens QAM over an admin-elevated game (e.g. Endfield / NTE),
+        // Windows UIPI prevents SetForegroundWindow from taking focus away from the game.
+        // Never auto-dismiss QAM solely because UIPI kept foreground on the elevated game.
+        if (externalForegroundIsElevated && !selfIsElevated)
         {
             return false;
         }

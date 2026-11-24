@@ -728,6 +728,85 @@ internal static class Win32Interop
         public ulong ullAvailExtendedVirtual;
     }
 
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(nint processHandle, uint desiredAccess, out nint tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(
+        nint tokenHandle,
+        int tokenInformationClass,
+        out uint tokenInformation,
+        uint tokenInformationLength,
+        out uint returnLength);
+
+    private const uint TokenQuery = 0x0008;
+    private const int TokenElevationClass = 20;
+    private static readonly Lazy<bool> CachedSelfElevated = new(ComputeCurrentProcessElevated);
+
+    public static bool IsCurrentProcessElevated() => CachedSelfElevated.Value;
+
+    private static bool ComputeCurrentProcessElevated()
+    {
+        try
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool IsProcessElevated(uint pid)
+    {
+        if (pid <= 4) return false;
+        if (pid == (uint)Environment.ProcessId) return IsCurrentProcessElevated();
+
+        nint hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProc == 0)
+        {
+            // ERROR_ACCESS_DENIED (5) when querying a higher-integrity process from Medium IL
+            return !IsCurrentProcessElevated() && Marshal.GetLastWin32Error() == 5;
+        }
+
+        try
+        {
+            if (!OpenProcessToken(hProc, TokenQuery, out nint hToken))
+            {
+                return !IsCurrentProcessElevated() && Marshal.GetLastWin32Error() == 5;
+            }
+
+            try
+            {
+                if (GetTokenInformation(hToken, TokenElevationClass, out uint elevated, sizeof(uint), out _))
+                {
+                    return elevated != 0;
+                }
+            }
+            finally
+            {
+                CloseHandle(hToken);
+            }
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+
+        return false;
+    }
+
+    public static bool IsWindowProcessElevated(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return false;
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        return IsProcessElevated(pid);
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);

@@ -42,6 +42,7 @@ public partial class App : System.Windows.Application
     private double _savedMainLeft;
     private double _savedMainTop;
     private WindowState _savedMainState = WindowState.Normal;
+    private uint _lastElevatedQamHintPid;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -62,11 +63,39 @@ public partial class App : System.Windows.Application
             : Path.Combine(Environment.CurrentDirectory, "docs", "screenshots");
         bool startMinimized = cliArgs.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
         bool startQam = cliArgs.Any(a => string.Equals(a, "--qam", StringComparison.OrdinalIgnoreCase));
+        bool noAutoElevate = cliArgs.Any(a => string.Equals(a, "--no-auto-elevate", StringComparison.OrdinalIgnoreCase));
+        int waitPidIdx = Array.FindIndex(cliArgs, a => string.Equals(a, "--relaunch-wait-pid", StringComparison.OrdinalIgnoreCase));
+        int relaunchWaitPid = (waitPidIdx >= 0 && waitPidIdx + 1 < cliArgs.Length && int.TryParse(cliArgs[waitPidIdx + 1], out int parsedWaitPid))
+            ? parsedWaitPid
+            : 0;
 
-        if (!verifyStartup && !verifyComponents && !verifyGui && !captureDocs)
+        bool isVerifyMode = verifyStartup || verifyComponents || verifyGui || captureDocs;
+
+        if (!isVerifyMode && relaunchWaitPid > 0 && relaunchWaitPid != Environment.ProcessId)
         {
-            _singleInstanceMutex = new Mutex(true, "HaloDeck.SingleInstance.Mutex", out bool isNew);
-            if (!isNew)
+            await WaitForPreviousInstanceExitAsync(relaunchWaitPid);
+        }
+
+        if (!isVerifyMode)
+        {
+            bool acquired = false;
+            for (int attempt = 0; attempt < (relaunchWaitPid > 0 ? 25 : 1); attempt++)
+            {
+                _singleInstanceMutex = new Mutex(true, "HaloDeck.SingleInstance.Mutex", out bool isNew);
+                if (isNew)
+                {
+                    acquired = true;
+                    break;
+                }
+                _singleInstanceMutex.Dispose();
+                _singleInstanceMutex = null;
+                if (relaunchWaitPid > 0)
+                {
+                    await Task.Delay(120);
+                }
+            }
+
+            if (!acquired)
             {
                 System.Windows.MessageBox.Show(
                     "HaloDeck 已在后台运行，可通过右下角托盘图标或组合键 (Select + RB / Ctrl+Alt+O) 呼出。",
@@ -82,6 +111,19 @@ public partial class App : System.Windows.Application
             ? new SettingsStore(Path.Combine(Path.GetTempPath(), $"HaloDeck_Verify_{Environment.ProcessId}"))
             : new SettingsStore();
         var settings = settingsStore.Load();
+
+        if (!isVerifyMode && settings.RunAsAdministrator && !Win32Interop.IsCurrentProcessElevated() && !noAutoElevate)
+        {
+            if (TryRelaunchElevatedForStartup(startMinimized, startQam))
+            {
+                try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
+                _singleInstanceMutex?.Dispose();
+                _singleInstanceMutex = null;
+                Shutdown(0);
+                return;
+            }
+        }
+
         var componentManager = new ComponentManager();
 
         if (verifyComponents)
@@ -229,6 +271,51 @@ public partial class App : System.Windows.Application
         UpdateUiActiveFlag();
     }
 
+    private static async Task WaitForPreviousInstanceExitAsync(int pid)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(4.5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var proc = Process.GetProcessById(pid);
+                if (proc.HasExited) return;
+            }
+            catch
+            {
+                return;
+            }
+            await Task.Delay(80);
+        }
+    }
+
+    private static bool TryRelaunchElevatedForStartup(bool startMinimized, bool startQam)
+    {
+        try
+        {
+            string? exe = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(exe)) return false;
+
+            var args = new List<string> { "--relaunch-wait-pid", Environment.ProcessId.ToString(), "--no-auto-elevate" };
+            if (startMinimized) args.Add("--minimized");
+            if (startQam) args.Add("--qam");
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = string.Join(' ', args),
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private async Task RunStartupSelfVerifyAsync(MainWindow mainWindow, WebUiBridge bridge, InputHubService inputHub)
     {
         // Trigger handle creation & WebView2 attachment offscreen
@@ -364,6 +451,14 @@ public partial class App : System.Windows.Application
         _bridge.RequestToggleFullscreen += () => _mainWindow.ToggleFullscreen();
         _bridge.RequestRepositionQam += () => Dispatcher.Invoke(() => _qamWindow?.RepositionOnRightEdge());
         _bridge.RequestMinimizeToTray += HideMainConsoleAndRestoreGame;
+        _bridge.RequestExitForRelaunch += () =>
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (_bridge is not null) _bridge.SuppressHardwareCleanupOnDispose = true;
+                ShutdownApplication();
+            });
+        };
         _mainWindow.CloseToTrayRequested += HideMainConsoleAndRestoreGame;
         _qamWindow.ClosingShieldChanged += () =>
         {
@@ -559,6 +654,14 @@ public partial class App : System.Windows.Application
         Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
         bool tabTipVisible = HandheldToolboxService.QueryTabTipVisible();
         double msSinceShown = (DateTime.UtcNow - _qamWindow.ShownAtUtc).TotalMilliseconds;
+        bool selfElevated = Win32Interop.IsCurrentProcessElevated();
+        bool fgElevated = !selfElevated && fgPid != 0 && fgPid != (uint)Environment.ProcessId && Win32Interop.IsProcessElevated(fgPid);
+
+        if (fgElevated && _lastElevatedQamHintPid != fgPid)
+        {
+            _lastElevatedQamHintPid = fgPid;
+            _bridge?.NotifyToast("warn", "检测到当前游戏以管理员权限运行，建议在「手柄与设置」点击「立即提权重启」以获得完整焦点与 Insert 按键穿透");
+        }
 
         if (FrontendFocusArbitrator.ShouldAutoDismissQamOnExternalForeground(
                 _qamWindow.IsInteractiveVisible,
@@ -566,7 +669,9 @@ public partial class App : System.Windows.Application
                 fg,
                 fgPid,
                 (uint)Environment.ProcessId,
-                tabTipVisible))
+                tabTipVisible,
+                externalForegroundIsElevated: fgElevated,
+                selfIsElevated: selfElevated))
         {
             _qamWindow.HideWithoutRestoringGame();
             UpdateUiActiveFlag();
@@ -696,6 +801,15 @@ public partial class App : System.Windows.Application
         nint qamHwnd = qamInteractive ? new WindowInteropHelper(_qamWindow!).Handle : 0;
         bool qamFocused = qamInteractive &&
                           (_qamWindow!.IsActive || Win32Interop.IsWindowOrChildForeground(qamHwnd));
+        bool qamFocusBlockedByElevation = false;
+        if (qamInteractive && !qamFocused && fg != 0 && !Win32Interop.IsCurrentProcessElevated())
+        {
+            Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
+            if (fgPid != 0 && fgPid != (uint)Environment.ProcessId && Win32Interop.IsProcessElevated(fgPid))
+            {
+                qamFocusBlockedByElevation = true;
+            }
+        }
 
         bool mainVisible = _mainWindow is { IsVisible: true } && !_isConsoleClosingShieldActive;
         nint mainHwnd = mainVisible ? new WindowInteropHelper(_mainWindow!).Handle : 0;
@@ -707,7 +821,8 @@ public partial class App : System.Windows.Application
             qamFocused,
             mainVisible,
             mainFocused,
-            desktopHasNoForeground);
+            desktopHasNoForeground,
+            qamFocusBlockedByElevation);
 
         _inputHub.ActiveUiTarget = nextTarget;
 

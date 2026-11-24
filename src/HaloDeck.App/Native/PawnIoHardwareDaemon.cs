@@ -345,9 +345,12 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     {
         return unchecked((uint)hr) switch
         {
-            0x80070002 => "PawnIO 内核驱动未启动或未安装 (0x80070002)：请安装官方 PawnIO 驱动（pawnio.eu）后重启电脑，或检查杀毒软件/内核隔离拦截",
-            0x80070005 => "PawnIO 内核驱动访问被拒绝 (0x80070005)：请确认以系统服务模式运行并检查安全软件拦截",
-            _ => $"pawnio_open({channel}) 失败 (0x{hr:X8})"
+            0x80070002 or 0x80070424 => "PawnIO 内核驱动未启动或未安装 (0x80070002)：请安装官方 PawnIO 驱动（pawnio.eu）后重启电脑，或检查杀毒软件拦截",
+            0x80070005 => "PawnIO 内核驱动访问被拒绝 (0x80070005)：请确认 HaloDeck 硬件服务运行正常并检查安全软件拦截",
+            0x800704FB => "PawnIO 驱动被 Windows 易受攻击驱动程序阻止列表 / 内存完整性拦截 (0x800704FB)：请更新至最新版官方 PawnIO（pawnio.eu）或检查 Windows 安全中心「内核隔离」",
+            0x80070241 => "PawnIO 驱动签名校验未通过 (0x80070241)：请前往 pawnio.eu 安装最新官方签名版本并重启电脑",
+            0x80070422 => "PawnIO 驱动服务已被系统禁用 (0x80070422)：请重新运行官方 PawnIO 安装程序修复驱动服务",
+            _ => $"pawnio_open({channel}) 失败 (0x{hr:X8})：请确认已安装最新版官方 PawnIO 驱动（pawnio.eu）并检查内核隔离/杀毒软件拦截"
         };
     }
 
@@ -367,7 +370,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         }
     }
 
-    private static bool IsSupportedGpdEcBoard(string dmi)
+    internal static bool IsSupportedGpdEcBoard(string dmi)
     {
         if (string.IsNullOrWhiteSpace(dmi)) return false;
         return dmi.Contains("GPD", StringComparison.OrdinalIgnoreCase) &&
@@ -562,7 +565,11 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
                     if (!_ecReady || _ecHandle == 0)
                     {
-                        return new { ok = false, error = "EC 风扇通道仅支持 GPD G1618-05 / G1622-01", status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
+                        string boardNote = string.IsNullOrWhiteSpace(_dmiBoard) ? "未知主板" : _dmiBoard;
+                        string ecMsg = IsSupportedGpdEcBoard(_dmiBoard)
+                            ? "EC 风扇通道尚未就绪，请检查 PawnIO 驱动后重试"
+                            : $"EC 风扇直控暂仅支持已验证主板 (G1618-05 / G1622-01)；当前设备 [{boardNote}] 已安全锁定 BIOS 自动温控（SMU 功耗/OSD/超分功能可正常使用）";
+                        return new { ok = false, error = ecMsg, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                     }
 
                     WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
