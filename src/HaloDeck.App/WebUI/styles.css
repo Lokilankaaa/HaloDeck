@@ -4332,3 +4332,124 @@ body[data-theme="frost"] .qam-bumper {
 body[data-theme="frost"] ::-webkit-scrollbar-thumb {
   background: rgba(15, 23, 42, 0.18);
 }
+
+/* ===== 修改器页 (FLiNG Trainer) ===== */
+.trainers-page {
+  padding: 20px 22px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.trainers-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.trainers-head p {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.trainers-search-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.trainers-search-row input {
+  flex: 1 1 260px;
+  min-width: 200px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.trainers-search-row select {
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 13px;
+  max-width: 240px;
+  outline: none;
+}
+
+.trainers-status {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(56, 132, 255, 0.12);
+  color: #7db1ff;
+}
+
+.trainers-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trainers-section h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  opacity: 0.8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.trainers-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trainers-section-head h3 {
+  margin: 0;
+}
+
+.trainer-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.trainer-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.trainer-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trainer-card-sub {
+  font-size: 12px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trainers-empty {
+  padding: 16px;
+  font-size: 13px;
+  opacity: 0.5;
+  text-align: center;
+}

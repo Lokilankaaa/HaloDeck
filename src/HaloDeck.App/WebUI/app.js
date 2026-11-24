@@ -10,7 +10,7 @@
   document.body.classList.toggle("mode-qam", IS_QAM);
   document.body.classList.toggle("mode-console", !IS_QAM);
 
-  const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls"];
+  const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls", "trainers"];
   const OPTI_SUB_TABS = ["tune", "library", "components"];
   const QAM_TABS = ["handheld", "opti", "osd", "controls"];
 
@@ -248,6 +248,10 @@
     controlsAdvancedOpen: false,
     searchQuery: "",
     libraryFilter: "all",
+    trainersQuery: "",
+    trainersResults: [],
+    trainersSearching: false,
+    trainersProgress: null,
     focusIndex: 0,
     lastInputModality: "pointer",
     isDraggingRange: false,
@@ -316,6 +320,14 @@
   function handleHostEvent(name, data) {
     if (name === "stateChanged") {
       applySnapshot(data);
+    } else if (name === "trainerDownloadProgress" && data) {
+      state.trainersProgress = { label: data.gameName || "正在下载", percent: data.percent || 0 };
+      const el = document.getElementById("trainerProgressText");
+      if (el) {
+        el.textContent = data.status === "done"
+          ? "下载完成"
+          : `${data.gameName || "正在下载"} · ${Math.round(data.percent || 0)}%`;
+      }
     } else if (name === "powerSettingsPatched" && data) {
       if (state.snapshot?.settings) {
         if (typeof data.currentTdpWatts === "number") state.snapshot.settings.currentTdpWatts = data.currentTdpWatts;
@@ -3602,6 +3614,8 @@
         mainView.innerHTML = renderMonitorView();
       } else if (state.tab === "controls") {
         mainView.innerHTML = renderControlsView();
+      } else if (state.tab === "trainers") {
+        mainView.innerHTML = renderTrainersView();
       } else {
         mainView.innerHTML = renderOptiContainerView();
       }
@@ -3623,6 +3637,7 @@
 
     renderFooterLegend();
     bindViewEvents();
+    bindTrainersViewEvents();
     applySpatialFocus(false);
   }
 
@@ -3772,6 +3787,194 @@
       muteBtn.classList.toggle("active", !!isMuted);
       muteBtn.textContent = isMuted ? "静音" : "🔊";
     }
+  }
+
+  // ---------------- 修改器 (FLiNG Trainer) ----------------
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  async function doTrainerSearch(query) {
+    query = (query || "").trim();
+    if (!query) {
+      showToast("请输入游戏名", "info");
+      return;
+    }
+    state.trainersQuery = query;
+    state.trainersSearching = true;
+    state.trainersResults = [];
+    render();
+    try {
+      const results = await rpc("searchFlingTrainers", { query });
+      state.trainersResults = results || [];
+      if (!results || results.length === 0) {
+        showToast("未找到相关修改器", "info");
+      }
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      state.trainersSearching = false;
+      render();
+    }
+  }
+
+  async function doTrainerDownload(trainerUrl, trainerTitle) {
+    if (state.trainersProgress) {
+      showToast("已有下载任务进行中", "info");
+      return;
+    }
+    try {
+      state.trainersProgress = { label: "正在获取下载链接…", percent: 0 };
+      render();
+
+      const downloads = await rpc("getFlingTrainerDownloads", { url: trainerUrl });
+      if (!downloads || downloads.length === 0) {
+        throw new Error("未找到可下载的修改器版本");
+      }
+      const latest = downloads[0];
+      const gameName = state.trainersQuery || trainerTitle;
+
+      const matchingGame = (state.snapshot?.games || []).find(
+        (g) => (g.title || "").toLowerCase() === gameName.toLowerCase()
+      );
+      if (matchingGame?.hasAntiCheat) {
+        showToast("该游戏检测到反作弊（EAC/BattlEye），已跳过下载以防封号", "error");
+        return;
+      }
+
+      state.trainersProgress = { label: `正在下载 ${latest.version || trainerTitle}`, percent: 0 };
+      render();
+
+      await rpc("downloadFlingTrainer", {
+        trainerUrl,
+        downloadUrl: latest.downloadUrl,
+        gameName,
+        trainerTitle,
+        version: latest.version
+      });
+      showToast("修改器下载完成", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      state.trainersProgress = null;
+      render();
+    }
+  }
+
+  function renderTrainersView() {
+    const games = state.snapshot?.games || [];
+    const downloaded = state.snapshot?.downloadedTrainers || [];
+    const results = state.trainersResults || [];
+
+    return `
+      <div class="trainers-page page-scroll">
+        <div class="trainers-head">
+          <h2>游戏修改器</h2>
+          <p>数据来自 flingtrainer.com（风灵月影）· 仅限单机 / 离线游戏使用。</p>
+        </div>
+
+        <div class="trainers-search-row">
+          <input id="trainerSearchInput" type="text" placeholder="输入游戏英文名，例如 Elden Ring" value="${escapeHtml(state.trainersQuery)}" />
+          <button id="btnTrainerSearch" class="btn btn-primary" data-focusable="true">搜索</button>
+          <select id="trainerGameSelect" data-focusable="true">
+            <option value="">从游戏库选择…</option>
+            ${games.map((g) => `<option value="${escapeHtml(g.title || "")}">${escapeHtml(g.title || "")}${g.hasAntiCheat ? " ⚠" : ""}</option>`).join("")}
+          </select>
+        </div>
+
+        <div id="trainerProgressText" class="trainers-status ${state.trainersSearching || state.trainersProgress ? "" : "hidden"}">
+          ${state.trainersSearching ? "正在搜索…" : (state.trainersProgress ? `${escapeHtml(state.trainersProgress.label)} · ${state.trainersProgress.percent}%` : "")}
+        </div>
+
+        <div class="trainers-section">
+          <h3>搜索结果</h3>
+          ${results.length === 0
+            ? `<div class="trainers-empty">${state.trainersSearching ? "" : "输入游戏英文名后点「搜索」"}</div>`
+            : results.map((r) => `
+                <div class="trainer-card">
+                  <div class="trainer-card-body">
+                    <div class="trainer-card-title">${escapeHtml(r.title)}</div>
+                  </div>
+                  <button class="btn btn-sm" data-focusable="true" data-trainer-download="${escapeHtml(r.url)}" data-trainer-title="${escapeHtml(r.title)}">下载最新版</button>
+                </div>
+              `).join("")}
+        </div>
+
+        <div class="trainers-section">
+          <div class="trainers-section-head">
+            <h3>已下载修改器</h3>
+            <button id="btnOpenTrainerFolder" class="btn btn-sm" data-focusable="true">打开文件夹</button>
+          </div>
+          ${downloaded.length === 0
+            ? `<div class="trainers-empty">还没有下载任何修改器</div>`
+            : downloaded.map((t) => `
+                <div class="trainer-card">
+                  <div class="trainer-card-body">
+                    <div class="trainer-card-title">${escapeHtml(t.gameName || t.trainerTitle)}</div>
+                    <div class="trainer-card-sub">${escapeHtml(t.trainerVersion || "")}</div>
+                  </div>
+                  <button class="btn btn-sm" data-focusable="true" data-trainer-launch="${escapeHtml(t.id)}">启动</button>
+                  <button class="btn btn-sm btn-danger-soft" data-focusable="true" data-trainer-delete="${escapeHtml(t.id)}">删除</button>
+                </div>
+              `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function bindTrainersViewEvents() {
+    if (state.tab !== "trainers") return;
+
+    document.getElementById("btnTrainerSearch")?.addEventListener("click", () => doTrainerSearch(state.trainersQuery));
+
+    document.getElementById("trainerSearchInput")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doTrainerSearch(e.target.value);
+    });
+
+    document.getElementById("trainerGameSelect")?.addEventListener("change", (e) => {
+      const v = e.target.value || "";
+      if (v) {
+        state.trainersQuery = v;
+        doTrainerSearch(v);
+      }
+    });
+
+    document.getElementById("btnOpenTrainerFolder")?.addEventListener("click", async () => {
+      try {
+        await rpc("openTrainerFolder");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.querySelectorAll("[data-trainer-download]").forEach((el) => {
+      el.addEventListener("click", () => doTrainerDownload(el.dataset.trainerDownload, el.dataset.trainerTitle || ""));
+    });
+
+    document.querySelectorAll("[data-trainer-launch]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          await rpc("launchDownloadedTrainer", { id: el.dataset.trainerLaunch });
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-trainer-delete]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          await rpc("deleteDownloadedTrainer", { id: el.dataset.trainerDelete });
+          showToast("已删除修改器", "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
   }
 
   function bindViewEvents() {

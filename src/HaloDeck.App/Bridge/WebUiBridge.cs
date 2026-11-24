@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Threading;
 using HaloDeck.App.Native;
+using HaloDeck.App.Services;
 using HaloDeck.Core.Analysis;
 using HaloDeck.Core.Components;
 using HaloDeck.Core.Config;
@@ -44,6 +45,11 @@ public sealed class WebUiBridge : IDisposable
     private readonly HandheldToolboxService _toolbox = new();
     private readonly GameXInputIsolator _xinputIsolator = new();
     private readonly RtssSharedMemoryClient _rtssClient = new();
+    private readonly FlingTrainerService _flingTrainer = new();
+    private readonly string _trainersRoot;
+    private readonly string _trainersIndexPath;
+    private readonly SemaphoreSlim _trainerDownloadGate = new(1, 1);
+    private List<DownloadedTrainer> _downloadedTrainers = new();
     private readonly PowerPeripheralOptimizer _powerOptimizer;
     private readonly BackgroundEcoIsolator _steadyEcoIsolator = new();
     private readonly object _steadyEcoLock = new();
@@ -99,6 +105,9 @@ public sealed class WebUiBridge : IDisposable
         _backgroundAutoInjector = backgroundAutoInjector;
         _inputHub = inputHub;
         _dispatcher = dispatcher;
+        _trainersRoot = Path.Combine(HaloDeckPaths.ResolveAppDataRoot(), "trainers");
+        _trainersIndexPath = Path.Combine(_trainersRoot, "index.json");
+        _downloadedTrainers = LoadDownloadedTrainers();
         _settings = _settingsStore.Load();
         _settings.UiTheme = string.Equals(_settings.UiTheme, "frost", StringComparison.OrdinalIgnoreCase) ? "frost" : "aurora";
         _settings.UiLayout = string.Equals(_settings.UiLayout, "cockpit", StringComparison.OrdinalIgnoreCase) ? "cockpit" : "bento";
@@ -649,6 +658,12 @@ public sealed class WebUiBridge : IDisposable
                 "setUiTheme" => SetUiTheme(payload),
                 "setUiLayout" => SetUiLayout(payload),
                 "openPawnIoDownload" => OpenPawnIoDownloadPage(),
+                "searchFlingTrainers" => await SearchFlingTrainersAsync(payload),
+                "getFlingTrainerDownloads" => await GetFlingTrainerDownloadsAsync(payload),
+                "downloadFlingTrainer" => await DownloadFlingTrainerAsync(payload),
+                "launchDownloadedTrainer" => LaunchDownloadedTrainer(payload),
+                "deleteDownloadedTrainer" => DeleteDownloadedTrainer(payload),
+                "openTrainerFolder" => OpenTrainerFolder(),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -663,6 +678,154 @@ public sealed class WebUiBridge : IDisposable
             {
                 ReplyToSender(sender, requestId, ok: false, result: null, error: ex.Message);
             }
+        }
+    }
+
+    private async Task<List<FlingTrainerSearchResult>> SearchFlingTrainersAsync(JsonElement payload)
+    {
+        string query = payload.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new List<FlingTrainerSearchResult>();
+        }
+        return await _flingTrainer.SearchAsync(query.Trim()).ConfigureAwait(false);
+    }
+
+    private async Task<List<FlingTrainerDownload>> GetFlingTrainerDownloadsAsync(JsonElement payload)
+    {
+        string url = payload.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new InvalidOperationException("缺少修改器页面地址");
+        }
+        return await _flingTrainer.GetDownloadsAsync(url).ConfigureAwait(false);
+    }
+
+    private async Task<DownloadedTrainer> DownloadFlingTrainerAsync(JsonElement payload)
+    {
+        string trainerUrl = payload.TryGetProperty("trainerUrl", out var tu) ? tu.GetString() ?? "" : "";
+        string downloadUrl = payload.TryGetProperty("downloadUrl", out var du) ? du.GetString() ?? "" : "";
+        string gameName = payload.TryGetProperty("gameName", out var gn) ? gn.GetString() ?? "" : "";
+        string trainerTitle = payload.TryGetProperty("trainerTitle", out var tt) ? tt.GetString() ?? "" : "";
+        string version = payload.TryGetProperty("version", out var ve) ? ve.GetString() ?? "" : "";
+
+        if (string.IsNullOrWhiteSpace(downloadUrl) || string.IsNullOrWhiteSpace(trainerUrl))
+        {
+            throw new InvalidOperationException("缺少下载参数");
+        }
+
+        await _trainerDownloadGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            string safeGame = FlingTrainerService.SanitizeFileName(string.IsNullOrWhiteSpace(gameName) ? "未命名" : gameName);
+            string safeVersion = FlingTrainerService.SanitizeFileName(string.IsNullOrWhiteSpace(version) ? trainerTitle : version);
+            string dir = Path.Combine(_trainersRoot, safeGame);
+            Directory.CreateDirectory(dir);
+            string exePath = Path.Combine(dir, safeVersion + ".exe");
+
+            var progress = new Progress<double>(pct =>
+            {
+                BroadcastEvent("trainerDownloadProgress", new { gameName, percent = Math.Round(pct, 1), status = "downloading" });
+            });
+
+            await _flingTrainer.DownloadAsync(downloadUrl, trainerUrl, exePath, progress).ConfigureAwait(false);
+
+            var record = new DownloadedTrainer
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                GameName = gameName,
+                TrainerTitle = trainerTitle,
+                TrainerVersion = version,
+                ExePath = exePath,
+                DownloadedAtUtc = DateTimeOffset.UtcNow
+            };
+
+            _downloadedTrainers.RemoveAll(t => string.Equals(t.ExePath, exePath, StringComparison.OrdinalIgnoreCase));
+            _downloadedTrainers.Insert(0, record);
+            SaveDownloadedTrainers();
+
+            BroadcastEvent("trainerDownloadProgress", new { gameName, percent = 100.0, status = "done" });
+            BroadcastStateSnapshot();
+            return record;
+        }
+        finally
+        {
+            _trainerDownloadGate.Release();
+        }
+    }
+
+    private object LaunchDownloadedTrainer(JsonElement payload)
+    {
+        string id = payload.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "";
+        var rec = _downloadedTrainers.FirstOrDefault(t => t.Id == id);
+        if (rec is null || !File.Exists(rec.ExePath))
+        {
+            throw new InvalidOperationException("修改器文件不存在，请重新下载");
+        }
+        FlingTrainerService.Launch(rec.ExePath);
+        BroadcastEvent("toast", new { kind = "info", message = $"正在启动修改器：{rec.TrainerTitle}" });
+        return new { ok = true };
+    }
+
+    private object DeleteDownloadedTrainer(JsonElement payload)
+    {
+        string id = payload.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "";
+        var rec = _downloadedTrainers.FirstOrDefault(t => t.Id == id);
+        if (rec is null)
+        {
+            return new { ok = true };
+        }
+        try
+        {
+            if (File.Exists(rec.ExePath))
+            {
+                File.Delete(rec.ExePath);
+            }
+        }
+        catch
+        {
+            // Ignore locked trainer executables
+        }
+        _downloadedTrainers.Remove(rec);
+        SaveDownloadedTrainers();
+        BroadcastStateSnapshot();
+        return new { ok = true };
+    }
+
+    private object OpenTrainerFolder()
+    {
+        Directory.CreateDirectory(_trainersRoot);
+        Process.Start(new ProcessStartInfo { FileName = _trainersRoot, UseShellExecute = true });
+        return new { ok = true };
+    }
+
+    private List<DownloadedTrainer> LoadDownloadedTrainers()
+    {
+        try
+        {
+            if (!File.Exists(_trainersIndexPath))
+            {
+                return new List<DownloadedTrainer>();
+            }
+            string json = File.ReadAllText(_trainersIndexPath);
+            return JsonSerializer.Deserialize<List<DownloadedTrainer>>(json, JsonOptions) ?? new List<DownloadedTrainer>();
+        }
+        catch
+        {
+            return new List<DownloadedTrainer>();
+        }
+    }
+
+    private void SaveDownloadedTrainers()
+    {
+        try
+        {
+            Directory.CreateDirectory(_trainersRoot);
+            File.WriteAllText(_trainersIndexPath, JsonSerializer.Serialize(_downloadedTrainers, JsonOptions));
+        }
+        catch
+        {
+            // Best-effort persistence
         }
     }
 
@@ -688,6 +851,7 @@ public sealed class WebUiBridge : IDisposable
             systemControl = sysState,
             frozenGames = _toolbox.GetFrozenGames(),
             gpdController = _gpdController.CachedConfig,
+            downloadedTrainers = _downloadedTrainers,
             hardwareProfile = new
             {
                 deviceName = "HaloDeck · GPD Win 5",
