@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>掌机游戏备忘笔记</title>
+  <script src="https://app.halodeck.local/plugin-sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 12px;
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg-app, #0b111b);
+      color: var(--text-primary, #f1f5f9);
+      font-size: 13px;
+    }
+    .card {
+      background: var(--bg-card, #111827);
+      border: 1px solid var(--border, rgba(255,255,255,0.1));
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .row { display: flex; gap: 8px; align-items: center; }
+    select, textarea {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border, rgba(255,255,255,0.14));
+      background: var(--bg-well, #0d1422);
+      color: var(--text-primary, #f1f5f9);
+      padding: 8px 10px;
+      font: inherit;
+      outline: none;
+    }
+    textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
+    button {
+      border: 1px solid var(--accent, #1a8cff);
+      background: var(--accent, #1a8cff);
+      color: #fff;
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .muted { font-size: 11.5px; color: var(--text-muted, #94a3b8); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="row" style="justify-content:space-between;">
+      <strong>游戏备忘笔记</strong>
+      <span id="runningTag" class="muted">未运行游戏</span>
+    </div>
+    <select id="gameSelect"></select>
+    <textarea id="noteInput" placeholder="记录 Boss 招式、画质参数、键位提醒..."></textarea>
+    <div class="row" style="justify-content:space-between;">
+      <span id="statusText" class="muted">自动按游戏 ID 保存在插件私有存储</span>
+      <button id="btnSave">保存笔记</button>
+    </div>
+  </div>
+  <script>
+    (async () => {
+      await HaloDeckPlugin.ready();
+      const selectEl = document.getElementById("gameSelect");
+      const noteEl = document.getElementById("noteInput");
+      const runningEl = document.getElementById("runningTag");
+      const statusEl = document.getElementById("statusText");
+
+      let notesMap = (await HaloDeckPlugin.storage.get("notesByGame")) || {};
+      let games = await HaloDeckPlugin.getGames();
+      let running = await HaloDeckPlugin.getRunningGame();
+
+      function syncRunningLabel(g) {
+        runningEl.textContent = g ? `运行中：${g.title}` : "未运行游戏";
+      }
+
+      function populateGames(preferId) {
+        const opts = [{ id: "__global__", title: "通用备忘录" }, ...games];
+        selectEl.innerHTML = opts.map((g) => `<option value="${g.id}">${g.title}</option>`).join("");
+        if (preferId && opts.some((g) => g.id === preferId)) {
+          selectEl.value = preferId;
+        }
+        noteEl.value = notesMap[selectEl.value] || "";
+      }
+
+      syncRunningLabel(running);
+      populateGames(running?.id || "__global__");
+
+      selectEl.addEventListener("change", () => {
+        noteEl.value = notesMap[selectEl.value] || "";
+      });
+
+      document.getElementById("btnSave").addEventListener("click", async () => {
+        notesMap[selectEl.value] = noteEl.value;
+        await HaloDeckPlugin.storage.set("notesByGame", notesMap);
+        statusEl.textContent = `已保存 (${new Date().toLocaleTimeString()})`;
+        HaloDeckPlugin.toast("备忘笔记已保存", "success");
+      });
+
+      HaloDeckPlugin.onEvent((name, game) => {
+        if (name === "gameStarted" && game?.id) {
+          syncRunningLabel(game);
+          selectEl.value = game.id;
+          noteEl.value = notesMap[game.id] || "";
+        } else if (name === "gameStopped") {
+          syncRunningLabel(null);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

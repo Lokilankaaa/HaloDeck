@@ -12,7 +12,7 @@
     <RootNamespace>HaloDeck.App</RootNamespace>
     <Product>HaloDeck</Product>
     <Company>HaloDeck</Company>
-    <Version>0.5.5</Version>
+    <Version>0.6.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <StartupObject>HaloDeck.App.Program</StartupObject>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
@@ -37,6 +37,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Assets\PawnIO\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\plugins\store.json" Link="plugins\store.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

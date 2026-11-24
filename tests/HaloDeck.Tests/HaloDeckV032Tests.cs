@@ -100,7 +100,7 @@ public sealed class HaloDeckV032Tests
         Assert.Equal(6, afterMacroKeep.L4Mode);
         Assert.Equal(3, afterMacroKeep.L4Slots);
         Assert.Contains("多键组合宏", afterMacroKeep.L4KeyLabel);
-        Assert.Equal(0, afterMacroKeep.R4Mode);
+        Assert.Equal(2, afterMacroKeep.R4Mode);
         Assert.Equal(1, afterMacroKeep.R4Slots);
         Assert.Equal((ushort)0x8010, afterMacroKeep.R4KeyCode);
         Assert.Contains("R3", afterMacroKeep.R4KeyLabel);
@@ -112,7 +112,7 @@ public sealed class HaloDeckV032Tests
         GpdV2PacketCodec.ApplyUpdateInPlace(buf, new GpdControllerUpdateRequest
         {
             L4SingleHidCode = 0x800F,
-            R4SingleHidCode = 0x8010,
+            R4SingleHidCode = 0x0000, // Unbind R4 -> stays mode=2, slots=0, hold=0
             RumbleLevel = 1,
             LeftDeadzone = 0,
             RightDeadzone = 0
@@ -120,11 +120,56 @@ public sealed class HaloDeckV032Tests
 
         var decoded = GpdV2PacketCodec.Decode(buf);
         Assert.True(decoded.ChecksumValid);
-        Assert.Equal(0, decoded.L4Mode);
+        Assert.Equal(2, decoded.L4Mode);
         Assert.Equal(1, decoded.L4Slots);
         Assert.Equal((ushort)0x800F, decoded.L4KeyCode);
         Assert.Contains("L3", decoded.L4KeyLabel);
+        Assert.Equal((ushort)200, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 82 * 2 + 4, 2)));
         Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 82 * 2 + 6, 2)));
+        Assert.Equal(2, decoded.R4Mode);
+        Assert.Equal(0, decoded.R4Slots);
+        Assert.Equal((ushort)0, decoded.R4KeyCode);
+        Assert.Equal("未映射", decoded.R4KeyLabel);
+        Assert.Equal((ushort)0, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 180 * 2 + 4, 2)));
+    }
+
+    [Fact]
+    public void GpdV2PacketCodec_DetectsLegacyMode0AndFactoryEmptyMode2Slots()
+    {
+        var buf = new byte[GpdV2PacketCodec.ConfigBufferSize];
+        // Simulate legacy HaloDeck v0.5.x Mode 0 write on L4 (F16) + factory NC (mode=2, slots=4, key=0) on R4
+        buf[GpdV2PacketCodec.HeaderSize + 160] = 0;
+        buf[GpdV2PacketCodec.HeaderSize + 161] = 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 82 * 2, 2), 0x006B);
+        buf[GpdV2PacketCodec.HeaderSize + 356] = 2;
+        buf[GpdV2PacketCodec.HeaderSize + 357] = 4;
+        GpdV2PacketCodec.UpdateChecksumInPlace(buf);
+
+        var decoded = GpdV2PacketCodec.Decode(buf, "3.06", "1.08");
+        Assert.Equal(0, decoded.L4Mode);
+        Assert.Contains("F16", decoded.L4KeyLabel);
+        Assert.Contains("旧格式", decoded.L4KeyLabel);
+        Assert.Equal(2, decoded.R4Mode);
+        Assert.Equal("未映射", decoded.R4KeyLabel);
+    }
+
+    [Fact]
+    public void GpdV2PacketCodec_ComputesGhostF14F15SuppressionAccurately()
+    {
+        // Disconnected -> never suppress normal desktop keyboards
+        Assert.Equal((false, false), GpdV2PacketCodec.ComputeGhostPaddleSuppression(new GpdControllerConfig { Connected = false }));
+
+        // Mapped to E / R -> suppress both firmware ghost F14 and F15
+        var er = new GpdControllerConfig { Connected = true, L4Mode = 2, L4Slots = 1, L4KeyCode = 0x0008, R4Mode = 2, R4Slots = 1, R4KeyCode = 0x0015 };
+        Assert.Equal((true, true), GpdV2PacketCodec.ComputeGhostPaddleSuppression(er));
+
+        // Explicitly mapped L4 = F14, R4 = R -> keep F14, suppress ghost F15
+        var f14r = new GpdControllerConfig { Connected = true, L4Mode = 2, L4Slots = 1, L4KeyCode = 0x0069, R4Mode = 2, R4Slots = 1, R4KeyCode = 0x0015 };
+        Assert.Equal((false, true), GpdV2PacketCodec.ComputeGhostPaddleSuppression(f14r));
+
+        // Combo containing F15 on R4 -> suppress F14, keep F15
+        var combo = new GpdControllerConfig { Connected = true, L4Mode = 2, L4Slots = 0, L4KeyCode = 0, R4Mode = 2, R4Slots = 2, R4ComboCodes = [0x00E0, 0x006A] };
+        Assert.Equal((true, false), GpdV2PacketCodec.ComputeGhostPaddleSuppression(combo));
     }
 
     [Fact]

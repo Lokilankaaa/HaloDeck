@@ -27,6 +27,9 @@ public sealed class GpdControllerService
 
     private readonly object _hidLock = new();
     private GpdControllerConfig? _cachedConfig;
+    private byte[]? _cachedRawConfigBuf;
+    private string _cachedFwX = string.Empty;
+    private string _cachedFwK = string.Empty;
 
     public GpdControllerConfig? CachedConfig => _cachedConfig;
 
@@ -90,6 +93,12 @@ public sealed class GpdControllerService
                 decoded.StatusMessage = decoded.ChecksumValid
                     ? $"已连接 Controller V2 · 固件 X{fwX} / K{fwK}"
                     : "已读取配置但校验和异常，请勿覆盖写入";
+                if (decoded.ChecksumValid)
+                {
+                    _cachedRawConfigBuf = (byte[])configBuf.Clone();
+                    _cachedFwX = fwX;
+                    _cachedFwK = fwK;
+                }
                 _cachedConfig = decoded;
                 return decoded;
             }
@@ -121,23 +130,42 @@ public sealed class GpdControllerService
 
             try
             {
-                var (fwX, fwK, okVer, verErr) = ReadFirmwareVersionV2(handle);
-                if (!okVer)
-                {
-                    throw new InvalidOperationException(verErr);
-                }
+                byte[] configBuf;
+                string fwX;
+                string fwK;
 
-                // 1. Always read full current 1024-byte block first so untouched buttons/calibration remain intact
-                var (configBuf, readErr) = ReadConfigBufferV2(handle);
-                if (configBuf is null)
+                // Reuse the validated 1024-byte raw buffer cached from ReadConfig() to skip ~800ms of redundant
+                // firmware version + full-buffer readback before writing.
+                if (_cachedRawConfigBuf is { Length: GpdV2PacketCodec.ConfigBufferSize } cached &&
+                    GpdV2PacketCodec.VerifyChecksum(cached))
                 {
-                    throw new InvalidOperationException(readErr);
+                    configBuf = (byte[])cached.Clone();
+                    fwX = _cachedFwX;
+                    fwK = _cachedFwK;
+                }
+                else
+                {
+                    var (readFwX, readFwK, okVer, verErr) = ReadFirmwareVersionV2(handle);
+                    if (!okVer)
+                    {
+                        throw new InvalidOperationException(verErr);
+                    }
+
+                    var (readBuf, readErr) = ReadConfigBufferV2(handle);
+                    if (readBuf is null)
+                    {
+                        throw new InvalidOperationException(readErr);
+                    }
+
+                    configBuf = readBuf;
+                    fwX = readFwX;
+                    fwK = readFwK;
                 }
 
                 // 2. Patch only requested fields + recompute header checksums
                 GpdV2PacketCodec.ApplyUpdateInPlace(configBuf, request);
 
-                // 3. V2 MemWrite (Init1 -> 56-byte page writes 0x43 -> Init2 -> Checksum 0x27 -> End)
+                // 3. V2 MemWrite (Init1 -> 56-byte page writes 0x43 -> Checksum 0x27 -> End)
                 WriteConfigMemV2(handle, configBuf);
 
                 // 4. V2 Cmd25 commit handshake (Init1 -> Cmd25 0x25 -> End)
@@ -146,8 +174,12 @@ public sealed class GpdControllerService
                 // 5. V2 Flash persist (Init1 -> Init2 -> FlashLock 0x29 -> 500ms -> FlashUnlock 0x2A -> End)
                 FlashConfigV2(handle);
 
+                _cachedRawConfigBuf = (byte[])configBuf.Clone();
+                _cachedFwX = fwX;
+                _cachedFwK = fwK;
+
                 var result = GpdV2PacketCodec.Decode(configBuf, fwX, fwK);
-                result.StatusMessage = $"已成功写入 GPD Controller V2 板载 Flash（固件 X{fwX}），重启依然保留";
+                result.StatusMessage = $"已写入 GPD Controller V2 板载 Flash（固件 X{fwX}），重启依然保留";
                 _cachedConfig = result;
                 return result;
             }
@@ -160,7 +192,7 @@ public sealed class GpdControllerService
 
     private static bool SendInitV2(SafeFileHandle handle, bool withInit2)
     {
-        var init1 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init1Report(), delayMs: 45);
+        var init1 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init1Report(), delayMs: 28);
         if (init1 is null || init1[8] != 0xAA)
         {
             return false;
@@ -169,7 +201,7 @@ public sealed class GpdControllerService
         {
             return true;
         }
-        var init2 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init2Report(), delayMs: 45);
+        var init2 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init2Report(), delayMs: 28);
         return init2 is not null && init2[8] == 0xAA;
     }
 
@@ -180,7 +212,7 @@ public sealed class GpdControllerService
             return ("", "", false, "GPD Controller V2 初始化握手未响应 (0x21/0x2B)");
         }
 
-        var verResp = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2Version), delayMs: 50);
+        var verResp = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2Version), delayMs: 32);
         if (verResp is null || !GpdV2PacketCodec.IsValidV2Response(verResp))
         {
             return ("", "", false, "读取 GPD V2 固件版本响应无效");
@@ -210,7 +242,7 @@ public sealed class GpdControllerService
         while (offset < GpdV2PacketCodec.ConfigBufferSize && packets < 32)
         {
             packets++;
-            Thread.Sleep(24);
+            Thread.Sleep(5);
             var inReport = new byte[64];
             inReport[0] = 0x01;
             if (!HidD_GetInputReport(handle, inReport, 64))
@@ -232,9 +264,20 @@ public sealed class GpdControllerService
             offset += len;
         }
 
-        return offset == GpdV2PacketCodec.ConfigBufferSize
-            ? (configBuf, string.Empty)
-            : (null, $"读取手柄 V2 配置不完整 ({offset}/1024B)");
+        if (offset != GpdV2PacketCodec.ConfigBufferSize)
+        {
+            return (null, $"读取手柄 V2 配置不完整 ({offset}/1024B)");
+        }
+
+        // Match libOpenWinControls ControllerV2::readConfig() tail (Init2 -> Checksum 0x27 -> EndCmd 0x22)
+        // so the MCU cleanly exits the read transaction before subsequent write commands.
+        if (SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init2Report(), delayMs: 28) is { } init2Resp && init2Resp[8] == 0xAA)
+        {
+            SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2Checksum, bytesCount: 2, withMagic4: true), delayMs: 32);
+        }
+        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 20);
+
+        return (configBuf, string.Empty);
     }
 
     private static void WriteConfigMemV2(SafeFileHandle handle, byte[] configBuf)
@@ -254,17 +297,13 @@ public sealed class GpdControllerService
             {
                 throw new InvalidOperationException($"写入 V2 分片 @{offset} 失败 (Win32={Marshal.GetLastWin32Error()})。");
             }
-            Thread.Sleep(24);
+            Thread.Sleep(4);
         }
 
-        var init2 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2Init2Report(), delayMs: 45);
-        if (init2 is null || init2[8] != 0xAA)
-        {
-            throw new InvalidOperationException("写入完成后 V2 Init2 校验确认失败。");
-        }
-
+        // Match libOpenWinControls ControllerV2::memWriteConfig(): send Checksum (0x27) directly after page writes
+        // (without an intervening Init2) to verify and commit the buffer to controller RAM.
         ushort expectedSum = GpdV2PacketCodec.ComputeBytesSum(configBuf);
-        var chkResp = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2Checksum, bytesCount: 2, withMagic4: true), delayMs: 60);
+        var chkResp = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2Checksum, bytesCount: 2, withMagic4: true), delayMs: 40);
         if (chkResp is null || chkResp[8] == 0xE2)
         {
             throw new InvalidOperationException("手柄未响应 V2 整块校验请求 (0x27)。");
@@ -276,7 +315,7 @@ public sealed class GpdControllerService
             throw new InvalidOperationException($"手柄 V2 写入整块校验不一致 (0x{devSum:X4} != 0x{expectedSum:X4})。");
         }
 
-        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 40);
+        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 22);
     }
 
     private static void SendCmd25V2(SafeFileHandle handle)
@@ -286,13 +325,13 @@ public sealed class GpdControllerService
             throw new InvalidOperationException("V2 提交阶段 Init1 失败。");
         }
 
-        var r25 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV225, bytesCount: 4, withMagic4: true), delayMs: 55);
+        var r25 = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV225, bytesCount: 4, withMagic4: true), delayMs: 35);
         if (r25 is null || r25[8] == 0xE2)
         {
             throw new InvalidOperationException("手柄拒绝执行 V2 提交命令 (0x25)。");
         }
 
-        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 40);
+        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 22);
     }
 
     private static void FlashConfigV2(SafeFileHandle handle)
@@ -302,7 +341,7 @@ public sealed class GpdControllerService
             throw new InvalidOperationException("V2 烧录 Flash 初始化失败。");
         }
 
-        var rLock = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2FlashLock), delayMs: 60);
+        var rLock = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2FlashLock), delayMs: 35);
         if (rLock is null || rLock[8] == 0xE2)
         {
             throw new InvalidOperationException("手柄拒绝 Flash 锁定命令 (0x29)。");
@@ -310,13 +349,13 @@ public sealed class GpdControllerService
 
         Thread.Sleep(500);
 
-        var rUnlock = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2FlashUnlock), delayMs: 60);
+        var rUnlock = SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2FlashUnlock), delayMs: 35);
         if (rUnlock is null || rUnlock[8] == 0xE2)
         {
             throw new InvalidOperationException("手柄拒绝 Flash 解锁提交命令 (0x2A)。");
         }
 
-        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 40);
+        SendAndRecv(handle, GpdV2PacketCodec.BuildV2SimpleCommand(CmdV2EndSession), delayMs: 22);
     }
 
     private static void TrySendEndCommand(SafeFileHandle handle)
@@ -328,7 +367,7 @@ public sealed class GpdControllerService
         catch { }
     }
 
-    private static byte[]? SendAndRecv(SafeFileHandle handle, byte[] outReport, int delayMs = 50)
+    private static byte[]? SendAndRecv(SafeFileHandle handle, byte[] outReport, int delayMs = 35)
     {
         if (!HidD_SetOutputReport(handle, outReport, 64))
         {
@@ -337,6 +376,15 @@ public sealed class GpdControllerService
         Thread.Sleep(delayMs);
 
         var inReport = new byte[64];
+        inReport[0] = 0x01;
+        if (HidD_GetInputReport(handle, inReport, 64))
+        {
+            return inReport;
+        }
+
+        // Single retry with a slightly longer settle window for slower firmware responses
+        Thread.Sleep(35);
+        Array.Clear(inReport, 0, inReport.Length);
         inReport[0] = 0x01;
         return HidD_GetInputReport(handle, inReport, 64) ? inReport : null;
     }

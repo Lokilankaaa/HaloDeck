@@ -153,6 +153,7 @@ public static class GpdV2PacketCodec
         [0x0068] = "F13 (HaloDeck 侧栏)",
         [0x0069] = "F14 (HaloDeck OSD)",
         [0x006A] = "F15 (OptiScaler 菜单)",
+        [0x006B] = "F16 (HaloDeck 主界面)",
         [0x00E0] = "LCtrl",
         [0x00E1] = "LShift (冲刺)",
         [0x00E2] = "LAlt",
@@ -172,7 +173,7 @@ public static class GpdV2PacketCodec
         [0x800F] = "手柄L3", [0x8010] = "手柄R3",
         [0x0008] = "E", [0x0009] = "F", [0x0010] = "M", [0x0015] = "R", [0x0019] = "V",
         [0x002C] = "Space", [0x0049] = "Insert",
-        [0x0068] = "F13", [0x0069] = "F14", [0x006A] = "F15",
+        [0x0068] = "F13", [0x0069] = "F14", [0x006A] = "F15", [0x006B] = "F16",
         [0x00E0] = "Ctrl", [0x00E1] = "Shift", [0x00E2] = "Alt", [0x00E3] = "Win",
         [0x00E4] = "RCtrl", [0x00E5] = "RShift", [0x00E6] = "RAlt", [0x00E7] = "RWin"
     };
@@ -199,11 +200,31 @@ public static class GpdV2PacketCodec
 
     public static string DescribeHidKey(ushort code, int mode, int slots)
     {
+        if (slots <= 0 || (code == 0 && slots <= 1))
+        {
+            return ResolveKeyLabel(0);
+        }
+
         if (mode is 2 or 6)
         {
+            if (slots == 1)
+            {
+                return ResolveKeyLabel(code);
+            }
+            if (code == 0)
+            {
+                // Factory unmapped V2 slots often use mode=2, slots=4 with all-zero key codes (NC).
+                return ResolveKeyLabel(0);
+            }
             string first = ResolveKeyLabel(code);
             return $"多键组合宏 ({slots}槽: {first}...)";
         }
+
+        if (mode == 0 && code != 0)
+        {
+            return $"{ResolveKeyLabel(code)} (旧格式，请点应用修复)";
+        }
+
         return ResolveKeyLabel(code);
     }
 
@@ -291,6 +312,26 @@ public static class GpdV2PacketCodec
             RightDeadzone = Math.Clamp((int)(sbyte)data[RightDeadzoneOffset], -10, 10),
             ChecksumValid = VerifyChecksum(configBuf)
         };
+    }
+
+    /// <summary>
+    /// GPD Win 5 firmware (e.g. X3.06 / K1.08) always emits raw HID F14 (0x0069) for L4 and F15 (0x006A) for R4
+    /// alongside any programmed Mode-2 key/macro. Suppress those ghost keys unless the user explicitly mapped
+    /// L4 to F14 or R4 to F15.
+    /// </summary>
+    public static (bool SuppressGhostF14, bool SuppressGhostF15) ComputeGhostPaddleSuppression(GpdControllerConfig? cfg)
+    {
+        if (cfg is not { Connected: true })
+        {
+            return (false, false);
+        }
+
+        bool l4UsesF14 = (cfg.L4Slots > 0 && cfg.L4KeyCode == 0x0069) ||
+                         (cfg.L4ComboCodes is { Count: > 0 } && cfg.L4ComboCodes.Contains((ushort)0x0069));
+        bool r4UsesF15 = (cfg.R4Slots > 0 && cfg.R4KeyCode == 0x006A) ||
+                         (cfg.R4ComboCodes is { Count: > 0 } && cfg.R4ComboCodes.Contains((ushort)0x006A));
+
+        return (!l4UsesF14, !r4UsesF15);
     }
 
     public static void ApplyUpdateInPlace(Span<byte> configBuf, GpdControllerUpdateRequest update)
@@ -397,6 +438,8 @@ public static class GpdV2PacketCodec
         var data = configBuf.Slice(HeaderSize);
         data[modeDataOffset] = 2; // V2 multi-slot macro / simultaneous chord mode
         data[slotsDataOffset] = (byte)Math.Clamp(comboCodes.Count, 1, 32);
+        data[modeDataOffset + 2] = 0;
+        data[modeDataOffset + 3] = 0;
 
         bool hasMixedModifiers = comboCodes.Any(IsKeyboardModifier) && comboCodes.Any(c => !IsKeyboardModifier(c));
         int slotByteStart = HeaderSize + slot1U16Pos * 2;
@@ -426,14 +469,19 @@ public static class GpdV2PacketCodec
     private static void WriteSingleBackButton(Span<byte> configBuf, int modeDataOffset, int slotsDataOffset, int slot1U16Pos, ushort hidCode)
     {
         var data = configBuf.Slice(HeaderSize);
-        // Mode 0 is Single key pass-through (supports both HID and XInput 0x8000..0x8018 codes).
-        data[modeDataOffset] = 0;
+        // GPD Win 5 Controller V2 (FW X3.06 / K1.08) requires Mode 2 (Macro) for all back-button mappings,
+        // matching factory resetBuf and OpenWinControls. Writing Mode 0 causes Win 5 firmware to ignore slot 1
+        // and fall back to raw hardware F14/F15 codes while official WinControls displays NC.
+        data[modeDataOffset] = 2;
         data[slotsDataOffset] = hidCode == 0 ? (byte)0 : (byte)1;
+        data[modeDataOffset + 2] = 0;
+        data[modeDataOffset + 3] = 0;
 
         int slotByteStart = HeaderSize + slot1U16Pos * 2;
         BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart, 2), hidCode);
         BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 2, 2), 0); // startDelayMs
-        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 4, 2), 0); // holdDurationMs = 0 for live hold pass-through
+        // Factory V2 single-key mappings use 200ms hold duration (0x00C8) so the firmware reliably emits the key.
+        BinaryPrimitives.WriteUInt16LittleEndian(configBuf.Slice(slotByteStart + 4, 2), hidCode == 0 ? (ushort)0 : (ushort)200);
 
         // Clear all remaining 31 key slots cleanly (32 slots total per V2 back button)
         for (int s = 1; s < 32; s++)

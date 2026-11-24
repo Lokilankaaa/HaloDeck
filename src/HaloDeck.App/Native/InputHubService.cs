@@ -132,6 +132,9 @@ public sealed class InputHubService : IDisposable
         }
     }
 
+    private volatile bool _suppressFirmwareGhostF14;
+    private volatile bool _suppressFirmwareGhostF15;
+
     public void UpdateAssignedBackButtonFnCodes(IEnumerable<ushort>? hidCodes)
     {
         _assignedBackButtonFnHidCodes = hidCodes is null ? null : new HashSet<ushort>(hidCodes);
@@ -143,6 +146,12 @@ public sealed class InputHubService : IDisposable
         {
             RegisterGlobalHotkeys();
         }
+    }
+
+    public void UpdateFirmwareGhostKeySuppression(bool suppressF14, bool suppressF15)
+    {
+        _suppressFirmwareGhostF14 = suppressF14;
+        _suppressFirmwareGhostF15 = suppressF15;
     }
 
     public void AttachHotkeyWindow(nint hwnd)
@@ -244,7 +253,7 @@ public sealed class InputHubService : IDisposable
 
     private nint KeyboardHookCallback(int nCode, nint wParam, nint lParam)
     {
-        if (nCode >= 0 && _settings.InterceptPhysicalOskButton && lParam != 0)
+        if (nCode >= 0 && lParam != 0)
         {
             var kb = Marshal.PtrToStructure<Win32Interop.KBDLLHOOKSTRUCT>(lParam);
             if (kb.dwExtraInfo == Win32Interop.SyntheticChordBreakExtraInfo ||
@@ -253,7 +262,18 @@ public sealed class InputHubService : IDisposable
                 return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
             }
 
-            if (kb.vkCode == Win32Interop.VK_O)
+            // Suppress GPD Win 5 firmware's unconditional raw F14 (0x7D) / F15 (0x7E) duplicate keystrokes
+            // when L4/R4 are mapped to other keys (or disabled) so games/apps only receive the programmed key.
+            if (kb.vkCode == 0x7D && _suppressFirmwareGhostF14)
+            {
+                return 1;
+            }
+            if (kb.vkCode == 0x7E && _suppressFirmwareGhostF15)
+            {
+                return 1;
+            }
+
+            if (_settings.InterceptPhysicalOskButton && kb.vkCode == Win32Interop.VK_O)
             {
                 int msg = wParam.ToInt32();
                 bool isDown = msg is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
@@ -340,11 +360,21 @@ public sealed class InputHubService : IDisposable
         Win32Interop.UnregisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleConsoleF16Id);
     }
 
+    private readonly Dictionary<int, long> _lastHotkeyTickMs = new();
+
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
         if (msg == Win32Interop.WM_HOTKEY)
         {
             int id = wParam.ToInt32();
+            long now = Environment.TickCount64;
+            if (_lastHotkeyTickMs.TryGetValue(id, out long prev) && now - prev < 280)
+            {
+                handled = true;
+                return 0;
+            }
+            _lastHotkeyTickMs[id] = now;
+
             if (id is HotkeyQamId or HotkeyPaddleQamF13Id)
             {
                 ToggleQamRequested?.Invoke();

@@ -106,4 +106,6 @@ public sealed class AppSettings
     public Dictionary<string, GamePerformanceProfile> PerGameProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> ExcludedGameIds { get; set; } = new();
     public List<string> DisabledCustomDlls { get; set; } = new();
+    // User-subscribed third-party community plugin store JSON URLs (Decky-style zero-server catalogs).
+    public List<string> PluginStoreUrls { get; set; } = new();
 }

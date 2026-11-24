@@ -96,14 +96,18 @@ public sealed class HaloDeckV030Tests
         var decoded = GpdV2PacketCodec.Decode(buf, "1.0", "2.0");
         Assert.True(decoded.Connected);
         Assert.True(decoded.ChecksumValid);
-        Assert.Equal(0, decoded.L4Mode);
+        Assert.Equal(2, decoded.L4Mode);
         Assert.Equal(1, decoded.L4Slots);
         Assert.Equal((ushort)0x0068, decoded.L4KeyCode);
         Assert.Contains("F13", decoded.L4KeyLabel);
-        Assert.Equal(0, decoded.R4Mode);
+        Assert.DoesNotContain("组合宏", decoded.L4KeyLabel);
+        Assert.Equal((ushort)200, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 82 * 2 + 4, 2)));
+        Assert.Equal(2, decoded.R4Mode);
         Assert.Equal(1, decoded.R4Slots);
         Assert.Equal((ushort)0x0069, decoded.R4KeyCode);
         Assert.Contains("F14", decoded.R4KeyLabel);
+        Assert.DoesNotContain("组合宏", decoded.R4KeyLabel);
+        Assert.Equal((ushort)200, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(GpdV2PacketCodec.HeaderSize + 180 * 2 + 4, 2)));
         Assert.Equal(2, decoded.RumbleLevel);
         Assert.Equal(-4, decoded.LeftDeadzone);
         Assert.Equal(6, decoded.RightDeadzone);
@@ -137,8 +141,10 @@ public sealed class HaloDeckV030Tests
         Assert.Equal((ushort)0x0010, decoded.L4KeyCode);
         Assert.Contains("组合宏", decoded.L4KeyLabel);
 
-        Assert.Equal(0, decoded.R4Mode);
+        Assert.Equal(2, decoded.R4Mode);
+        Assert.Equal(1, decoded.R4Slots);
         Assert.Equal((ushort)0x0049, decoded.R4KeyCode);
         Assert.Contains("Insert", decoded.R4KeyLabel);
+        Assert.DoesNotContain("组合宏", decoded.R4KeyLabel);
     }
 }

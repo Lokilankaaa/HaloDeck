@@ -1,16 +1,19 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Threading;
 using HaloDeck.App.Native;
+using HaloDeck.App.Plugins;
 using HaloDeck.Core.Analysis;
 using HaloDeck.Core.Components;
 using HaloDeck.Core.Config;
 using HaloDeck.Core.Discovery;
 using HaloDeck.Core.Injection;
 using HaloDeck.Core.Models;
+using HaloDeck.Core.Plugins;
 using HaloDeck.Core.Process;
 using HaloDeck.Core.Services;
 using Microsoft.Web.WebView2.Core;
@@ -44,7 +47,14 @@ public sealed class WebUiBridge : IDisposable
     private readonly HandheldToolboxService _toolbox = new();
     private readonly GameXInputIsolator _xinputIsolator = new();
     private readonly RtssSharedMemoryClient _rtssClient = new();
+    private readonly PluginStoreService _pluginStore = new();
+    private readonly PluginProcessHost _pluginHost = new();
+    private readonly PluginRegistryClient _pluginRegistry = new();
+    private readonly SemaphoreSlim _pluginInstallGate = new(1, 1);
     private readonly PowerPeripheralOptimizer _powerOptimizer;
+    private string? _lastPluginRunningGameId;
+    private GameEntry? _lastPluginRunningGame;
+    private DateTime _lastPluginIdleReapUtc = DateTime.UtcNow;
     private readonly BackgroundEcoIsolator _steadyEcoIsolator = new();
     private readonly object _steadyEcoLock = new();
 
@@ -136,6 +146,9 @@ public sealed class WebUiBridge : IDisposable
 
         _inputHub.BackButtonGamepadRecorded += codes =>
             BroadcastEvent("backButtonGamepadRecorded", new { codes });
+
+        _pluginHost.PluginBackendEvent += (pluginId, eventName, data) =>
+            BroadcastEvent("pluginEvent", new { pluginId, eventName, data });
     }
 
     public AppSettings Settings => _settings;
@@ -183,6 +196,9 @@ public sealed class WebUiBridge : IDisposable
 
     public void Dispose()
     {
+        _pluginHost.Dispose();
+        _pluginRegistry.Dispose();
+        _pluginInstallGate.Dispose();
         _rtssClient.Dispose();
         _xinputIsolator.Dispose();
         FlushPendingSettingsSave();
@@ -230,13 +246,25 @@ public sealed class WebUiBridge : IDisposable
             var cfg = await Task.Run(() => _gpdController.ReadConfig(forceRefresh: false)).ConfigureAwait(false);
             if (cfg.Connected)
             {
-                _inputHub.UpdateAssignedBackButtonFnCodes(CollectAssignedBackButtonFnCodes(cfg));
+                SyncInputHubWithGpdConfig(cfg);
             }
         }
         catch
         {
             // Non-GPD systems or HID busy during startup; ignore cleanly
         }
+    }
+
+    private void SyncInputHubWithGpdConfig(GpdControllerConfig cfg)
+    {
+        var assigned = CollectAssignedBackButtonFnCodes(cfg);
+        _inputHub.UpdateAssignedBackButtonFnCodes(assigned);
+        var (suppressF14, suppressF15) = GpdV2PacketCodec.ComputeGhostPaddleSuppression(cfg);
+        // If user explicitly turned on EnableBackButtonHotkeys with no F-key assigned, don't block F14/F15.
+        bool manualRawFallback = _settings.EnableBackButtonHotkeys && assigned.Count == 0;
+        _inputHub.UpdateFirmwareGhostKeySuppression(
+            suppressF14 && !manualRawFallback,
+            suppressF15 && !manualRawFallback);
     }
 
     public async Task AttachWebViewAsync(WebView2 webView, string mode)
@@ -258,6 +286,12 @@ public sealed class WebUiBridge : IDisposable
         core.SetVirtualHostNameToFolderMapping(
             "app.halodeck.local",
             webUiDir,
+            CoreWebView2HostResourceAccessKind.Allow);
+
+        Directory.CreateDirectory(_pluginStore.PluginsRoot);
+        core.SetVirtualHostNameToFolderMapping(
+            PluginStoreService.PluginVirtualHost,
+            _pluginStore.PluginsRoot,
             CoreWebView2HostResourceAccessKind.Allow);
 
         var steamLibraryCache = SteamLibraryScanner.ResolveSteamLibraryCacheDir();
@@ -386,6 +420,14 @@ public sealed class WebUiBridge : IDisposable
 
         // Handle per-game performance profile & AC/Battery power linkage transitions
         ApplyDynamicPowerAutomation(sys, updatedRunning);
+
+        // Notify enabled plugins subscribed to game lifecycle events & reap idle plugin backends
+        DispatchPluginGameLifecycleTransitions(updatedRunning);
+        if ((DateTime.UtcNow - _lastPluginIdleReapUtc) >= TimeSpan.FromSeconds(30))
+        {
+            _lastPluginIdleReapUtc = DateTime.UtcNow;
+            _pluginHost.ReapIdleWorkers();
+        }
 
         if (changed && uiVisible)
         {
@@ -637,7 +679,7 @@ public sealed class WebUiBridge : IDisposable
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
                 "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
-                "showConsole" => InvokeUiAction(() => RequestShowConsole?.Invoke()),
+                "showConsole" => ShowConsoleAndNavigate(payload),
                 "toggleFullscreen" => InvokeUiAction(() => RequestToggleFullscreen?.Invoke()),
                 "minimizeToTray" => InvokeUiAction(() => RequestMinimizeToTray?.Invoke()),
                 "runAutoInjectNow" => await RunBackgroundAutoInjectAsync(),
@@ -673,6 +715,17 @@ public sealed class WebUiBridge : IDisposable
                 "setUiLayout" => SetUiLayout(payload),
                 "openPawnIoDownload" => OpenPawnIoDownloadPage(),
                 "relaunchAsAdmin" => RelaunchAsAdmin(payload),
+                "listPlugins" => ListPluginsWithStatus(),
+                "installPluginZip" => await InstallPluginZipAsync(payload),
+                "setPluginEnabled" => SetPluginEnabled(payload),
+                "uninstallPlugin" => UninstallPlugin(payload),
+                "openPluginsFolder" => OpenPluginsFolder(),
+                "getPluginLogs" => GetPluginLogs(payload),
+                "fetchPluginStore" => await FetchPluginStoreAsync(),
+                "installPluginFromUrl" => await InstallPluginFromUrlAsync(payload),
+                "addPluginStoreUrl" => AddPluginStoreUrl(payload),
+                "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
+                "pluginHostApi" => await DispatchPluginHostApiAsync(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
 
@@ -713,6 +766,8 @@ public sealed class WebUiBridge : IDisposable
             systemControl = sysState,
             frozenGames = _toolbox.GetFrozenGames(),
             gpdController = _gpdController.CachedConfig,
+            plugins = ListPluginsWithStatus(),
+            activePluginTheme = _pluginStore.GetActiveThemeOverride(),
             hardwareProfile = new
             {
                 deviceName = "HaloDeck · GPD Win 5",
@@ -1132,6 +1187,11 @@ public sealed class WebUiBridge : IDisposable
         {
             // User explicitly enabled F13-F16 hotkey takeover via UI switch
             _inputHub.UpdateAssignedBackButtonFnCodes(null);
+            _inputHub.UpdateFirmwareGhostKeySuppression(false, false);
+        }
+        else if (_gpdController.CachedConfig is { Connected: true } cachedGpd)
+        {
+            SyncInputHubWithGpdConfig(cachedGpd);
         }
         _inputHub.UpdateSettings(_settings);
 
@@ -1328,6 +1388,34 @@ public sealed class WebUiBridge : IDisposable
     private object InvokeUiAction(Action action)
     {
         _dispatcher.Invoke(action);
+        return new { ok = true };
+    }
+
+    private object ShowConsoleAndNavigate(JsonElement payload)
+    {
+        string? targetTab = payload.ValueKind == JsonValueKind.Object &&
+                            payload.TryGetProperty("tab", out var tp) &&
+                            tp.ValueKind == JsonValueKind.String
+            ? tp.GetString()
+            : null;
+        string? targetSubTab = payload.ValueKind == JsonValueKind.Object &&
+                               payload.TryGetProperty("subtab", out var sp) &&
+                               sp.ValueKind == JsonValueKind.String
+            ? sp.GetString()
+            : null;
+
+        _dispatcher.BeginInvoke(() =>
+        {
+            RequestShowConsole?.Invoke();
+            if (!string.IsNullOrWhiteSpace(targetTab))
+            {
+                BroadcastEvent("navigateConsoleTab", new
+                {
+                    tab = targetTab,
+                    subtab = targetSubTab
+                });
+            }
+        });
         return new { ok = true };
     }
 
@@ -2371,7 +2459,7 @@ public sealed class WebUiBridge : IDisposable
         {
             foreach (var c in cfg.L4ComboCodes) AddIfFn(codes, c);
         }
-        else if (cfg.L4Mode == 0 && cfg.L4Slots > 0)
+        else if (cfg.L4Slots > 0 && cfg.L4KeyCode != 0)
         {
             AddIfFn(codes, cfg.L4KeyCode);
         }
@@ -2380,7 +2468,7 @@ public sealed class WebUiBridge : IDisposable
         {
             foreach (var c in cfg.R4ComboCodes) AddIfFn(codes, c);
         }
-        else if (cfg.R4Mode == 0 && cfg.R4Slots > 0)
+        else if (cfg.R4Slots > 0 && cfg.R4KeyCode != 0)
         {
             AddIfFn(codes, cfg.R4KeyCode);
         }
@@ -2394,8 +2482,7 @@ public sealed class WebUiBridge : IDisposable
         var cfg = await Task.Run(() => _gpdController.ReadConfig(force)).ConfigureAwait(false);
         if (cfg.Connected)
         {
-            var assigned = CollectAssignedBackButtonFnCodes(cfg);
-            _inputHub.UpdateAssignedBackButtonFnCodes(assigned);
+            SyncInputHubWithGpdConfig(cfg);
         }
         return cfg;
     }
@@ -2421,7 +2508,7 @@ public sealed class WebUiBridge : IDisposable
         _settings.EnableBackButtonHotkeys = assignedFn.Count > 0;
         _settings.BackButtonHotkeysSchemaVersion = 1;
         _settingsStore.Save(_settings);
-        _inputHub.UpdateAssignedBackButtonFnCodes(assignedFn);
+        SyncInputHubWithGpdConfig(updated);
         _inputHub.UpdateSettings(_settings);
 
         BroadcastStateSnapshot();
@@ -2520,39 +2607,584 @@ public sealed class WebUiBridge : IDisposable
 
     private static bool TryRegisterElevatedStartupTask(string exePath)
     {
+        object? schedulerObj = null;
         try
         {
-            string cmd = $"\\\"{exePath}\\\" --minimized";
-            using var proc = Process.Start(new ProcessStartInfo
+            // Use native in-process Task Scheduler 2.0 COM API instead of spawning schtasks.exe,
+            // which triggers Windows Defender ML false positives (Trojan:Win32/Commando.C!ml).
+            var schedulerType = Type.GetTypeFromProgID("Schedule.Service");
+            if (schedulerType is null) return false;
+
+            schedulerObj = Activator.CreateInstance(schedulerType);
+            if (schedulerObj is null) return false;
+
+            dynamic scheduler = schedulerObj;
+            scheduler.Connect();
+            dynamic rootFolder = scheduler.GetFolder("\\");
+
+            // Skip redundant re-registration on every startup if the task already matches current exePath
+            try
             {
-                FileName = "schtasks.exe",
-                Arguments = $"/Create /TN \"{ElevatedStartupTaskName}\" /SC ONLOGON /RL HIGHEST /F /TR \"{cmd}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            proc?.WaitForExit(4000);
-            return proc is { ExitCode: 0 };
+                dynamic? existing = rootFolder.GetTask(ElevatedStartupTaskName);
+                if (existing is not null && (bool)existing.Enabled && (int)existing.Definition.Principal.RunLevel == 1)
+                {
+                    dynamic actions = existing.Definition.Actions;
+                    if ((int)actions.Count >= 1)
+                    {
+                        string? curPath = actions[1].Path as string;
+                        string? curArgs = actions[1].Arguments as string;
+                        if (string.Equals(curPath, exePath, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(curArgs, "--minimized", StringComparison.Ordinal))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Task does not exist yet; proceed to create
+            }
+
+            dynamic task = scheduler.NewTask(0);
+            task.RegistrationInfo.Description = "HaloDeck Handheld Control Center";
+            task.RegistrationInfo.Author = "HaloDeck";
+            task.Principal.LogonType = 3; // TASK_LOGON_INTERACTIVE_TOKEN
+            task.Principal.RunLevel = 1;  // TASK_RUNLEVEL_HIGHEST
+
+            task.Settings.Enabled = true;
+            task.Settings.DisallowStartIfOnBatteries = false;
+            task.Settings.StopIfGoingOnBatteries = false;
+            task.Settings.ExecutionTimeLimit = "PT0S";
+            task.Settings.MultipleInstances = 2; // TASK_INSTANCES_IGNORE_NEW
+
+            dynamic trigger = task.Triggers.Create(9); // TASK_TRIGGER_LOGON
+            trigger.Enabled = true;
+
+            dynamic action = task.Actions.Create(0); // TASK_ACTION_EXEC
+            action.Path = exePath;
+            action.Arguments = "--minimized";
+            action.WorkingDirectory = Path.GetDirectoryName(exePath) ?? string.Empty;
+
+            // TASK_CREATE_OR_UPDATE (6), TASK_LOGON_INTERACTIVE_TOKEN (3)
+            rootFolder.RegisterTaskDefinition(ElevatedStartupTaskName, task, 6, null, null, 3, null);
+            return true;
         }
         catch
         {
             return false;
         }
+        finally
+        {
+            if (schedulerObj is not null && Marshal.IsComObject(schedulerObj))
+            {
+                Marshal.ReleaseComObject(schedulerObj);
+            }
+        }
     }
 
     private static void TryDeleteElevatedStartupTask()
     {
+        object? schedulerObj = null;
         try
         {
-            using var proc = Process.Start(new ProcessStartInfo
-            {
-                FileName = "schtasks.exe",
-                Arguments = $"/Delete /TN \"{ElevatedStartupTaskName}\" /F",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            proc?.WaitForExit(3000);
+            var schedulerType = Type.GetTypeFromProgID("Schedule.Service");
+            if (schedulerType is null) return;
+
+            schedulerObj = Activator.CreateInstance(schedulerType);
+            if (schedulerObj is null) return;
+
+            dynamic scheduler = schedulerObj;
+            scheduler.Connect();
+            dynamic rootFolder = scheduler.GetFolder("\\");
+            rootFolder.DeleteTask(ElevatedStartupTaskName, 0);
         }
-        catch { }
+        catch
+        {
+            // Ignore when task does not exist
+        }
+        finally
+        {
+            if (schedulerObj is not null && Marshal.IsComObject(schedulerObj))
+            {
+                Marshal.ReleaseComObject(schedulerObj);
+            }
+        }
+    }
+
+    // ---------------- Decky-Style Community Plugin Host ----------------
+
+    private List<InstalledPluginInfo> ListPluginsWithStatus()
+    {
+        var list = _pluginStore.ListPlugins();
+        foreach (var p in list)
+        {
+            p.BackendRunning = p.HasBackend && _pluginHost.IsRunning(p.Id);
+        }
+        return list;
+    }
+
+    private async Task<object> InstallPluginZipAsync(JsonElement payload)
+    {
+        string? zipPath = payload.TryGetProperty("zipPath", out var zp) && zp.ValueKind == JsonValueKind.String
+            ? zp.GetString()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(zipPath))
+        {
+            zipPath = await _dispatcher.InvokeAsync(() =>
+            {
+                var dlg = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "选择 HaloDeck 社区插件包 (.zip)",
+                    Filter = "HaloDeck 插件包 (*.zip)|*.zip|所有文件 (*.*)|*.*",
+                    CheckFileExists = true,
+                    Multiselect = false
+                };
+                return dlg.ShowDialog() == true ? dlg.FileName : null;
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(zipPath))
+        {
+            return new { cancelled = true };
+        }
+
+        var installed = await Task.Run(() => _pluginStore.InstallFromZip(zipPath, enableAfterInstall: false, consentAccepted: false))
+            .ConfigureAwait(false);
+        _pluginHost.StopPlugin(installed.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, plugin = installed, message = $"已导入社区插件「{installed.Name}」v{installed.Version}，确认权限后即可启用" };
+    }
+
+    private object SetPluginEnabled(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        bool enabled = payload.GetProperty("enabled").GetBoolean();
+        bool consent = payload.TryGetProperty("consentAccepted", out var cp) && cp.GetBoolean();
+
+        var updated = _pluginStore.SetEnabled(pluginId, enabled, consent);
+        if (!enabled)
+        {
+            _pluginHost.StopPlugin(updated.Id);
+        }
+
+        updated.BackendRunning = updated.HasBackend && _pluginHost.IsRunning(updated.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, plugin = updated };
+    }
+
+    private object UninstallPlugin(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        bool deleteData = payload.TryGetProperty("deleteData", out var dp) && dp.GetBoolean();
+        _pluginHost.StopPlugin(pluginId);
+        _pluginStore.Uninstall(pluginId, deleteData);
+        BroadcastStateSnapshot();
+        return new { ok = true };
+    }
+
+    private object OpenPluginsFolder()
+    {
+        Directory.CreateDirectory(_pluginStore.PluginsRoot);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = _pluginStore.PluginsRoot,
+            UseShellExecute = true
+        });
+        return new { ok = true, path = _pluginStore.PluginsRoot };
+    }
+
+    private object GetPluginLogs(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        return new
+        {
+            pluginId,
+            running = _pluginHost.IsRunning(pluginId),
+            logs = _pluginHost.GetRecentLogs(pluginId)
+        };
+    }
+
+    private async Task<object> FetchPluginStoreAsync()
+    {
+        var catalogs = await _pluginRegistry.FetchAllCatalogsAsync(_settings.PluginStoreUrls).ConfigureAwait(false);
+
+        // Apply official store kill-switch revocations (if any) immediately to local installed plugins
+        var officialRevokedIds = catalogs
+            .Where(c => c.IsOfficial && c.RevokedIds is { Count: > 0 })
+            .SelectMany(c => c.RevokedIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var revokedSet = new HashSet<string>(officialRevokedIds, StringComparer.OrdinalIgnoreCase);
+        var newlyRevoked = _pluginStore.ApplyStoreRevocations(officialRevokedIds);
+        if (newlyRevoked.Count > 0)
+        {
+            foreach (string id in newlyRevoked)
+            {
+                _pluginHost.StopPlugin(id);
+            }
+            BroadcastStateSnapshot();
+        }
+
+        var installedMap = _pluginStore.ListPlugins()
+            .Where(p => p.IsValid)
+            .ToDictionary(p => p.Id, p => p, StringComparer.OrdinalIgnoreCase);
+
+        var items = new List<object>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var cat in catalogs)
+        {
+            foreach (var p in cat.Plugins)
+            {
+                if (!seenIds.Add(p.Id)) continue;
+                installedMap.TryGetValue(p.Id, out var inst);
+                bool hasUpdate = inst is not null && PluginRegistryClient.IsNewerVersion(p.Version, inst.Version);
+                bool isRevoked = revokedSet.Contains(p.Id);
+                items.Add(new
+                {
+                    id = p.Id,
+                    name = p.Name,
+                    version = p.Version,
+                    author = p.Author,
+                    description = p.Description,
+                    homepage = p.Homepage,
+                    category = p.Category,
+                    mount = p.Mount,
+                    permissions = p.Permissions,
+                    zipUrl = p.ZipUrl,
+                    sha256 = p.Sha256,
+                    sourceRepo = p.SourceRepo,
+                    sourceCommit = p.SourceCommit,
+                    sourceName = p.SourceName,
+                    isOfficialSource = p.IsOfficialSource,
+                    isInstalled = inst is not null,
+                    installedVersion = inst?.Version,
+                    hasUpdate,
+                    isRevoked
+                });
+            }
+        }
+
+        return new
+        {
+            revokedIds = officialRevokedIds,
+            sources = catalogs.Select(c => new
+            {
+                storeName = c.StoreName,
+                description = c.Description,
+                sourceUrl = c.SourceUrl,
+                isOfficial = c.IsOfficial,
+                count = c.Plugins.Count,
+                error = c.Error
+            }).ToList(),
+            items
+        };
+    }
+
+    private async Task<object> InstallPluginFromUrlAsync(JsonElement payload)
+    {
+        string url = payload.TryGetProperty("url", out var up) ? (up.GetString() ?? "") : "";
+        string? sha256 = payload.TryGetProperty("sha256", out var sp) && sp.ValueKind == JsonValueKind.String
+            ? sp.GetString()
+            : null;
+        string label = payload.TryGetProperty("name", out var np) && np.ValueKind == JsonValueKind.String
+            ? (np.GetString() ?? url)
+            : url;
+
+        await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
+            var progress = new Progress<double>(pct =>
+            {
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
+            });
+
+            var installed = await _pluginRegistry.DownloadAndInstallAsync(
+                _pluginStore,
+                url,
+                sha256,
+                progress).ConfigureAwait(false);
+
+            _pluginHost.StopPlugin(installed.Id);
+            BroadcastEvent("pluginDownloadProgress", new { label, percent = 100.0, status = "done" });
+            BroadcastStateSnapshot();
+            return new
+            {
+                ok = true,
+                plugin = installed,
+                message = installed.Enabled
+                    ? $"已更新插件「{installed.Name}」至 v{installed.Version}"
+                    : $"已安装插件「{installed.Name}」v{installed.Version}，请在「已安装」页确认权限后启用"
+            };
+        }
+        finally
+        {
+            _pluginInstallGate.Release();
+        }
+    }
+
+    private object AddPluginStoreUrl(JsonElement payload)
+    {
+        string url = (payload.TryGetProperty("url", out var up) ? up.GetString() : null)?.Trim() ?? "";
+        if (!PluginRegistryClient.IsAllowedHttpsUrl(url))
+        {
+            throw new ArgumentException("商店源地址必须为合法的 https:// JSON 链接");
+        }
+
+        _settings.PluginStoreUrls ??= new List<string>();
+        if (!_settings.PluginStoreUrls.Any(u => string.Equals(u, url, StringComparison.OrdinalIgnoreCase)))
+        {
+            _settings.PluginStoreUrls.Add(url);
+            _settingsStore.Save(_settings);
+            BroadcastStateSnapshot();
+        }
+        return new { ok = true, urls = _settings.PluginStoreUrls };
+    }
+
+    private object RemovePluginStoreUrl(JsonElement payload)
+    {
+        string url = (payload.TryGetProperty("url", out var up) ? up.GetString() : null)?.Trim() ?? "";
+        _settings.PluginStoreUrls?.RemoveAll(u => string.Equals(u, url, StringComparison.OrdinalIgnoreCase));
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new { ok = true, urls = _settings.PluginStoreUrls ?? new List<string>() };
+    }
+
+    private async Task<object?> DispatchPluginHostApiAsync(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        string action = payload.GetProperty("action").GetString() ?? "";
+        JsonElement args = payload.TryGetProperty("args", out var ap) ? ap : default;
+
+        var plugin = _pluginStore.GetPlugin(pluginId)
+                     ?? throw new InvalidOperationException($"未知插件：{pluginId}");
+        if (!plugin.Enabled || !plugin.IsValid)
+        {
+            throw new InvalidOperationException($"插件 {plugin.Name} 当前未启用或未通过校验");
+        }
+
+        static void RequirePerm(InstalledPluginInfo p, string perm)
+        {
+            if (!p.Manifest.HasPermission(perm))
+            {
+                throw new UnauthorizedAccessException($"插件 {p.Id} 未声明必需权限 \"{perm}\"");
+            }
+        }
+
+        switch (action)
+        {
+            case "getContext":
+                return new
+                {
+                    pluginId = plugin.Id,
+                    pluginName = plugin.Name,
+                    pluginVersion = plugin.Version,
+                    permissions = plugin.Permissions,
+                    theme = _settings.UiTheme,
+                    layout = _settings.UiLayout,
+                    haloDeckVersion = "0.6.0",
+                    isElevated = Win32Interop.IsCurrentProcessElevated()
+                };
+
+            case "getGames":
+                RequirePerm(plugin, "games:read");
+                return _cachedGames.Select(ProjectPluginGameSummary).ToList();
+
+            case "getRunningGame":
+                RequirePerm(plugin, "games:read");
+                return _runningGame is { IsCurrentlyRunning: true } rg ? ProjectPluginGameSummary(rg) : null;
+
+            case "getTelemetry":
+                RequirePerm(plugin, "telemetry:read");
+                var sys = LatestSystemState;
+                return new
+                {
+                    currentFps = sys.CurrentFps,
+                    frameTimeMs = sys.FrameTimeMs,
+                    apuPowerWatts = sys.ApuPowerWatts,
+                    targetTdpWatts = _settings.CurrentTdpWatts,
+                    gpuUsagePercent = sys.GpuUsagePercent,
+                    gfxClockMhz = sys.GfxClockMhz,
+                    gpuTempC = sys.GpuTempC,
+                    cpuUsagePercent = sys.CpuUsagePercent,
+                    cpuClockMhz = sys.CpuClockMhz,
+                    cpuTempC = sys.CpuTempC,
+                    vramUsedMb = sys.VramUsedMb,
+                    vramTotalMb = sys.VramTotalMb,
+                    usedRamGb = sys.UsedRamGb,
+                    fanRpm = sys.HardwareService.EcReady ? sys.HardwareService.FanRpm : 0,
+                    batteryPercent = sys.BatteryPercent,
+                    isAcOnline = sys.IsAcOnline,
+                    refreshRateHz = sys.RefreshRateHz,
+                    screenWidth = sys.ScreenWidth,
+                    screenHeight = sys.ScreenHeight
+                };
+
+            case "storageGet":
+                RequirePerm(plugin, "storage");
+                string getKey = args.GetProperty("key").GetString() ?? "";
+                return new { value = _pluginStore.StorageGet(plugin.Id, getKey) };
+
+            case "storageSet":
+                RequirePerm(plugin, "storage");
+                string setKey = args.GetProperty("key").GetString() ?? "";
+                JsonElement setVal = args.TryGetProperty("value", out var vp) ? vp : default;
+                _pluginStore.StorageSet(plugin.Id, setKey, setVal);
+                return new { ok = true };
+
+            case "storageRemove":
+                RequirePerm(plugin, "storage");
+                string delKey = args.GetProperty("key").GetString() ?? "";
+                _pluginStore.StorageRemove(plugin.Id, delKey);
+                return new { ok = true };
+
+            case "openDataFolder":
+                RequirePerm(plugin, "shell:openFolder");
+                string dataDir = _pluginStore.EnsurePluginDataDirectory(plugin.Id);
+                Process.Start(new ProcessStartInfo { FileName = dataDir, UseShellExecute = true });
+                return new { ok = true };
+
+            case "themeApply":
+            {
+                RequirePerm(plugin, "ui:theme");
+                var vars = new Dictionary<string, string>(StringComparer.Ordinal);
+                if (args.TryGetProperty("variables", out var vpObj) && vpObj.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in vpObj.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.String)
+                        {
+                            vars[prop.Name] = prop.Value.GetString() ?? "";
+                        }
+                    }
+                }
+                var applied = _pluginStore.SetThemeOverride(plugin.Id, vars);
+                BroadcastEvent("pluginThemeUpdated", applied);
+                return new { ok = true, activePluginTheme = applied };
+            }
+
+            case "themeReset":
+                RequirePerm(plugin, "ui:theme");
+                _pluginStore.ClearThemeOverride(plugin.Id);
+                BroadcastEvent("pluginThemeUpdated", new { pluginId = "", variables = new Dictionary<string, string>() });
+                return new { ok = true };
+
+            case "sendKey":
+                RequirePerm(plugin, "input:sendKey");
+                ushort vk = args.TryGetProperty("vk", out var vkp) ? (ushort)vkp.GetInt32() : (ushort)0x2D;
+                // Strict allowlist: menu/function keys only (Insert, Home, End, F1..F12)
+                if (vk is not (0x2D or 0x24 or 0x23 or (>= 0x70 and <= 0x7B)))
+                {
+                    throw new UnauthorizedAccessException($"不允许插件发送该虚拟键码 (0x{vk:X2})");
+                }
+                await Win32Interop.SendKeyHoldAsync(vk, _settings.InsertHoldDurationMs).ConfigureAwait(false);
+                return new { ok = true, vk };
+
+            case "backendCall":
+                RequirePerm(plugin, "backend");
+                string method = args.GetProperty("method").GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(method))
+                {
+                    throw new ArgumentException("缺少后端调用方法名 method");
+                }
+                JsonElement? callParams = args.TryGetProperty("params", out var pp) ? pp : null;
+                int timeoutMs = args.TryGetProperty("timeoutMs", out var tp) && tp.ValueKind == JsonValueKind.Number
+                    ? tp.GetInt32()
+                    : 30000;
+                var ctx = BuildPluginBackendContext(plugin);
+                return await _pluginHost.CallAsync(plugin, method, callParams, ctx, timeoutMs).ConfigureAwait(false);
+
+            default:
+                throw new InvalidOperationException($"未知插件宿主 API：{action}");
+        }
+    }
+
+    private object BuildPluginBackendContext(InstalledPluginInfo plugin)
+    {
+        return new
+        {
+            pluginId = plugin.Id,
+            pluginDataDir = _pluginStore.EnsurePluginDataDirectory(plugin.Id),
+            runningGame = plugin.Manifest.HasPermission("games:read") && _runningGame is { IsCurrentlyRunning: true } rg
+                ? ProjectPluginGameSummary(rg)
+                : null
+        };
+    }
+
+    private static object ProjectPluginGameSummary(GameEntry g) => new
+    {
+        id = g.Id,
+        title = g.Title,
+        platform = g.Platform.ToString(),
+        engine = g.Engine.ToString(),
+        installDirectory = g.InstallDirectory,
+        targetRenderDirectory = g.TargetRenderDirectory,
+        mainExecutablePath = g.MainExecutablePath,
+        isCurrentlyRunning = g.IsCurrentlyRunning,
+        runningPid = g.RunningPid,
+        antiCheat = new
+        {
+            hasAntiCheat = g.AntiCheat.HasAntiCheat,
+            riskLevel = g.AntiCheat.RiskLevel.ToString(),
+            detectedSystems = g.AntiCheat.DetectedSystems
+        }
+    };
+
+    private void DispatchPluginGameLifecycleTransitions(GameEntry? currentRunning)
+    {
+        string? curId = currentRunning is { IsCurrentlyRunning: true } ? currentRunning.Id : null;
+        if (string.Equals(curId, _lastPluginRunningGameId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var prevGame = _lastPluginRunningGame;
+        _lastPluginRunningGameId = curId;
+        _lastPluginRunningGame = curId is not null ? currentRunning : null;
+
+        List<InstalledPluginInfo> plugins;
+        try
+        {
+            plugins = _pluginStore.ListPlugins()
+                .Where(p => p.Enabled && p.IsValid && p.Manifest.HasPermission("events:game"))
+                .ToList();
+        }
+        catch
+        {
+            return;
+        }
+
+        if (plugins.Count == 0) return;
+
+        if (prevGame is not null)
+        {
+            object stoppedPayload = ProjectPluginGameSummary(prevGame);
+            foreach (var p in plugins)
+            {
+                BroadcastEvent("pluginEvent", new { pluginId = p.Id, eventName = "gameStopped", data = stoppedPayload });
+                if (p.HasBackend && p.Manifest.HasPermission("backend"))
+                {
+                    _ = _pluginHost.NotifyAsync(p, "gameStopped", stoppedPayload, BuildPluginBackendContext(p), startIfNotRunning: false);
+                }
+            }
+        }
+
+        if (currentRunning is { IsCurrentlyRunning: true })
+        {
+            object startedPayload = ProjectPluginGameSummary(currentRunning);
+            foreach (var p in plugins)
+            {
+                BroadcastEvent("pluginEvent", new { pluginId = p.Id, eventName = "gameStarted", data = startedPayload });
+                if (p.HasBackend && p.Manifest.HasPermission("backend"))
+                {
+                    bool wakeOnLaunch = p.Manifest.SupportsActivation("onGameLaunch");
+                    _ = _pluginHost.NotifyAsync(p, "gameStarted", startedPayload, BuildPluginBackendContext(p), startIfNotRunning: wakeOnLaunch);
+                }
+            }
+        }
     }
 
     private void BroadcastStateSnapshot()

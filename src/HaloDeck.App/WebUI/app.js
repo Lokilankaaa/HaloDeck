@@ -10,9 +10,9 @@
   document.body.classList.toggle("mode-qam", IS_QAM);
   document.body.classList.toggle("mode-console", !IS_QAM);
 
-  const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls"];
+  const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls", "plugins"];
   const OPTI_SUB_TABS = ["tune", "library", "components"];
-  const QAM_TABS = ["handheld", "opti", "osd", "controls"];
+  const QAM_TABS = ["handheld", "opti", "osd", "controls", "plugins"];
 
   const DEFAULT_CONFIG = {
     proxyDllName: "auto",
@@ -58,8 +58,7 @@
   ];
 
   const GPD_BACK_KEYBOARD_OPTIONS = [
-    { value: -1, label: "保留原厂设置" },
-    { value: 0x0000, label: "关闭背键" },
+    { value: 0x0000, label: "恢复原厂 / 清空背键 (NC)" },
     { value: 0x002C, label: "Space 跳跃" },
     { value: 0x00E1, label: "Shift 冲刺" },
     { value: 0x00E0, label: "Ctrl 下蹲" },
@@ -75,57 +74,67 @@
     { value: 0x0049, label: "Insert (超分菜单)" }
   ];
 
-  const GPD_BACK_PRESETS = {
-    fps_l3r3: { l4: 0x800F, r4: 0x8010, shortLabel: "摇杆按下 (L3 / R3)", label: "摇杆按下 (L4=手柄L3 / R4=手柄R3)" },
-    act_ab: { l4: 0x8007, r4: 0x8008, shortLabel: "跳跃与闪避 (A / B)", label: "跳跃与闪避 (L4=手柄A / R4=手柄B)" },
-    shoulder_lbrb: { l4: 0x800B, r4: 0x800C, shortLabel: "肩键扩展 (LB / RB)", label: "肩键扩展 (L4=手柄LB / R4=手柄RB)" },
-    halodeck_fn: { l4: 0x0068, r4: 0x006B, shortLabel: "侧栏与主界面", label: "快捷呼出 (L4=侧栏 / R4=前端主界面)", enableHotkeys: true }
-  };
+  const GPD_FULL_KEYBOARD_GROUPS = (() => {
+    const letters = [];
+    for (let i = 0; i < 26; i++) {
+      letters.push({ value: 0x0004 + i, label: String.fromCharCode(65 + i) });
+    }
+    const numbers = [];
+    for (let i = 1; i <= 9; i++) {
+      numbers.push({ value: 0x001E + (i - 1), label: String(i) });
+    }
+    numbers.push({ value: 0x0027, label: "0" });
+    numbers.push({ value: 0x002D, label: "-" }, { value: 0x002E, label: "=" }, { value: 0x0035, label: "`" });
 
-  const GPD_COMBO_MODIFIER_OPTIONS = [
-    { value: 0x00E0, label: "Ctrl" },
-    { value: 0x00E1, label: "Shift" },
-    { value: 0x00E2, label: "Alt" },
-    { value: 0x00E3, label: "Win" }
-  ];
+    const fnKeys = [];
+    for (let i = 1; i <= 12; i++) {
+      fnKeys.push({ value: 0x003A + (i - 1), label: `F${i}` });
+    }
+    fnKeys.push(
+      { value: 0x0068, label: "F13 侧栏", special: true },
+      { value: 0x0069, label: "F14 帧率窗", special: true },
+      { value: 0x006A, label: "F15 超分", special: true },
+      { value: 0x006B, label: "F16 主界面", special: true }
+    );
 
-  const GPD_COMBO_EXTRA_KEYS = [
-    { value: 0x0012, label: "O" },
-    { value: 0x000C, label: "I" },
-    { value: 0x0010, label: "M" },
-    { value: 0x0007, label: "D" },
-    { value: 0x0016, label: "S" },
-    { value: 0x0014, label: "Q" },
-    { value: 0x0008, label: "E" },
-    { value: 0x0009, label: "F" },
-    { value: 0x0015, label: "R" },
-    { value: 0x002C, label: "Space" },
-    { value: 0x002B, label: "Tab" },
-    { value: 0x0028, label: "Enter" },
-    { value: 0x0029, label: "Esc" },
-    { value: 0x0049, label: "Insert" },
-    { value: 0x003D, label: "F4" },
-    { value: 0x0043, label: "F10" },
-    { value: 0x0044, label: "F11" },
-    { value: 0x0045, label: "F12" },
-    { value: 0x0068, label: "F13 侧栏" },
-    { value: 0x0069, label: "F14 帧率窗" },
-    { value: 0x006A, label: "F15 超分菜单" },
-    { value: 0x006B, label: "F16 主界面" }
-  ];
+    const modifiers = [
+      { value: 0x00E0, label: "LCtrl" },
+      { value: 0x00E1, label: "LShift" },
+      { value: 0x00E2, label: "LAlt" },
+      { value: 0x00E3, label: "LWin" },
+      { value: 0x00E4, label: "RCtrl" },
+      { value: 0x00E5, label: "RShift" },
+      { value: 0x00E6, label: "RAlt" },
+      { value: 0x00E7, label: "RWin" }
+    ];
 
-  const GPD_BACK_COMBO_PRESETS = [
-    { id: "gp_lbrb", label: "LB + RB 双肩大招", codes: [0x800B, 0x800C] },
-    { id: "gp_ltrt", label: "LT + RT 双扳机", codes: [0x800D, 0x800E] },
-    { id: "gp_l3r3", label: "L3 + R3 觉醒/处决", codes: [0x800F, 0x8010] },
-    { id: "gp_ax", label: "手柄 A + X", codes: [0x8007, 0x8009] },
-    { id: "kb_console", label: "Ctrl+Shift+O (主界面)", codes: [0x00E0, 0x00E1, 0x0012] },
-    { id: "kb_qam", label: "Ctrl+Alt+O (侧栏)", codes: [0x00E0, 0x00E2, 0x0012] },
-    { id: "kb_osd", label: "Ctrl+Alt+M (帧率窗)", codes: [0x00E0, 0x00E2, 0x0010] },
-    { id: "kb_alttab", label: "Alt + Tab 切窗", codes: [0x00E2, 0x002B] },
-    { id: "kb_wind", label: "Win + D 桌面", codes: [0x00E3, 0x0007] },
-    { id: "kb_snip", label: "Win+Shift+S 截屏", codes: [0x00E3, 0x00E1, 0x0016] }
-  ];
+    const controls = [
+      { value: 0x0029, label: "Esc" },
+      { value: 0x002B, label: "Tab" },
+      { value: 0x002C, label: "Space" },
+      { value: 0x0028, label: "Enter" },
+      { value: 0x002A, label: "Backspace" },
+      { value: 0x0049, label: "Insert" },
+      { value: 0x004C, label: "Delete" },
+      { value: 0x004A, label: "Home" },
+      { value: 0x004D, label: "End" },
+      { value: 0x004B, label: "PgUp" },
+      { value: 0x004E, label: "PgDn" },
+      { value: 0x0046, label: "PrtSc" },
+      { value: 0x0052, label: "↑" },
+      { value: 0x0051, label: "↓" },
+      { value: 0x0050, label: "←" },
+      { value: 0x004F, label: "→" }
+    ];
+
+    return [
+      { title: "字母键 (A–Z)", keys: letters },
+      { title: "数字与符号", keys: numbers },
+      { title: "功能键 (F1–F16)", keys: fnKeys },
+      { title: "修饰键", keys: modifiers },
+      { title: "控制与方向键", keys: controls }
+    ];
+  })();
 
   const CODE_TO_HID_MAP = (() => {
     const m = {
@@ -179,8 +188,8 @@
   }
 
   function resolveBackKeyLabel(code) {
-    if (typeof code !== "number" || code < 0) return "保留原厂设置";
-    if (code === 0) return "关闭背键";
+    if (typeof code !== "number" || code < 0) return "保持现有多步宏";
+    if (code === 0) return "未映射 (NC)";
     const match = GPD_BACK_GAMEPAD_OPTIONS.find((o) => o.value === code) ||
       GPD_BACK_KEYBOARD_OPTIONS.find((o) => o.value === code);
     if (match) return match.label;
@@ -248,6 +257,16 @@
     controlsAdvancedOpen: false,
     searchQuery: "",
     libraryFilter: "all",
+    activePluginId: null,
+    pluginReloadNonce: 0,
+    pluginsSubTab: "installed",
+    qamPluginSubTab: "enabled",
+    pluginStoreData: null,
+    pluginStoreLoading: false,
+    pluginStoreSearch: "",
+    pluginCustomSourceDraft: "",
+    pluginDirectUrlDraft: "",
+    pluginDownloadProgress: null,
     focusIndex: 0,
     lastInputModality: "pointer",
     isDraggingRange: false,
@@ -263,6 +282,8 @@
     killArmTimer: null,
     gpdLoaded: false,
     gpdFetching: false,
+    gpdSaving: false,
+    lastSyncedGpdSig: "",
     gpdDraft: {
       l4Key: -1,
       r4Key: -1,
@@ -316,6 +337,19 @@
   function handleHostEvent(name, data) {
     if (name === "stateChanged") {
       applySnapshot(data);
+    } else if (name === "navigateConsoleTab" && data && !IS_QAM) {
+      if (data.tab && CONSOLE_TABS.includes(data.tab)) {
+        state.tab = data.tab;
+        state.activePluginId = null;
+        if (data.tab === "plugins" && data.subtab) {
+          state.pluginsSubTab = data.subtab;
+        }
+        state.focusIndex = 0;
+        render();
+        if (state.tab === "plugins" && state.pluginsSubTab === "store" && !state.pluginStoreData) {
+          ensurePluginStoreLoaded(false);
+        }
+      }
     } else if (name === "powerSettingsPatched" && data) {
       if (state.snapshot?.settings) {
         if (typeof data.currentTdpWatts === "number") state.snapshot.settings.currentTdpWatts = data.currentTdpWatts;
@@ -380,6 +414,23 @@
     } else if (name === "systemTelemetry" && data) {
       if (state.snapshot) state.snapshot.systemControl = data;
       patchLiveTelemetryDom(data);
+    } else if (name === "pluginEvent" && data?.pluginId) {
+      forwardEventToPluginFrame(data.pluginId, data.eventName || "message", data.data);
+    } else if (name === "pluginThemeUpdated") {
+      if (state.snapshot) state.snapshot.activePluginTheme = data?.variables && Object.keys(data.variables).length ? data : null;
+      applyPluginThemeOverride(state.snapshot?.activePluginTheme);
+      pushThemeToActivePluginFrame();
+    } else if (name === "pluginDownloadProgress" && data) {
+      state.pluginDownloadProgress = data.status === "done" ? null : { label: data.label || "正在下载插件...", percent: data.percent || 0 };
+      const bar = document.getElementById("pluginDlProgressBanner");
+      if (bar) {
+        if (data.status === "done") {
+          bar.classList.add("hidden");
+        } else {
+          bar.classList.remove("hidden");
+          bar.textContent = `正在下载：${data.label || "插件"} · ${Math.round(data.percent || 0)}%`;
+        }
+      }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
     }
@@ -1036,21 +1087,51 @@
     }
   }
 
+  function resolveGpdSlotState(mode, slots, keyCode, comboCodes) {
+    const isMacroMode = mode === 2 || mode === 6;
+    const combo = isMacroMode && Array.isArray(comboCodes) && comboCodes.length >= 2
+      ? normalizeComboCodesList(comboCodes)
+      : [];
+    const safeSlots = typeof slots === "number" ? slots : 0;
+    const safeKey = typeof keyCode === "number" ? keyCode : 0;
+    if (combo.length >= 2) {
+      return { key: 0, combo, legacyMode0: false };
+    }
+    if (isMacroMode) {
+      if (safeSlots <= 0 || safeKey === 0) {
+        return { key: 0, combo: [], legacyMode0: false };
+      }
+      if (safeSlots === 1) {
+        return { key: safeKey, combo: [], legacyMode0: false };
+      }
+      // Multi-slot custom/factory macro with gaps or pauses: preserve unless user explicitly edits
+      return { key: -1, combo: [], legacyMode0: false };
+    }
+    // Legacy v0.5.x HaloDeck wrote mode=0; show its key so user can re-apply in fixed V2 mode=2 format
+    return { key: safeKey, combo: [], legacyMode0: mode === 0 && safeKey > 0 };
+  }
+
   function syncGpdDraft(gpd) {
     if (!gpd) return;
-    const l4IsMacro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
-    const r4IsMacro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
-    const l4Combo = l4IsMacro && Array.isArray(gpd.l4ComboCodes) && gpd.l4ComboCodes.length >= 2
-      ? normalizeComboCodesList(gpd.l4ComboCodes)
-      : [];
-    const r4Combo = r4IsMacro && Array.isArray(gpd.r4ComboCodes) && gpd.r4ComboCodes.length >= 2
-      ? normalizeComboCodesList(gpd.r4ComboCodes)
-      : [];
+    if (!gpd.connected) {
+      state.gpdDraft = {
+        l4Key: -1,
+        r4Key: -1,
+        l4Combo: [],
+        r4Combo: [],
+        rumble: typeof gpd.rumbleLevel === "number" ? gpd.rumbleLevel : 1,
+        leftDeadzone: typeof gpd.leftDeadzone === "number" ? gpd.leftDeadzone : 0,
+        rightDeadzone: typeof gpd.rightDeadzone === "number" ? gpd.rightDeadzone : 0
+      };
+      return;
+    }
+    const l4 = resolveGpdSlotState(gpd.l4Mode, gpd.l4Slots, gpd.l4KeyCode, gpd.l4ComboCodes);
+    const r4 = resolveGpdSlotState(gpd.r4Mode, gpd.r4Slots, gpd.r4KeyCode, gpd.r4ComboCodes);
     state.gpdDraft = {
-      l4Key: !gpd.connected || (l4IsMacro && !l4Combo.length) ? -1 : (l4Combo.length ? 0 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0)),
-      r4Key: !gpd.connected || (r4IsMacro && !r4Combo.length) ? -1 : (r4Combo.length ? 0 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0)),
-      l4Combo,
-      r4Combo,
+      l4Key: l4.key,
+      r4Key: r4.key,
+      l4Combo: l4.combo,
+      r4Combo: r4.combo,
       rumble: typeof gpd.rumbleLevel === "number" ? gpd.rumbleLevel : 1,
       leftDeadzone: typeof gpd.leftDeadzone === "number" ? gpd.leftDeadzone : 0,
       rightDeadzone: typeof gpd.rightDeadzone === "number" ? gpd.rightDeadzone : 0
@@ -1073,13 +1154,48 @@
     if (lbl) lbl.textContent = found.shortLabel;
   }
 
+  const PLUGIN_THEME_VAR_ALLOWLIST = [
+    "--bg-app", "--bg-panel", "--bg-card", "--bg-well", "--surface-subtle",
+    "--text-primary", "--text-secondary", "--text-muted", "--border",
+    "--accent", "--accent-soft", "--accent-glow"
+  ];
+
+  function applyPluginThemeOverride(themeObj) {
+    const target = document.body.style;
+    for (const k of PLUGIN_THEME_VAR_ALLOWLIST) {
+      target.removeProperty(k);
+    }
+    const vars = themeObj?.variables;
+    if (!vars || typeof vars !== "object") return;
+    for (const k of PLUGIN_THEME_VAR_ALLOWLIST) {
+      if (typeof vars[k] === "string" && vars[k].trim()) {
+        target.setProperty(k, vars[k].trim());
+      }
+    }
+  }
+
+  function buildGpdHardwareSig(gpd) {
+    if (!gpd) return "";
+    return JSON.stringify([
+      !!gpd.connected, gpd.l4Mode, gpd.l4Slots, gpd.l4KeyCode, gpd.l4ComboCodes || [],
+      gpd.r4Mode, gpd.r4Slots, gpd.r4KeyCode, gpd.r4ComboCodes || [],
+      gpd.rumbleLevel, gpd.leftDeadzone, gpd.rightDeadzone
+    ]);
+  }
+
   function applySnapshot(snap) {
     state.snapshot = snap;
     syncThemeDom(snap?.settings?.uiTheme || "aurora");
+    applyPluginThemeOverride(snap?.activePluginTheme || null);
     syncLayoutDom(snap?.settings?.uiLayout || "bento");
     syncConfigFromActiveGame(snap);
-    if (snap?.gpdController && !state.gpdLoaded) {
-      syncGpdDraft(snap.gpdController);
+    if (snap?.gpdController) {
+      const sig = buildGpdHardwareSig(snap.gpdController);
+      if (!state.gpdLoaded || (snap.gpdController.connected && sig !== state.lastSyncedGpdSig)) {
+        syncGpdDraft(snap.gpdController);
+        state.lastSyncedGpdSig = sig;
+        if (snap.gpdController.connected) state.gpdLoaded = true;
+      }
     }
     updateControllerChip(snap?.connectedControllers || 0);
     patchLiveTelemetryDom(snap?.systemControl);
@@ -2247,22 +2363,16 @@
   // ---------------- Console View 4: Controller Mapping, Appearance Studio & System Settings ----------------
   function hasPendingGpdChanges(gpd, draft) {
     if (!gpd?.connected) return false;
-    const l4Macro = gpd.l4Mode === 2 || gpd.l4Mode === 6;
-    const r4Macro = gpd.r4Mode === 2 || gpd.r4Mode === 6;
-    const origL4Combo = l4Macro && Array.isArray(gpd.l4ComboCodes) && gpd.l4ComboCodes.length >= 2
-      ? normalizeComboCodesList(gpd.l4ComboCodes)
-      : [];
-    const origR4Combo = r4Macro && Array.isArray(gpd.r4ComboCodes) && gpd.r4ComboCodes.length >= 2
-      ? normalizeComboCodesList(gpd.r4ComboCodes)
-      : [];
-    const origL4 = l4Macro && !origL4Combo.length ? -1 : (origL4Combo.length ? 0 : (typeof gpd.l4KeyCode === "number" ? gpd.l4KeyCode : 0));
-    const origR4 = r4Macro && !origR4Combo.length ? -1 : (origR4Combo.length ? 0 : (typeof gpd.r4KeyCode === "number" ? gpd.r4KeyCode : 0));
+    const origL4 = resolveGpdSlotState(gpd.l4Mode, gpd.l4Slots, gpd.l4KeyCode, gpd.l4ComboCodes);
+    const origR4 = resolveGpdSlotState(gpd.r4Mode, gpd.r4Slots, gpd.r4KeyCode, gpd.r4ComboCodes);
     const comboEq = (a, b) => JSON.stringify(normalizeComboCodesList(a || [])) === JSON.stringify(b || []);
     return (
-      draft.l4Key !== origL4 ||
-      draft.r4Key !== origR4 ||
-      !comboEq(draft.l4Combo, origL4Combo) ||
-      !comboEq(draft.r4Combo, origR4Combo) ||
+      origL4.legacyMode0 ||
+      origR4.legacyMode0 ||
+      draft.l4Key !== origL4.key ||
+      draft.r4Key !== origR4.key ||
+      !comboEq(draft.l4Combo, origL4.combo) ||
+      !comboEq(draft.r4Combo, origR4.combo) ||
       draft.rumble !== (gpd.rumbleLevel ?? 1) ||
       draft.leftDeadzone !== (gpd.leftDeadzone ?? 0) ||
       draft.rightDeadzone !== (gpd.rightDeadzone ?? 0)
@@ -2305,22 +2415,16 @@
                 <span class="hh-card-title">手柄背键与震动 (L4 / R4)</span>
                 <div style="display:flex;align-items:center;gap:6px;">
                   <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}` : "未检测到手柄"}</span>
-                  <button id="btnReadGpd" class="btn btn-sm" data-focusable="true">刷新</button>
+                  <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 映射并恢复原厂震动与死区">恢复原厂</button>
+                  <button id="btnReadGpd" class="btn btn-sm" data-focusable="true" ${state.gpdSaving ? "disabled" : ""}>刷新</button>
                 </div>
-              </div>
-
-              <div class="gpd-preset-grid" style="margin-bottom:10px;">
-                ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
-                  const activePreset = !draft.l4Combo?.length && !draft.r4Combo?.length && draft.l4Key === p.l4 && draft.r4Key === p.r4;
-                  return `<button class="pill-btn small ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
-                }).join("")}
               </div>
 
               <div class="backkey-slot-list">
                 <div class="backkey-slot-row">
                   <div class="backkey-slot-meta">
                     <strong>L4 左背键</strong>
-                    <span>单键 / 实时录制 / 组合宏</span>
+                    <span>全键盘 / 手柄键 / 实时录制 / 自由组合</span>
                   </div>
                   <div class="comp-actions">
                     <span id="l4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.l4Key, draft.l4Combo))}</span>
@@ -2330,7 +2434,7 @@
                 <div class="backkey-slot-row">
                   <div class="backkey-slot-meta">
                     <strong>R4 右背键</strong>
-                    <span>单键 / 实时录制 / 组合宏</span>
+                    <span>全键盘 / 手柄键 / 实时录制 / 自由组合</span>
                   </div>
                   <div class="comp-actions">
                     <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))}</span>
@@ -2350,7 +2454,7 @@
 
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid var(--border);">
                 <span style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">硬件当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]</span>
-                <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>${dirtyGpd ? "应用修改到手柄" : "应用到手柄"}</button>
+                <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""}>${state.gpdSaving ? "写入中..." : (dirtyGpd ? "应用修改到手柄" : "应用到手柄")}</button>
               </div>
             </div>
 
@@ -3339,6 +3443,10 @@
       `;
     }
 
+    if (state.qamTab === "plugins") {
+      return renderQamPluginsView();
+    }
+
     if (state.qamTab === "controls") {
       ensureGpdControllerLoaded();
       const gpd = snap.gpdController || {};
@@ -3356,12 +3464,6 @@
               <span>手柄背键 (L4 / R4)</span>
               <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测手柄"}</span>
             </div>
-            <div class="qam-toolbox-mini" style="margin-bottom:8px;">
-              ${Object.entries(GPD_BACK_PRESETS).map(([id, p]) => {
-                const activePreset = !draft.l4Combo?.length && !draft.r4Combo?.length && draft.l4Key === p.l4 && draft.r4Key === p.r4;
-                return `<button class="pill-btn qam-pill ${activePreset ? "active" : ""}" data-gpd-preset="${id}" data-focusable="true">${esc(p.shortLabel)}</button>`;
-              }).join("")}
-            </div>
             <div class="backkey-slot-list compact" style="margin-bottom:8px;">
               <button id="btnPickL4" class="backkey-slot-row btn-like" data-focusable="true">
                 <strong>L4 左背键</strong>
@@ -3372,7 +3474,10 @@
                 <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))} ▸</span>
               </button>
             </div>
-            <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="width:100%;" data-focusable="true" ${!gpd.connected ? "disabled" : ""}>${dirtyGpd ? "应用修改到手柄" : "应用到手柄"}</button>
+            <div style="display:flex;gap:6px;">
+              <button id="btnSaveGpd" class="btn btn-sm btn-primary" style="flex:1;" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""}>${state.gpdSaving ? "写入中..." : (dirtyGpd ? "应用修改到手柄" : "应用到手柄")}</button>
+              <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 恢复原厂">恢复原厂</button>
+            </div>
           </div>
 
           <div class="qam-section">
@@ -3594,6 +3699,12 @@
       document.querySelectorAll(".tab-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.nav === state.tab);
       });
+      const pluginCountEl = document.getElementById("topPluginCount");
+      if (pluginCountEl) {
+        const enabledCount = (state.snapshot?.plugins || []).filter((p) => p.enabled && p.isValid).length;
+        pluginCountEl.textContent = String(enabledCount);
+        pluginCountEl.classList.toggle("hidden", enabledCount === 0);
+      }
     }
 
     const mainView = document.getElementById("mainView");
@@ -3618,6 +3729,8 @@
         mainView.innerHTML = renderMonitorView();
       } else if (state.tab === "controls") {
         mainView.innerHTML = renderControlsView();
+      } else if (state.tab === "plugins") {
+        mainView.innerHTML = renderPluginsConsoleView();
       } else {
         mainView.innerHTML = renderOptiContainerView();
       }
@@ -3639,8 +3752,804 @@
 
     renderFooterLegend();
     bindViewEvents();
+    bindPluginViewEvents();
     applySpatialFocus(false);
   }
+
+  // ---------------- Decky-Style Community Plugin Center & Sandbox Host ----------------
+
+  const PLUGIN_PERM_META = {
+    "games:read": { label: "读取游戏库", tier: "t1" },
+    "telemetry:read": { label: "读取硬件遥测", tier: "t1" },
+    "events:game": { label: "订阅游戏启停事件", tier: "t1" },
+    "storage": { label: "插件私有存储", tier: "t1" },
+    "shell:openFolder": { label: "打开插件数据目录", tier: "t1" },
+    "ui:theme": { label: "自定义界面皮肤", tier: "t1" },
+    "backend": { label: "独立后端进程", tier: "t2" },
+    "input:sendKey": { label: "向游戏发送功能键", tier: "t3" }
+  };
+
+  function renderPluginTrustBadge(obj) {
+    const perms = Array.isArray(obj?.permissions) ? obj.permissions : [];
+    const hasBackend = !!obj?.hasBackend || perms.includes("backend");
+    const hasInput = perms.includes("input:sendKey");
+    const badges = [];
+    if (obj?.revokedByStore || obj?.isRevoked) {
+      badges.push(`<span class="plugin-trust-pill is-revoked">⚠ 已安全熔断下架</span>`);
+    } else if (hasBackend) {
+      badges.push(`<span class="plugin-trust-pill is-backend" title="包含独立本地子进程，请确认来源开源可信">含本地后端</span>`);
+    } else if (hasInput) {
+      badges.push(`<span class="plugin-trust-pill is-backend" title="申请了向游戏发送功能键权限">含输入控制</span>`);
+    } else {
+      badges.push(`<span class="plugin-trust-pill is-sandbox" title="纯前端运行在受限 iframe 沙箱，无法读写硬盘或执行系统命令">纯前端沙箱</span>`);
+    }
+    if (obj?.sourceCommit && obj?.isOfficialSource) {
+      badges.push(`<span class="plugin-trust-pill is-verified" title="开源 Commit: ${esc(obj.sourceCommit)}">✓ 源码编译</span>`);
+    }
+    return badges.join("");
+  }
+
+  function collectPluginThemePayload() {
+    const cs = getComputedStyle(document.body);
+    const pick = (name, fallback) => (cs.getPropertyValue(name) || "").trim() || fallback;
+    const theme = state.snapshot?.settings?.uiTheme || document.body.dataset.theme || "aurora";
+    return {
+      __halodeckPluginTheme: true,
+      theme,
+      surface: IS_QAM ? "qam" : "console",
+      cssVars: {
+        "--bg-app": pick("--bg-app", theme === "frost" ? "#eef2f8" : "#0b111b"),
+        "--bg-card": pick("--bg-card", theme === "frost" ? "#ffffff" : "#111827"),
+        "--bg-well": pick("--bg-well", theme === "frost" ? "#e5ebf5" : "#0d1422"),
+        "--text-primary": pick("--text-primary", theme === "frost" ? "#0f172a" : "#f1f5f9"),
+        "--text-secondary": pick("--text-secondary", theme === "frost" ? "#475569" : "#94a3b8"),
+        "--text-muted": pick("--text-muted", theme === "frost" ? "#64748b" : "#64748b"),
+        "--border": pick("--border", theme === "frost" ? "rgba(15,23,42,0.12)" : "rgba(255,255,255,0.1)"),
+        "--accent": pick("--accent", "#1a8cff"),
+        "--accent-soft": pick("--accent-soft", "rgba(26,140,255,0.16)"),
+        "--success": "#22c55e",
+        "--warn": "#f59e0b",
+        "--danger": "#ef4444"
+      }
+    };
+  }
+
+  function pushThemeToActivePluginFrame() {
+    const iframe = document.getElementById("activePluginFrame");
+    if (!iframe?.contentWindow) return;
+    try {
+      iframe.contentWindow.postMessage(collectPluginThemePayload(), "*");
+    } catch {}
+  }
+
+  function forwardEventToPluginFrame(pluginId, eventName, data) {
+    const iframe = document.getElementById("activePluginFrame");
+    if (!iframe?.contentWindow || state.activePluginId !== pluginId) return;
+    try {
+      iframe.contentWindow.postMessage({ __halodeckPluginEvent: true, eventName, data }, "*");
+    } catch {}
+  }
+
+  function forwardGamepadToPluginFrame(action) {
+    const iframe = document.getElementById("activePluginFrame");
+    if (!iframe?.contentWindow) return false;
+    try {
+      iframe.contentWindow.postMessage({ __halodeckPluginGamepad: true, action }, "*");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function buildPluginIframeSrc(plugin) {
+    const theme = state.snapshot?.settings?.uiTheme || "aurora";
+    const surface = IS_QAM ? "qam" : "console";
+    const sep = plugin.entryUrl.includes("?") ? "&" : "?";
+    return `${plugin.entryUrl}${sep}surface=${encodeURIComponent(surface)}&theme=${encodeURIComponent(theme)}&v=${state.pluginReloadNonce}`;
+  }
+
+  function renderPluginPermBadges(perms) {
+    if (!perms || !perms.length) {
+      return `<span class="plugin-perm-pill t1">无特殊权限</span>`;
+    }
+    return perms.map((p) => {
+      const meta = PLUGIN_PERM_META[p] || { label: p, tier: "t2" };
+      return `<span class="plugin-perm-pill ${meta.tier}">${esc(meta.label)}</span>`;
+    }).join("");
+  }
+
+  function renderPluginSandboxShell(plugin, backLabel) {
+    return `
+      <div class="plugin-frame-shell ${IS_QAM ? "is-qam" : ""}">
+        <div class="plugin-frame-bar">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+            <button id="btnPluginBack" class="btn btn-sm" data-focusable="true">← ${esc(backLabel)} [B]</button>
+            <strong class="plugin-frame-title">${esc(plugin.name)}</strong>
+            <span class="hh-card-badge">v${esc(plugin.version)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${plugin.hasBackend ? `<button id="btnPluginFrameLogs" class="btn btn-sm" data-focusable="true">日志</button>` : ""}
+            <button id="btnPluginFrameReload" class="btn btn-sm" data-focusable="true">重载</button>
+          </div>
+        </div>
+        <iframe
+          id="activePluginFrame"
+          class="plugin-iframe"
+          sandbox="allow-scripts allow-forms"
+          src="${esc(buildPluginIframeSrc(plugin))}"
+          title="${esc(plugin.name)}">
+        </iframe>
+      </div>
+    `;
+  }
+
+  async function ensurePluginStoreLoaded(force = false) {
+    if (state.pluginStoreLoading) return;
+    if (!force && state.pluginStoreData) return;
+    state.pluginStoreLoading = true;
+    render();
+    try {
+      state.pluginStoreData = await rpc("fetchPluginStore", {});
+    } catch (err) {
+      showToast(err.message || "拉取插件商店失败", "error");
+    } finally {
+      state.pluginStoreLoading = false;
+      render();
+    }
+  }
+
+  function renderPluginsConsoleView() {
+    const plugins = state.snapshot?.plugins || [];
+    if (state.activePluginId) {
+      const active = plugins.find((p) => p.id === state.activePluginId && p.enabled && p.isValid);
+      if (active) {
+        return renderPluginSandboxShell(active, "插件中心");
+      }
+      state.activePluginId = null;
+    }
+
+    const sub = state.pluginsSubTab || "installed";
+    const storeData = state.pluginStoreData;
+    const customUrls = state.snapshot?.settings?.pluginStoreUrls || [];
+    const dlProg = state.pluginDownloadProgress;
+
+    if (sub === "store" && !storeData && !state.pluginStoreLoading) {
+      setTimeout(() => ensurePluginStoreLoaded(false), 0);
+    }
+
+    const q = (state.pluginStoreSearch || "").trim().toLowerCase();
+    const storeItems = (storeData?.items || []).filter((item) => {
+      if (!q) return true;
+      return (item.name || "").toLowerCase().includes(q) ||
+             (item.id || "").toLowerCase().includes(q) ||
+             (item.description || "").toLowerCase().includes(q) ||
+             (item.author || "").toLowerCase().includes(q);
+    });
+
+    return `
+      <div class="page-scroll">
+        <div class="plugins-page">
+          <div class="hh-card">
+            <div class="hh-card-head">
+              <div>
+                <span class="hh-card-title">社区插件中心 · Decky 沙箱模式</span>
+                <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；HaloDeck 本体纯净合规。</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <button id="btnInstallPluginZip" class="btn btn-sm btn-primary" data-focusable="true">导入本地 .zip</button>
+                <button id="btnOpenPluginsFolder" class="btn btn-sm" data-focusable="true">插件目录</button>
+                <button id="btnRefreshPlugins" class="btn btn-sm" data-focusable="true">刷新</button>
+              </div>
+            </div>
+
+            <div class="plugin-subtabs">
+              <button class="pill-btn small ${sub === "installed" ? "active" : ""}" data-plugin-subtab="installed" data-focusable="true">已安装 (${plugins.length})</button>
+              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}</button>
+              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接 / GitHub 直装</button>
+            </div>
+
+            <div id="pluginDlProgressBanner" class="plugin-dl-banner ${dlProg ? "" : "hidden"}">
+              ${dlProg ? `正在下载：${esc(dlProg.label)} · ${Math.round(dlProg.percent || 0)}%` : ""}
+            </div>
+
+            ${sub === "installed" ? (
+              plugins.length === 0 ? `
+                <div class="plugins-empty">
+                  <div class="plugins-empty-icon">🔌</div>
+                  <strong>暂未安装任何社区插件</strong>
+                  <p>可切到「插件商店」一键安装官方皮肤/笔记插件，或在「链接直装」粘贴社区作者的 GitHub 仓库（<code>owner/repo</code>）。</p>
+                </div>
+              ` : `
+                <div class="plugin-list">
+                  ${plugins.map((p) => `
+                    <div class="plugin-card ${p.enabled ? "is-enabled" : ""} ${!p.isValid ? "is-invalid" : ""}">
+                      <div class="plugin-card-icon">
+                        ${p.iconUrl ? `<img src="${esc(p.iconUrl)}" alt="" />` : `<span>🔌</span>`}
+                      </div>
+                      <div class="plugin-card-main">
+                        <div class="plugin-card-head">
+                          <strong>${esc(p.name)}</strong>
+                          <span class="hh-card-badge">v${esc(p.version || "1.0.0")}</span>
+                          ${p.author ? `<span class="cw-row-sub">by ${esc(p.author)}</span>` : ""}
+                          ${renderPluginTrustBadge(p)}
+                          ${p.hasBackend && p.backendRunning ? `<span class="hh-card-badge live">后端运行中</span>` : ""}
+                        </div>
+                        <div class="plugin-card-desc">${esc(p.description || p.id)}</div>
+                        ${p.revokedByStore ? `<div class="plugin-card-err">安全熔断：${esc(p.revokedReason || "官方商店已下架此插件，已自动停用")}</div>` : !p.isValid ? `<div class="plugin-card-err">校验失败：${esc(p.validationError)}</div>` : `
+                          <div class="plugin-perm-row">
+                            ${(p.mount || []).map((m) => `<span class="plugin-mount-pill">${m === "qam" ? "侧栏" : "主界面"}</span>`).join("")}
+                            ${renderPluginPermBadges(p.permissions)}
+                          </div>
+                        `}
+                      </div>
+                      <div class="plugin-card-actions">
+                        ${p.isValid && p.enabled && !p.revokedByStore && (p.mount || []).includes("console") ? `<button class="btn btn-sm btn-primary" data-plugin-open="${esc(p.id)}" data-focusable="true">打开</button>` : ""}
+                        ${p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-logs="${esc(p.id)}" data-focusable="true">日志</button>` : ""}
+                        ${p.isValid && !p.revokedByStore ? renderSwitch(`swPlugin_${p.id}`, !!p.enabled) : ""}
+                        <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(p.id)}" data-focusable="true">卸载</button>
+                      </div>
+                    </div>
+                  `).join("")}
+                </div>
+              `
+            ) : sub === "store" ? `
+              <div class="plugin-store-toolbar">
+                <input id="pluginStoreSearchInput" class="plugin-text-input" type="text" placeholder="搜索商店插件名称、作者或简介..." value="${esc(state.pluginStoreSearch)}" />
+                <button id="btnRefreshPluginStore" class="btn btn-sm" data-focusable="true">${state.pluginStoreLoading ? "拉取中..." : "刷新商店"}</button>
+              </div>
+
+              <div class="plugin-sources-box">
+                <div class="plugin-sources-list">
+                  ${(storeData?.sources || []).map((s) => `
+                    <span class="plugin-source-chip ${s.error ? "is-err" : (s.isOfficial ? "is-official" : "")}" title="${esc(s.error || s.sourceUrl)}">
+                      ${s.isOfficial ? "官方源" : "第三方源"} · ${esc(s.storeName)} (${s.count})${s.error ? " ⚠" : ""}
+                      ${!s.isOfficial ? `<button class="plugin-source-del" data-remove-store-url="${esc(s.sourceUrl)}" title="移除该商店源">×</button>` : ""}
+                    </span>
+                  `).join("")}
+                </div>
+                <div class="plugin-store-add-row">
+                  <input id="pluginAddSourceInput" class="plugin-text-input" type="text" placeholder="添加第三方社区 store.json 源地址 (https://...)" value="${esc(state.pluginCustomSourceDraft)}" />
+                  <button id="btnAddPluginStoreUrl" class="btn btn-sm" data-focusable="true">+ 订阅源</button>
+                </div>
+              </div>
+
+              ${state.pluginStoreLoading && !storeData ? `
+                <div class="plugins-empty compact"><p>正在通过 jsDelivr / GitHub 拉取商店目录...</p></div>
+              ` : storeItems.length === 0 ? `
+                <div class="plugins-empty compact"><p>${storeData?.sources?.some((s) => s.error) ? esc(storeData.sources.find((s) => s.error)?.error || "拉取商店失败") : "暂无匹配的商店插件"}</p></div>
+              ` : `
+                <div class="plugin-list">
+                  ${storeItems.map((item) => `
+                    <div class="plugin-card ${item.isInstalled ? "is-enabled" : ""}">
+                      <div class="plugin-card-icon"><span>${item.category === "theme" ? "🎨" : "🔌"}</span></div>
+                      <div class="plugin-card-main">
+                        <div class="plugin-card-head">
+                          <strong>${esc(item.name)}</strong>
+                          <span class="hh-card-badge">v${esc(item.version)}</span>
+                          <span class="cw-row-sub">by ${esc(item.author || "社区")}</span>
+                          <span class="plugin-mount-pill">${item.isOfficialSource ? "官方纯净源" : esc(item.sourceName)}</span>
+                          ${renderPluginTrustBadge(item)}
+                        </div>
+                        <div class="plugin-card-desc">${esc(item.description || item.id)}</div>
+                        <div class="plugin-perm-row">
+                          ${(item.mount || []).map((m) => `<span class="plugin-mount-pill">${m === "qam" ? "侧栏" : "主界面"}</span>`).join("")}
+                          ${renderPluginPermBadges(item.permissions)}
+                        </div>
+                      </div>
+                      <div class="plugin-card-actions">
+                        ${(() => {
+                          const inst = plugins.find((x) => x.id === item.id);
+                          if (item.isRevoked) {
+                            return inst
+                              ? `<button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(inst.id)}" data-focusable="true">立即卸载</button>`
+                              : `<span class="plugin-trust-pill is-revoked">禁止安装</span>`;
+                          }
+                          const updateBtn = item.hasUpdate
+                            ? `<button class="btn btn-sm btn-primary" data-store-install="${esc(item.zipUrl)}" data-store-sha="${esc(item.sha256 || "")}" data-store-name="${esc(item.name)}" data-focusable="true">更新 v${esc(item.version)}</button>`
+                            : "";
+                          if (item.isInstalled && inst) {
+                            return `${updateBtn}
+                              <button class="btn btn-sm ${inst.enabled ? "" : "btn-primary"}" data-plugin-toggle="${esc(inst.id)}" data-focusable="true">${inst.enabled ? "停用" : "启用"}</button>
+                              <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(inst.id)}" data-focusable="true">卸载</button>`;
+                          }
+                          return `<button class="btn btn-sm btn-primary" data-store-install="${esc(item.zipUrl)}" data-store-sha="${esc(item.sha256 || "")}" data-store-name="${esc(item.name)}" data-focusable="true">安装</button>`;
+                        })()}
+                      </div>
+                    </div>
+                  `).join("")}
+                </div>
+              `}
+            ` : `
+              <div class="plugin-url-panel">
+                <div class="plugin-consent-warn">
+                  支持直接粘贴任意社区插件的 <code>https://.../*.zip</code> 下载链接，或 GitHub 仓库名（如 <code>owner/repo</code>，自动解析最新 Release 中的 <code>.zip</code>）。安装后默认处于停用状态，确认权限后才会运行。
+                </div>
+                <div class="plugin-store-add-row" style="margin-top:8px;">
+                  <input id="pluginDirectUrlInput" class="plugin-text-input" type="text" placeholder="例如：daxiwow/halodeck-fling-trainer 或 https://github.com/.../plugin.zip" value="${esc(state.pluginDirectUrlDraft)}" />
+                  <button id="btnInstallPluginFromUrl" class="btn btn-sm btn-primary" data-focusable="true">下载并安装</button>
+                </div>
+                <div class="cw-row-sub" style="margin-top:6px;">
+                  自定义已订阅的第三方商店源（共 ${customUrls.length} 个）：可在「插件商店」页管理增删。
+                </div>
+              </div>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderQamPluginsView() {
+    const allPlugins = state.snapshot?.plugins || [];
+    const enabledQam = allPlugins.filter((p) => p.enabled && p.isValid && (p.mount || []).includes("qam"));
+    if (state.activePluginId) {
+      const active = enabledQam.find((p) => p.id === state.activePluginId);
+      if (active) {
+        return renderPluginSandboxShell(active, "已启用插件");
+      }
+      state.activePluginId = null;
+    }
+
+    const qSub = state.qamPluginSubTab || "enabled";
+    const storeData = state.pluginStoreData;
+    const dlProg = state.pluginDownloadProgress;
+    if (qSub === "store" && !storeData && !state.pluginStoreLoading) {
+      setTimeout(() => ensurePluginStoreLoaded(false), 0);
+    }
+
+    const q = (state.pluginStoreSearch || "").trim().toLowerCase();
+    const storeItems = (storeData?.items || []).filter((item) => {
+      if (!q) return true;
+      return (item.name || "").toLowerCase().includes(q) ||
+             (item.id || "").toLowerCase().includes(q) ||
+             (item.description || "").toLowerCase().includes(q) ||
+             (item.author || "").toLowerCase().includes(q);
+    });
+
+    let bodyHtml = "";
+    if (qSub === "enabled") {
+      bodyHtml = enabledQam.length === 0 ? `
+        <div class="plugins-empty compact">
+          <p>${allPlugins.length > 0 ? `已安装 ${allPlugins.length} 个插件但尚未启用。` : "暂无已启用的侧栏插件。"}</p>
+          <div style="display:flex;gap:6px;justify-content:center;margin-top:8px;flex-wrap:wrap;">
+            ${allPlugins.length > 0 ? `<button class="btn btn-sm btn-primary" data-qam-plugin-subtab="manage" data-focusable="true">去管理启用 (${allPlugins.length})</button>` : ""}
+            <button class="btn btn-sm" data-qam-plugin-subtab="store" data-focusable="true">逛插件商店</button>
+          </div>
+        </div>
+      ` : `
+        <div class="qam-plugin-list">
+          ${enabledQam.map((p) => `
+            <button class="qam-plugin-item" data-plugin-open="${esc(p.id)}" data-focusable="true">
+              <div class="qam-plugin-icon">${p.iconUrl ? `<img src="${esc(p.iconUrl)}" alt="" />` : "🔌"}</div>
+              <div class="qam-plugin-copy">
+                <strong>${esc(p.name)}</strong>
+                <span>${esc(p.description || `v${p.version}`)}</span>
+              </div>
+              <span class="qam-plugin-arrow">▸</span>
+            </button>
+          `).join("")}
+        </div>
+      `;
+    } else if (qSub === "manage") {
+      bodyHtml = `
+        <div style="display:flex;gap:6px;margin-bottom:8px;">
+          <button id="btnInstallPluginZip" class="btn btn-sm btn-primary" style="flex:1;" data-focusable="true">导入 .zip</button>
+          <button id="btnRefreshPlugins" class="btn btn-sm" data-focusable="true">刷新</button>
+        </div>
+        ${allPlugins.length === 0 ? `
+          <div class="plugins-empty compact">
+            <p>尚未安装任何插件，可切到「商店」一键下载安装。</p>
+            <button class="btn btn-sm btn-primary" style="margin-top:8px;" data-qam-plugin-subtab="store" data-focusable="true">浏览插件商店</button>
+          </div>
+        ` : `
+          <div class="qam-plugin-list">
+            ${allPlugins.map((p) => `
+              <div class="qam-plugin-manage-row ${p.enabled ? "is-enabled" : ""}">
+                <div class="qam-plugin-manage-top">
+                  <div class="qam-plugin-copy">
+                    <strong>${esc(p.name)}</strong>
+                    <span>v${esc(p.version || "1.0.0")}${p.hasBackend ? " · 独立后端" : ""}${!p.isValid ? ` · ⚠ ${esc(p.validationError)}` : ""}</span>
+                  </div>
+                  ${p.isValid ? renderSwitch(`swPlugin_${p.id}`, !!p.enabled) : ""}
+                </div>
+                <div class="qam-plugin-manage-actions">
+                  ${p.isValid && p.enabled && (p.mount || []).includes("qam") ? `<button class="btn btn-sm btn-primary" data-plugin-open="${esc(p.id)}" data-focusable="true">打开</button>` : ""}
+                  ${p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-logs="${esc(p.id)}" data-focusable="true">日志</button>` : ""}
+                  <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(p.id)}" data-focusable="true">卸载</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        `}
+      `;
+    } else {
+      bodyHtml = `
+        <div class="plugin-store-toolbar" style="margin-bottom:8px;">
+          <input id="pluginStoreSearchInput" class="plugin-text-input" type="text" placeholder="搜索商店插件..." value="${esc(state.pluginStoreSearch)}" />
+          <button id="btnRefreshPluginStore" class="btn btn-sm" data-focusable="true">${state.pluginStoreLoading ? "..." : "刷新"}</button>
+        </div>
+        <div id="pluginDlProgressBanner" class="plugin-dl-banner ${dlProg ? "" : "hidden"}">
+          ${dlProg ? `下载中：${esc(dlProg.label)} · ${Math.round(dlProg.percent || 0)}%` : ""}
+        </div>
+        ${state.pluginStoreLoading && !storeData ? `
+          <div class="plugins-empty compact"><p>正在拉取插件商店目录...</p></div>
+        ` : storeItems.length === 0 ? `
+          <div class="plugins-empty compact"><p>${storeData?.sources?.some((s) => s.error) ? esc(storeData.sources.find((s) => s.error)?.error || "拉取商店失败") : "暂无匹配的商店插件"}</p></div>
+        ` : `
+          <div class="qam-plugin-list">
+            ${storeItems.map((item) => `
+              <div class="qam-plugin-manage-row ${item.isInstalled ? "is-enabled" : ""}">
+                <div class="qam-plugin-manage-top">
+                  <div class="qam-plugin-copy">
+                    <strong>${item.category === "theme" ? "🎨 " : "🔌 "}${esc(item.name)}</strong>
+                    <span>v${esc(item.version)} · ${esc(item.author || "社区")}</span>
+                  </div>
+                  ${(() => {
+                    const inst = allPlugins.find((x) => x.id === item.id);
+                    if (item.hasUpdate) {
+                      return `<button class="btn btn-sm btn-primary" data-store-install="${esc(item.zipUrl)}" data-store-sha="${esc(item.sha256 || "")}" data-store-name="${esc(item.name)}" data-focusable="true">更新</button>`;
+                    }
+                    if (item.isInstalled && inst) {
+                      return `<div style="display:flex;gap:4px;">
+                        <button class="btn btn-sm ${inst.enabled ? "" : "btn-primary"}" data-plugin-toggle="${esc(inst.id)}" data-focusable="true">${inst.enabled ? "停用" : "启用"}</button>
+                        <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(inst.id)}" data-focusable="true">卸载</button>
+                      </div>`;
+                    }
+                    return `<button class="btn btn-sm btn-primary" data-store-install="${esc(item.zipUrl)}" data-store-sha="${esc(item.sha256 || "")}" data-store-name="${esc(item.name)}" data-focusable="true">安装</button>`;
+                  })()}
+                </div>
+                <div class="qam-plugin-store-desc">${esc(item.description || item.id)}</div>
+              </div>
+            `).join("")}
+          </div>
+        `}
+      `;
+    }
+
+    return `
+      <div class="qam-body">
+        <div class="qam-section">
+          <div class="qam-section-title">
+            <span>插件扩展 (Decky)</span>
+            <span class="hh-card-badge ${enabledQam.length ? "live" : ""}">${enabledQam.length}/${allPlugins.length} 已启用</span>
+          </div>
+          <div class="qam-plugin-subtabs">
+            <button class="pill-btn qam-pill ${qSub === "enabled" ? "active" : ""}" data-qam-plugin-subtab="enabled" data-focusable="true">已启用 (${enabledQam.length})</button>
+            <button class="pill-btn qam-pill ${qSub === "manage" ? "active" : ""}" data-qam-plugin-subtab="manage" data-focusable="true">管理 (${allPlugins.length})</button>
+            <button class="pill-btn qam-pill ${qSub === "store" ? "active" : ""}" data-qam-plugin-subtab="store" data-focusable="true">商店</button>
+          </div>
+          ${bodyHtml}
+          <button id="btnQamOpenPluginCenter" class="btn btn-sm" style="width:100%;margin-top:8px;" data-focusable="true">打开主界面「插件扩展」</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function openPluginConsentModal(plugin) {
+    const modal = document.getElementById("modalBackdrop");
+    const title = document.getElementById("modalTitle");
+    const sub = document.getElementById("modalSubtitle");
+    const body = document.getElementById("modalBody");
+    if (!modal || !title || !sub || !body) return;
+
+    title.textContent = `首次启用第三方社区插件：${plugin.name}`;
+    sub.textContent = `${plugin.id} · v${plugin.version}${plugin.author ? ` · 作者 ${plugin.author}` : ""}`;
+    body.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="plugin-consent-warn">
+          该插件由第三方社区开发者提供，并非 HaloDeck 官方内置功能。启用后请自行甄别其来源与用途，切勿在联机反作弊游戏中使用违规工具。
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;">该插件申请的权限：</div>
+          <div class="plugin-perm-row">${renderPluginPermBadges(plugin.permissions)}</div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+          <button id="btnPluginConsentCancel" class="btn btn-sm" data-focusable="true">取消</button>
+          <button id="btnPluginConsentConfirm" class="btn btn-sm btn-primary" data-focusable="true">我已知晓风险并启用</button>
+        </div>
+      </div>
+    `;
+
+    modal.classList.remove("hidden");
+    document.getElementById("btnPluginConsentCancel")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+      applySpatialFocus();
+    });
+    document.getElementById("btnPluginConsentConfirm")?.addEventListener("click", async () => {
+      try {
+        await rpc("setPluginEnabled", { pluginId: plugin.id, enabled: true, consentAccepted: true });
+        modal.classList.add("hidden");
+        showToast(`已启用插件：${plugin.name}`, "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+    state.focusIndex = 0;
+    applySpatialFocus();
+  }
+
+  async function openPluginLogsModal(pluginId, pluginName) {
+    try {
+      const res = await rpc("getPluginLogs", { pluginId });
+      const modal = document.getElementById("modalBackdrop");
+      const title = document.getElementById("modalTitle");
+      const sub = document.getElementById("modalSubtitle");
+      const body = document.getElementById("modalBody");
+      if (!modal || !title || !sub || !body) return;
+      title.textContent = `插件后端日志 · ${pluginName || pluginId}`;
+      sub.textContent = res?.running ? "独立后端进程运行中" : "后端进程当前未运行（按需懒启动）";
+      const lines = Array.isArray(res?.logs) && res.logs.length ? res.logs.join("\n") : "（暂无 stderr 调试输出）";
+      body.innerHTML = `<pre class="log-viewer">${esc(lines)}</pre>`;
+      modal.classList.remove("hidden");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  function bindPluginViewEvents() {
+    const iframe = document.getElementById("activePluginFrame");
+    if (iframe) {
+      iframe.addEventListener("load", () => pushThemeToActivePluginFrame());
+      document.getElementById("btnPluginBack")?.addEventListener("click", () => {
+        state.activePluginId = null;
+        state.focusIndex = 0;
+        render();
+      });
+      document.getElementById("btnPluginFrameReload")?.addEventListener("click", () => {
+        state.pluginReloadNonce++;
+        render();
+      });
+      document.getElementById("btnPluginFrameLogs")?.addEventListener("click", () => {
+        const p = (state.snapshot?.plugins || []).find((x) => x.id === state.activePluginId);
+        if (p) openPluginLogsModal(p.id, p.name);
+      });
+      return;
+    }
+
+    document.getElementById("btnInstallPluginZip")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("installPluginZip", {});
+        if (res?.cancelled) return;
+        showToast(res?.message || "插件导入成功", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnOpenPluginsFolder")?.addEventListener("click", async () => {
+      try {
+        await rpc("openPluginsFolder", {});
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnRefreshPlugins")?.addEventListener("click", async () => {
+      try {
+        const list = await rpc("listPlugins", {});
+        if (state.snapshot) state.snapshot.plugins = list || [];
+        if (state.pluginsSubTab === "store") {
+          await ensurePluginStoreLoaded(true);
+        } else {
+          render();
+        }
+        showToast(`已刷新插件列表（已安装 ${(list || []).length} 个）`, "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.querySelectorAll("[data-plugin-subtab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.pluginsSubTab = btn.dataset.pluginSubtab || "installed";
+        state.focusIndex = 0;
+        render();
+        if (state.pluginsSubTab === "store" && !state.pluginStoreData) {
+          ensurePluginStoreLoaded(false);
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-qam-plugin-subtab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.qamPluginSubTab = btn.dataset.qamPluginSubtab || "enabled";
+        state.activePluginId = null;
+        state.focusIndex = 0;
+        render();
+        if (state.qamPluginSubTab === "store" && !state.pluginStoreData) {
+          ensurePluginStoreLoaded(false);
+        }
+      });
+    });
+
+    document.getElementById("pluginStoreSearchInput")?.addEventListener("input", (e) => {
+      state.pluginStoreSearch = e.target.value || "";
+      render();
+      const el = document.getElementById("pluginStoreSearchInput");
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    });
+
+    document.getElementById("btnRefreshPluginStore")?.addEventListener("click", () => ensurePluginStoreLoaded(true));
+
+    document.getElementById("pluginAddSourceInput")?.addEventListener("input", (e) => {
+      state.pluginCustomSourceDraft = e.target.value || "";
+    });
+
+    document.getElementById("btnAddPluginStoreUrl")?.addEventListener("click", async () => {
+      const url = (document.getElementById("pluginAddSourceInput")?.value || state.pluginCustomSourceDraft || "").trim();
+      if (!url) { showToast("请输入第三方 store.json 地址", "warn"); return; }
+      try {
+        await rpc("addPluginStoreUrl", { url });
+        state.pluginCustomSourceDraft = "";
+        showToast("已订阅第三方插件源，正在拉取目录...", "success");
+        await ensurePluginStoreLoaded(true);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.querySelectorAll("[data-remove-store-url]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const url = btn.dataset.removeStoreUrl;
+        try {
+          await rpc("removePluginStoreUrl", { url });
+          showToast("已移除第三方商店源", "info");
+          await ensurePluginStoreLoaded(true);
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-store-install]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const url = btn.dataset.storeInstall;
+        const sha256 = btn.dataset.storeSha || "";
+        const name = btn.dataset.storeName || url;
+        try {
+          const res = await rpc("installPluginFromUrl", { url, sha256, name });
+          showToast(res?.message || "插件安装完成", "success");
+          await ensurePluginStoreLoaded(true);
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.getElementById("pluginDirectUrlInput")?.addEventListener("input", (e) => {
+      state.pluginDirectUrlDraft = e.target.value || "";
+    });
+
+    document.getElementById("btnInstallPluginFromUrl")?.addEventListener("click", async () => {
+      const url = (document.getElementById("pluginDirectUrlInput")?.value || state.pluginDirectUrlDraft || "").trim();
+      if (!url) { showToast("请输入插件 .zip 链接或 GitHub owner/repo", "warn"); return; }
+      try {
+        const res = await rpc("installPluginFromUrl", { url, name: url });
+        state.pluginDirectUrlDraft = "";
+        state.pluginsSubTab = "installed";
+        showToast(res?.message || "插件安装完成", "success");
+        render();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnQamOpenPluginCenter")?.addEventListener("click", () => {
+      const subtab = state.qamPluginSubTab === "store" ? "store" : "installed";
+      rpc("showConsole", { tab: "plugins", subtab });
+    });
+
+    document.querySelectorAll("[data-plugin-open]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.activePluginId = btn.dataset.pluginOpen || null;
+        state.focusIndex = 0;
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-plugin-logs]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pid = btn.dataset.pluginLogs;
+        const p = (state.snapshot?.plugins || []).find((x) => x.id === pid);
+        openPluginLogsModal(pid, p?.name || pid);
+      });
+    });
+
+    document.querySelectorAll("[data-plugin-uninstall]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const pid = btn.dataset.pluginUninstall;
+        try {
+          await rpc("uninstallPlugin", { pluginId: pid, deleteData: false });
+          if (state.activePluginId === pid) state.activePluginId = null;
+          if (state.pluginStoreData?.items) {
+            state.pluginStoreData.items = state.pluginStoreData.items.map((it) =>
+              it.id === pid ? { ...it, isInstalled: false, hasUpdate: false } : it
+            );
+          }
+          showToast(`已卸载插件 ${pid}（私有数据已保留在 plugin_data）`, "info");
+          render();
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-plugin-toggle]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const pid = btn.dataset.pluginToggle;
+        const p = (state.snapshot?.plugins || []).find((x) => x.id === pid);
+        if (!p || !p.isValid) return;
+        if (!p.enabled && !p.consentAccepted) {
+          openPluginConsentModal(p);
+          return;
+        }
+        try {
+          await rpc("setPluginEnabled", { pluginId: p.id, enabled: !p.enabled, consentAccepted: true });
+          showToast(!p.enabled ? `已启用插件：${p.name}` : `已停用插件：${p.name}`, "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    (state.snapshot?.plugins || []).forEach((p) => {
+      if (!p.isValid) return;
+      document.getElementById(`swPlugin_${p.id}`)?.addEventListener("click", async () => {
+        if (!p.enabled && !p.consentAccepted) {
+          openPluginConsentModal(p);
+          return;
+        }
+        try {
+          await rpc("setPluginEnabled", { pluginId: p.id, enabled: !p.enabled, consentAccepted: true });
+          showToast(!p.enabled ? `已启用插件：${p.name}` : `已停用插件：${p.name}`, "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+  }
+
+  // Strict sandboxed iframe <-> HaloDeck host bridge (only trusts the currently mounted activePluginFrame)
+  window.addEventListener("message", async (event) => {
+    const msg = event.data;
+    if (!msg || !msg.__halodeckPlugin) return;
+
+    const iframe = document.getElementById("activePluginFrame");
+    if (!iframe || event.source !== iframe.contentWindow || !state.activePluginId) {
+      return;
+    }
+
+    if (msg.action === "sdkLoaded") {
+      pushThemeToActivePluginFrame();
+      return;
+    }
+
+    if (msg.action === "toast") {
+      showToast(msg.args?.message || "", msg.args?.kind || "info");
+      return;
+    }
+
+    const pluginId = state.activePluginId;
+    try {
+      const result = await rpc("pluginHostApi", {
+        pluginId,
+        action: msg.action,
+        args: msg.args || {}
+      });
+      if (msg.id && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({ __halodeckPluginReply: true, id: msg.id, ok: true, result }, "*");
+      }
+    } catch (err) {
+      if (msg.id && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({
+          __halodeckPluginReply: true,
+          id: msg.id,
+          ok: false,
+          error: err?.message || String(err)
+        }, "*");
+      }
+    }
+  });
 
   function armKillGame() {
     if (state.killArmed) {
@@ -4383,21 +5292,6 @@
       state.gpdDraft.rightDeadzone = Math.min(10, state.gpdDraft.rightDeadzone + 1);
       render();
     });
-    document.querySelectorAll("[data-gpd-preset]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const preset = GPD_BACK_PRESETS[el.dataset.gpdPreset];
-        if (!preset) return;
-        state.gpdDraft.l4Key = preset.l4;
-        state.gpdDraft.r4Key = preset.r4;
-        state.gpdDraft.l4Combo = [];
-        state.gpdDraft.r4Combo = [];
-        if (preset.enableHotkeys && state.snapshot?.settings && state.snapshot.settings.enableBackButtonHotkeys === false) {
-          await rpc("saveSettings", { ...state.snapshot.settings, enableBackButtonHotkeys: true });
-        }
-        showToast(`已选中预设「${preset.shortLabel || preset.label}」，请点「应用到手柄」生效`, "info");
-        render();
-      });
-    });
     document.getElementById("swInterceptOsk")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
       if (!s) return;
@@ -4455,9 +5349,38 @@
       }
     });
     document.getElementById("btnQamToConsoleControls")?.addEventListener("click", () => {
-      rpc("showConsole");
+      rpc("showConsole", { tab: "controls" });
+    });
+    document.getElementById("btnResetGpdFactory")?.addEventListener("click", async () => {
+      if (state.gpdSaving) return;
+      state.gpdSaving = true;
+      render();
+      try {
+        const res = await rpc("saveGpdController", {
+          l4Key: 0,
+          r4Key: 0,
+          l4Combo: null,
+          r4Combo: null,
+          rumble: 1,
+          leftDeadzone: 0,
+          rightDeadzone: 0
+        });
+        if (res && state.snapshot) {
+          state.snapshot.gpdController = res;
+          syncGpdDraft(res);
+        }
+        showToast("已恢复背键原厂默认（L4/R4 清空为 NC，震动=弱，死区=0）", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        state.gpdSaving = false;
+        render();
+      }
     });
     document.getElementById("btnSaveGpd")?.addEventListener("click", async () => {
+      if (state.gpdSaving) return;
+      state.gpdSaving = true;
+      render();
       try {
         const l4Combo = Array.isArray(state.gpdDraft.l4Combo) ? normalizeComboCodesList(state.gpdDraft.l4Combo) : [];
         const r4Combo = Array.isArray(state.gpdDraft.r4Combo) ? normalizeComboCodesList(state.gpdDraft.r4Combo) : [];
@@ -4479,6 +5402,9 @@
         showToast(res?.statusMessage || "已应用背键与震动到手柄", "success");
       } catch (err) {
         showToast(err.message, "error");
+      } finally {
+        state.gpdSaving = false;
+        render();
       }
     });
 
@@ -5128,33 +6054,38 @@
       if (bm.tab === "single") {
         tabBody = `
           <div class="backkey-picker-section">
-            <div class="gpd-key-group-label">手柄按键（手柄模式下直接参与游戏）</div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;">
+              <div class="gpd-key-group-label" style="margin:0;">手柄按键</div>
+              <button class="pill-btn small ${singleSelectedVal === 0 ? "active" : ""}" data-pick-back-key="0" data-pick-slot="${slot}" data-focusable="true">恢复原厂 / 清空背键 (NC)</button>
+            </div>
             <div class="backkey-picker-grid">
               ${GPD_BACK_GAMEPAD_OPTIONS.map((opt) => `
                 <button class="pill-btn small ${singleSelectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
               `).join("")}
             </div>
           </div>
-          <div class="backkey-picker-section">
-            <div class="gpd-key-group-label">快捷功能与常用键盘键</div>
-            <div class="backkey-picker-grid">
-              ${GPD_BACK_KEYBOARD_OPTIONS.map((opt) => `
-                <button class="pill-btn small ${singleSelectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
-              `).join("")}
+          ${GPD_FULL_KEYBOARD_GROUPS.map((grp) => `
+            <div class="backkey-picker-section">
+              <div class="gpd-key-group-label">${esc(grp.title)}</div>
+              <div class="full-kb-grid">
+                ${grp.keys.map((opt) => `
+                  <button class="pill-btn small kb-key-btn ${opt.special ? "is-special-fn" : ""} ${singleSelectedVal === opt.value ? "active" : ""}" data-pick-back-key="${opt.value}" data-pick-slot="${slot}" data-focusable="true">${esc(opt.label)}</button>
+                `).join("")}
+              </div>
             </div>
-          </div>
+          `).join("")}
         `;
       } else if (bm.tab === "record") {
         const recChips = bm.recordedCodes.length
           ? bm.recordedCodes.map((c) => `<span class="combo-chip-pill">${esc(resolveShortHidLabel(c))}</span>`).join(`<span class="keycap-plus">+</span>`)
-          : `<span style="font-size:12px;color:var(--text-muted);">${bm.recordingActive ? "等待按键中：可直接同时按下手柄键（如 LB+RB / LT+RT）或键盘组合键（如 Ctrl+Shift+O）..." : "点击下方「开始录制」，按下单键或最多 4 个组合键后松开"}</span>`;
+          : `<span style="font-size:12px;color:var(--text-muted);">${bm.recordingActive ? "等待按键中：可直接同时按下手柄键或键盘组合键..." : "点击下方「开始录制」，按下单键或最多 4 个组合键后松开"}</span>`;
         tabBody = `
           <div class="backkey-picker-section">
             <div class="gpd-key-group-label">实时录制手柄组合或键盘快捷键（最多 4 键）</div>
             <div id="recordStageBox" class="record-stage-box ${bm.recordingActive ? "recording" : ""}">
               <div class="combo-preview-bar">${recChips}</div>
               <div style="font-size:11px;color:${bm.recordingActive ? "#8dc7ff" : "var(--text-muted)"};">
-                ${bm.recordingActive ? "● 正在监听物理手柄与键盘输入（按下全部目标键后松开即可自动完成）" : (bm.recordedCodes.length ? `已捕获 ${bm.recordedCodes.length} 键，点击右侧按钮确认使用` : "支持手柄按键/扳机与键盘修饰键混搭录制")}
+                ${bm.recordingActive ? "● 正在监听物理手柄与键盘输入（按下全部目标键后松开即可自动完成）" : (bm.recordedCodes.length ? `已捕获 ${bm.recordedCodes.length} 键，点击右侧按钮确认使用` : "支持手柄按键/扳机与全键盘按键自由录制")}
               </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px;">
@@ -5167,18 +6098,10 @@
         const cList = bm.comboCodes || [];
         const comboChips = cList.length
           ? cList.map((c, idx) => `<button class="combo-chip-pill interactive" data-combo-remove-idx="${idx}" title="点击移除" data-focusable="true">${esc(resolveShortHidLabel(c))} ×</button>`).join(`<span class="keycap-plus">+</span>`)
-          : `<span style="font-size:11.5px;color:var(--text-muted);">请从下方预设直接选取，或依次点选最多 4 个手柄/键盘按键自由组合</span>`;
+          : `<span style="font-size:11.5px;color:var(--text-muted);">依次点选下方手柄键或全键盘按键，自由拼接最多 4 键组合宏</span>`;
         tabBody = `
           <div class="backkey-picker-section">
-            <div class="gpd-key-group-label">常用组合键预设（点选立即生效到草稿）</div>
-            <div class="backkey-picker-grid">
-              ${GPD_BACK_COMBO_PRESETS.map((p) => `
-                <button class="pill-btn small" data-combo-preset="${p.id}" data-focusable="true">${esc(p.label)}</button>
-              `).join("")}
-            </div>
-          </div>
-          <div class="backkey-picker-section">
-            <div class="gpd-key-group-label">自由组合构建器（已选 ${cList.length}/4 键，支持手柄组合与键鼠组合）</div>
+            <div class="gpd-key-group-label">自由组合构建器（已选 ${cList.length}/4 键）</div>
             <div id="comboPreviewBar" class="combo-preview-bar">${comboChips}</div>
             <div style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:4px;">
               <button id="btnClearManualCombo" class="btn btn-sm" data-focusable="true" ${cList.length ? "" : "disabled"}>清空已选</button>
@@ -5190,18 +6113,14 @@
                 <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
               `).join("")}
             </div>
-            <div class="gpd-key-group-label" style="margin-top:4px;">键盘修饰键</div>
-            <div class="backkey-picker-grid">
-              ${GPD_COMBO_MODIFIER_OPTIONS.map((opt) => `
-                <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
-              `).join("")}
-            </div>
-            <div class="gpd-key-group-label" style="margin-top:4px;">常用功能 / 字母键</div>
-            <div class="backkey-picker-grid">
-              ${GPD_COMBO_EXTRA_KEYS.map((opt) => `
-                <button class="pill-btn small ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
-              `).join("")}
-            </div>
+            ${GPD_FULL_KEYBOARD_GROUPS.map((grp) => `
+              <div class="gpd-key-group-label" style="margin-top:6px;">${esc(grp.title)}</div>
+              <div class="full-kb-grid">
+                ${grp.keys.map((opt) => `
+                  <button class="pill-btn small kb-key-btn ${opt.special ? "is-special-fn" : ""} ${cList.includes(opt.value) ? "active" : ""}" data-combo-toggle-code="${opt.value}" data-focusable="true">${esc(opt.label)}</button>
+                `).join("")}
+              </div>
+            `).join("")}
           </div>
         `;
       }
@@ -5239,13 +6158,6 @@
         if (state.backModal.recordedCodes.length) {
           applyBackSlotCombo(slot, state.backModal.recordedCodes);
         }
-      });
-
-      body.querySelectorAll("[data-combo-preset]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const preset = GPD_BACK_COMBO_PRESETS.find((p) => p.id === btn.dataset.comboPreset);
-          if (preset) applyBackSlotCombo(slot, preset.codes);
-        });
       });
 
       body.querySelectorAll("[data-combo-remove-idx]").forEach((btn) => {
@@ -5327,7 +6239,7 @@
     else if (target === "insert") next.insertGamepadCombo = { buttons: [] };
     await rpc("saveSettings", next);
     const backHint = next.enableBackButtonHotkeys && target !== "mouse"
-      ? "（若背键仍触发 F14/F15，请关闭上方「接管背键 F13–F16」开关）"
+      ? "（若背键仍触发 F14/F15，请关闭上方「接管背键 F14–F16」开关，或点击「应用到手柄」以新版 V2 协议重写背键）"
       : "";
     showToast(`已取消「${labels[target] || target}」手柄快捷键${backHint}`, "info");
   }
@@ -5461,11 +6373,19 @@
       case "DOWN":
       case "LEFT":
       case "RIGHT":
-        moveSpatial(action);
+        if (!modalOpen && state.activePluginId && document.getElementById("activePluginFrame")) {
+          forwardGamepadToPluginFrame(action);
+        } else {
+          moveSpatial(action);
+        }
         break;
       case "A": {
-        const items = getFocusableItems();
-        items[state.focusIndex]?.click();
+        if (!modalOpen && state.activePluginId && document.getElementById("activePluginFrame")) {
+          forwardGamepadToPluginFrame("A");
+        } else {
+          const items = getFocusableItems();
+          items[state.focusIndex]?.click();
+        }
         break;
       }
       case "B":
@@ -5476,6 +6396,14 @@
             modal.classList.add("hidden");
           }
           applySpatialFocus();
+        } else if (state.activePluginId) {
+          state.activePluginId = null;
+          state.focusIndex = 0;
+          render();
+        } else if (!IS_QAM && state.tab === "plugins") {
+          state.tab = "handheld";
+          state.focusIndex = 0;
+          render();
         } else if (!IS_QAM && state.tab === "opti" && state.optiSubTab === "library") {
           state.optiSubTab = "tune";
           state.focusIndex = 0;
@@ -5523,6 +6451,7 @@
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.tab = btn.dataset.nav || "handheld";
+      state.activePluginId = null;
       state.focusIndex = Math.max(0, CONSOLE_TABS.indexOf(state.tab));
       render();
     });
@@ -5533,6 +6462,9 @@
       state.qamTab = btn.dataset.qamTab || "handheld";
       if (state.qamTab !== "opti") {
         state.qamOptiSubView = "tune";
+      }
+      if (state.qamTab !== "plugins") {
+        state.activePluginId = null;
       }
       state.focusIndex = 0;
       render();
@@ -5569,6 +6501,7 @@
     syncThemeDom(next.id);
     if (state.snapshot?.settings) state.snapshot.settings.uiTheme = next.id;
     render();
+    pushThemeToActivePluginFrame();
     await rpc("setUiTheme", { theme: next.id });
     showToast(`已切换界面皮肤：${next.label}`, "info");
   });

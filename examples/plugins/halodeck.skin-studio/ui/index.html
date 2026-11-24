@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>霓虹主题工坊</title>
+  <script src="https://app.halodeck.local/plugin-sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 12px;
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg-app, #0b111b);
+      color: var(--text-primary, #f1f5f9);
+      font-size: 13px;
+    }
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card {
+      background: var(--bg-card, #111827);
+      border: 1px solid var(--border, rgba(255,255,255,0.1));
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .muted {
+      font-size: 11.5px;
+      color: var(--text-muted, #94a3b8);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+      gap: 8px;
+    }
+    .skin-btn {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border, rgba(255,255,255,0.12));
+      background: var(--bg-well, #0d1422);
+      color: var(--text-primary, #f1f5f9);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.14s ease, transform 0.12s ease;
+    }
+    .skin-btn:hover { border-color: var(--accent, #1a8cff); }
+    .skin-btn.active {
+      border-color: var(--accent, #1a8cff);
+      box-shadow: 0 0 0 1px var(--accent, #1a8cff);
+    }
+    .swatch {
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      flex-shrink: 0;
+      border: 2px solid rgba(255,255,255,0.28);
+    }
+    .skin-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+    .skin-meta strong { font-size: 12px; }
+    .skin-meta span { font-size: 10.5px; color: var(--text-muted, #94a3b8); }
+    .custom-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: var(--bg-well, #0d1422);
+      border: 1px solid var(--border, rgba(255,255,255,0.1));
+    }
+    .btn {
+      border: 1px solid var(--border, rgba(255,255,255,0.16));
+      background: var(--bg-well, #0d1422);
+      color: var(--text-primary, #f1f5f9);
+      padding: 6px 11px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--accent, #1a8cff);
+      border-color: var(--accent, #1a8cff);
+      color: #fff;
+    }
+    input[type="color"] {
+      width: 34px;
+      height: 28px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="head">
+        <div>
+          <strong>霓虹主题工坊 · 社区皮肤示例</strong>
+          <div class="muted">实时作用于主界面与侧栏，停用插件自动还原原生皮肤</div>
+        </div>
+        <button id="btnReset" class="btn">恢复默认</button>
+      </div>
+
+      <div id="presetGrid" class="grid"></div>
+
+      <div class="custom-row">
+        <div>
+          <strong style="font-size:12px;">自定义主强调色</strong>
+          <div class="muted">保留当前底色，仅替换全局按钮与高亮色</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input id="accentPicker" type="color" value="#a855f7" />
+          <button id="btnApplyAccent" class="btn btn-primary">应用强调色</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (async () => {
+      await HaloDeckPlugin.ready();
+
+      const PRESETS = [
+        {
+          id: "cyber_neon",
+          name: "赛博霓虹",
+          sub: "紫青赛博暗黑",
+          dot: "linear-gradient(135deg, #ec4899, #06b6d4)",
+          vars: {
+            "--bg-app": "#090714",
+            "--bg-panel": "#120d26",
+            "--bg-card": "#16102e",
+            "--bg-well": "#0e0a1f",
+            "--text-primary": "#f8fafc",
+            "--text-secondary": "#c4b5fd",
+            "--border": "rgba(236, 72, 153, 0.28)",
+            "--accent": "#ec4899",
+            "--accent-soft": "rgba(236, 72, 153, 0.2)",
+            "--accent-glow": "rgba(236, 72, 153, 0.45)"
+          }
+        },
+        {
+          id: "crimson_rog",
+          name: "赤红电竞",
+          sub: "碳黑 + 猩红光效",
+          dot: "linear-gradient(135deg, #ef4444, #991b1b)",
+          vars: {
+            "--bg-app": "#0c0a0c",
+            "--bg-panel": "#171215",
+            "--bg-card": "#1a1418",
+            "--bg-well": "#120d10",
+            "--text-primary": "#f9fafb",
+            "--text-secondary": "#d1d5db",
+            "--border": "rgba(239, 68, 68, 0.28)",
+            "--accent": "#ef4444",
+            "--accent-soft": "rgba(239, 68, 68, 0.18)",
+            "--accent-glow": "rgba(239, 68, 68, 0.42)"
+          }
+        },
+        {
+          id: "emerald_deck",
+          name: "翡翠护眼",
+          sub: "深松石 + 薄荷绿",
+          dot: "linear-gradient(135deg, #10b981, #065f46)",
+          vars: {
+            "--bg-app": "#071312",
+            "--bg-panel": "#0c1f1d",
+            "--bg-card": "#0f2623",
+            "--bg-well": "#091917",
+            "--text-primary": "#ecfdf5",
+            "--text-secondary": "#a7f3d0",
+            "--border": "rgba(16, 185, 129, 0.26)",
+            "--accent": "#10b981",
+            "--accent-soft": "rgba(16, 185, 129, 0.18)",
+            "--accent-glow": "rgba(16, 185, 129, 0.4)"
+          }
+        },
+        {
+          id: "amber_retro",
+          name: "琥珀复古",
+          sub: "暖棕黑 + 复古橙金",
+          dot: "linear-gradient(135deg, #f59e0b, #b45309)",
+          vars: {
+            "--bg-app": "#120f0b",
+            "--bg-panel": "#1c1711",
+            "--bg-card": "#211b13",
+            "--bg-well": "#17120c",
+            "--text-primary": "#fef3c7",
+            "--text-secondary": "#fcd34d",
+            "--border": "rgba(245, 158, 11, 0.28)",
+            "--accent": "#f59e0b",
+            "--accent-soft": "rgba(245, 158, 11, 0.2)",
+            "--accent-glow": "rgba(245, 158, 11, 0.42)"
+          }
+        },
+        {
+          id: "sakura_frost",
+          name: "樱雪柔粉",
+          sub: "明亮浅粉凝霜",
+          dot: "linear-gradient(135deg, #f472b6, #fbcfe8)",
+          vars: {
+            "--bg-app": "#fdf2f8",
+            "--bg-panel": "#ffffff",
+            "--bg-card": "#ffffff",
+            "--bg-well": "#fce7f3",
+            "--text-primary": "#3b0764",
+            "--text-secondary": "#831843",
+            "--text-muted": "#9d174d",
+            "--border": "rgba(219, 39, 119, 0.2)",
+            "--accent": "#db2777",
+            "--accent-soft": "rgba(219, 39, 119, 0.14)",
+            "--accent-glow": "rgba(219, 39, 119, 0.34)"
+          }
+        }
+      ];
+
+      let activeId = (await HaloDeckPlugin.storage.get("activePresetId")) || "";
+      const grid = document.getElementById("presetGrid");
+      const picker = document.getElementById("accentPicker");
+
+      function renderPresets() {
+        grid.innerHTML = PRESETS.map((p) => `
+          <button class="skin-btn ${activeId === p.id ? "active" : ""}" data-skin="${p.id}">
+            <span class="swatch" style="background:${p.dot};"></span>
+            <span class="skin-meta">
+              <strong>${p.name}</strong>
+              <span>${p.sub}</span>
+            </span>
+          </button>
+        `).join("");
+
+        grid.querySelectorAll("[data-skin]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const p = PRESETS.find((x) => x.id === btn.dataset.skin);
+            if (!p) return;
+            await HaloDeckPlugin.theme.applyVariables(p.vars);
+            activeId = p.id;
+            await HaloDeckPlugin.storage.set("activePresetId", activeId);
+            renderPresets();
+            HaloDeckPlugin.toast(`已应用皮肤：${p.name}`, "success");
+          });
+        });
+      }
+
+      document.getElementById("btnApplyAccent").addEventListener("click", async () => {
+        const hex = picker.value || "#a855f7";
+        await HaloDeckPlugin.theme.applyVariables({
+          "--accent": hex,
+          "--accent-glow": hex
+        });
+        activeId = "custom";
+        await HaloDeckPlugin.storage.set("activePresetId", activeId);
+        renderPresets();
+        HaloDeckPlugin.toast(`已应用自定义强调色 ${hex}`, "success");
+      });
+
+      document.getElementById("btnReset").addEventListener("click", async () => {
+        await HaloDeckPlugin.theme.reset();
+        activeId = "";
+        await HaloDeckPlugin.storage.remove("activePresetId");
+        renderPresets();
+        HaloDeckPlugin.toast("已恢复 HaloDeck 原生皮肤", "info");
+      });
+
+      renderPresets();
+    })();
+  </script>
+</body>
+</html>

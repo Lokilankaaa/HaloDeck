@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "halodeck.game-notes",
+  "name": "掌机游戏备忘笔记",
+  "version": "1.0.0",
+  "author": "HaloDeck",
+  "description": "纯前端示例插件：按游戏记录攻略备忘、按键提醒与通关清单，支持侧栏与主界面。",
+  "homepage": "https://github.com/Lokilankaaa/HaloDeck",
+  "minHaloDeckVersion": "0.6.0",
+  "mount": ["console", "qam"],
+  "activation": ["onView"],
+  "entry": "ui/index.html",
+  "permissions": ["games:read", "events:game", "storage"]
+}

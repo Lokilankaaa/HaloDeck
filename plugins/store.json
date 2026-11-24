@@ -1,0 +1,46 @@
+{
+  "storeName": "HaloDeck 官方纯净插件商店",
+  "description": "Decky 模式开源审核商店：仅收录开源仓库经 GitHub Actions 干净环境编译并锁定 SHA-256 的合规插件（零外挂、零敏感修改器）",
+  "revokedIds": [],
+  "plugins": [
+    {
+      "id": "halodeck.skin-studio",
+      "name": "霓虹主题工坊 (皮肤插件)",
+      "version": "1.0.0",
+      "author": "HaloDeck",
+      "category": "theme",
+      "description": "Decky CSS Loader 风格换肤插件：内置 5 套掌机配色与自定义主强调色，实时同步主界面与侧栏，停用自动还原。",
+      "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.skin-studio",
+      "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
+      "mount": ["console", "qam"],
+      "permissions": ["ui:theme", "storage"],
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.skin-studio.zip"
+    },
+    {
+      "id": "halodeck.game-notes",
+      "name": "掌机游戏备忘笔记",
+      "version": "1.0.0",
+      "author": "HaloDeck",
+      "category": "utility",
+      "description": "按游戏自动联动记录攻略备忘、Boss 弱点与键位提醒，支持游戏内 QAM 侧栏随手翻看。",
+      "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.game-notes",
+      "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
+      "mount": ["console", "qam"],
+      "permissions": ["games:read", "events:game", "storage"],
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.game-notes.zip"
+    },
+    {
+      "id": "halodeck.backend-demo",
+      "name": "独立后端通信示例 (开发者模板)",
+      "version": "1.0.0",
+      "author": "HaloDeck",
+      "category": "developer",
+      "description": "演示 stdio JSON-RPC 2.0 独立子进程后端调用、流式进度推送与 stderr 日志收集。",
+      "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.backend-demo",
+      "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
+      "mount": ["console", "qam"],
+      "permissions": ["games:read", "telemetry:read", "shell:openFolder", "backend"],
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.backend-demo.zip"
+    }
+  ]
+}

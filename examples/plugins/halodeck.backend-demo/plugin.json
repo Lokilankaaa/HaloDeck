@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "halodeck.backend-demo",
+  "name": "独立后端通信示例 (JSON-RPC)",
+  "version": "1.0.0",
+  "author": "HaloDeck",
+  "description": "演示 stdio JSON-RPC 2.0 独立子进程后端调用、流式进度推送与 stderr 日志收集。",
+  "homepage": "https://github.com/Lokilankaaa/HaloDeck",
+  "minHaloDeckVersion": "0.6.0",
+  "mount": ["console", "qam"],
+  "activation": ["onView"],
+  "entry": "ui/index.html",
+  "backend": {
+    "type": "stdio-jsonrpc",
+    "executable": "backend/worker.ps1",
+    "idleTimeoutSeconds": 180
+  },
+  "permissions": ["games:read", "telemetry:read", "shell:openFolder", "backend"]
+}

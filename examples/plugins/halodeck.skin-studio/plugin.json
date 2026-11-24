@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "halodeck.skin-studio",
+  "name": "霓虹主题工坊 (皮肤插件示例)",
+  "version": "1.0.0",
+  "author": "HaloDeck",
+  "description": "Decky CSS Loader 风格皮肤插件示例：内置 5 套掌机配色与自定义主强调色，实时同步主界面与侧栏，停用自动还原。",
+  "homepage": "https://github.com/Lokilankaaa/HaloDeck",
+  "minHaloDeckVersion": "0.6.0",
+  "mount": ["console", "qam"],
+  "activation": ["onView"],
+  "entry": "ui/index.html",
+  "permissions": ["ui:theme", "storage"]
+}

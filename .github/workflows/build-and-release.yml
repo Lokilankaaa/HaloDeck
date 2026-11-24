@@ -36,13 +36,18 @@ jobs:
       - name: Publish Portable Win-x64 Package
         run: dotnet publish src/HaloDeck.App/HaloDeck.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o ./publish/HaloDeck-win-x64
 
-      - name: Archive Portable Release Zip
+      - name: Archive Portable Release Zip & Official Sample Plugin Zips
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ./artifacts | Out-Null
           Compress-Archive -Path ./publish/HaloDeck-win-x64/* -DestinationPath ./artifacts/HaloDeck-win-x64-portable.zip -Force
           $hash = (Get-FileHash ./artifacts/HaloDeck-win-x64-portable.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  HaloDeck-win-x64-portable.zip" | Set-Content -Path ./artifacts/HaloDeck-win-x64-portable.zip.sha256 -Encoding ASCII
+          if (Test-Path ./examples/plugins) {
+            Get-ChildItem ./examples/plugins -Directory | ForEach-Object {
+              Compress-Archive -Path $_.FullName -DestinationPath "./artifacts/$($_.Name).zip" -Force
+            }
+          }
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
@@ -57,4 +62,5 @@ jobs:
           files: |
             ./artifacts/HaloDeck-win-x64-portable.zip
             ./artifacts/HaloDeck-win-x64-portable.zip.sha256
+            ./artifacts/halodeck.*.zip
           generate_release_notes: false
