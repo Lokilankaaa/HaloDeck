@@ -5,42 +5,42 @@
   "plugins": [
     {
       "id": "halodeck.skin-studio",
-      "name": "霓虹主题工坊 (皮肤插件)",
-      "version": "1.0.0",
+      "name": "视觉主题工坊 (Decky 换肤)",
+      "version": "1.1.0",
       "author": "HaloDeck",
       "category": "theme",
-      "description": "Decky CSS Loader 风格换肤插件：内置 5 套掌机配色与自定义主强调色，实时同步主界面与侧栏，停用自动还原。",
+      "description": "Decky CSS Loader 风格全局换肤：6 套精心调校的掌机配色（覆盖底色/顶栏/卡片/圆角/文字对比度）+ 圆角风格 + 主强调色调色板，停用自动还原。",
       "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.skin-studio",
       "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
       "mount": ["console", "qam"],
       "permissions": ["ui:theme", "storage"],
-      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.skin-studio.zip"
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.1/halodeck.skin-studio.zip"
     },
     {
       "id": "halodeck.game-notes",
-      "name": "掌机游戏备忘笔记",
-      "version": "1.0.0",
+      "name": "掌机游玩计时与游戏备忘",
+      "version": "1.1.0",
       "author": "HaloDeck",
       "category": "utility",
-      "description": "按游戏自动联动记录攻略备忘、Boss 弱点与键位提醒，支持游戏内 QAM 侧栏随手翻看。",
+      "description": "自动记录每款游戏的累计游玩时长、启动次数与最近游玩时间，并支持按游戏保存键位提醒、TDP/超分推荐与通关攻略备忘。",
       "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.game-notes",
       "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
       "mount": ["console", "qam"],
       "permissions": ["games:read", "events:game", "storage"],
-      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.game-notes.zip"
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.1/halodeck.game-notes.zip"
     },
     {
       "id": "halodeck.backend-demo",
-      "name": "独立后端通信示例 (开发者模板)",
-      "version": "1.0.0",
+      "name": "硬件曲线与一键诊断报告",
+      "version": "1.1.0",
       "author": "HaloDeck",
       "category": "developer",
-      "description": "演示 stdio JSON-RPC 2.0 独立子进程后端调用、流式进度推送与 stderr 日志收集。",
+      "description": "实时绘制 APU 功耗与温度曲线，并通过独立 JSON-RPC 后端进程一键导出硬件/游戏库诊断报告（同时作为独立后端插件开发模板）。",
       "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.backend-demo",
       "sourceRepo": "https://github.com/Lokilankaaa/HaloDeck",
       "mount": ["console", "qam"],
       "permissions": ["games:read", "telemetry:read", "shell:openFolder", "backend"],
-      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.0/halodeck.backend-demo.zip"
+      "zipUrl": "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.1/halodeck.backend-demo.zip"
     }
   ]
 }

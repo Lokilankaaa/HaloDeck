@@ -22,18 +22,33 @@ public sealed class PluginStoreService
 
     public static readonly HashSet<string> AllowedThemeVariables = new(StringComparer.Ordinal)
     {
-        "--bg-app",
-        "--bg-panel",
+        // Primary HaloDeck styles.css design tokens
+        "--bg-base",
+        "--bg-elevated",
         "--bg-card",
+        "--bg-card-solid",
+        "--bg-subtile",
+        "--bg-row",
         "--bg-well",
-        "--surface-subtle",
         "--text-primary",
         "--text-secondary",
         "--text-muted",
         "--border",
+        "--border-strong",
         "--accent",
+        "--accent-hover",
         "--accent-soft",
-        "--accent-glow"
+        "--accent-glow",
+        "--accent-grad",
+        "--radius-sm",
+        "--radius-md",
+        "--radius-lg",
+        "--radius-card",
+        "--radius-inner",
+        // Legacy aliases kept for backwards compatibility
+        "--bg-app",
+        "--bg-panel",
+        "--surface-subtle"
     };
 
     private static readonly Regex SafeCssValueRegex = new(@"^[#a-zA-Z0-9(),.%\s-]+$", RegexOptions.Compiled);

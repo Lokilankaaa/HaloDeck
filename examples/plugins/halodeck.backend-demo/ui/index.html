@@ -3,90 +3,171 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>独立后端通信示例</title>
+  <title>硬件曲线与一键诊断</title>
   <script src="https://app.halodeck.local/plugin-sdk.js"></script>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      padding: 12px;
-      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-      background: var(--bg-app, #0b111b);
-      color: var(--text-primary, #f1f5f9);
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg-base, #0e1014);
+      color: var(--text-primary, #f2f5fa);
+      padding: 14px;
       font-size: 13px;
     }
+    .stack { display: flex; flex-direction: column; gap: 11px; }
     .card {
-      background: var(--bg-card, #111827);
-      border: 1px solid var(--border, rgba(255,255,255,0.1));
-      border-radius: 12px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+      background: var(--bg-card, rgba(24,28,35,0.85));
+      border: 1px solid var(--border, rgba(255,255,255,0.09));
+      border-radius: var(--radius-lg, 14px);
+      padding: 12px 14px;
     }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; }
-    button {
-      border: 1px solid var(--accent, #1a8cff);
-      background: var(--accent, #1a8cff);
-      color: #fff;
-      padding: 7px 12px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .title { font-size: 13.5px; font-weight: 700; }
+    .sub { font-size: 11px; color: var(--text-muted, #6c7688); }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .metric {
+      background: var(--bg-well, rgba(11,13,17,0.88));
+      border: 1px solid var(--border);
+      border-radius: 9px; padding: 8px 10px;
     }
-    button.sec {
-      background: var(--bg-well, #0d1422);
-      color: var(--text-primary, #f1f5f9);
-      border-color: var(--border, rgba(255,255,255,0.15));
+    .mk { font-size: 10.5px; color: var(--text-muted); }
+    .mv { font-size: 15px; font-weight: 700; margin-top: 2px; }
+    .chart-box {
+      background: var(--bg-well, rgba(11,13,17,0.88));
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      height: 110px;
     }
-    pre {
-      margin: 0;
-      padding: 10px;
-      border-radius: 8px;
-      background: var(--bg-well, #0d1422);
-      border: 1px solid var(--border, rgba(255,255,255,0.1));
-      font-size: 11.5px;
-      white-space: pre-wrap;
-      word-break: break-all;
+    svg { width: 100%; height: 100%; display: block; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .btn {
+      padding: 7px 12px; border-radius: 8px; border: 1px solid var(--border-strong);
+      background: var(--bg-row); color: var(--text-primary);
+      font-size: 12px; font-weight: 600; cursor: pointer;
     }
+    .btn.primary { background: var(--accent, #1a8cff); border-color: transparent; color: #fff; }
+    .status { font-size: 11.5px; color: var(--text-secondary); margin-top: 8px; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <strong>stdio JSON-RPC 2.0 后端测试</strong>
-    <div class="row">
-      <button id="btnPing">调用后端 ping()</button>
-      <button id="btnTel" class="sec">读取硬件遥测</button>
-      <button id="btnDir" class="sec">打开数据目录</button>
+  <div class="stack">
+    <div class="card">
+      <div class="head">
+        <div>
+          <div class="title">APU 实时功耗与温度曲线</div>
+          <div class="sub">每 1.5 秒采样，保留最近 30 个点</div>
+        </div>
+        <span id="peakLabel" class="sub">峰值 --W</span>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="mk">APU 功耗</div><div id="mWatts" class="mv">-- W</div></div>
+        <div class="metric"><div class="mk">核心温度</div><div id="mTemp" class="mv">-- °C</div></div>
+        <div class="metric"><div class="mk">电池电量</div><div id="mBat" class="mv">-- %</div></div>
+      </div>
+      <div class="chart-box">
+        <svg id="sparkSvg" viewBox="0 0 300 90" preserveAspectRatio="none">
+          <polyline id="lineWatts" fill="none" stroke="var(--accent, #1a8cff)" stroke-width="2.4" points="" />
+          <polyline id="lineTemp" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 3" points="" />
+        </svg>
+      </div>
+      <div class="row" style="justify-content:space-between;margin-top:6px;">
+        <span class="sub">蓝色实线：功耗 (0–80W)</span>
+        <span class="sub">琥珀虚线：温度 (30–100°C)</span>
+      </div>
     </div>
-    <pre id="out">点击按钮测试隔离后端进程通信...</pre>
+
+    <div class="card">
+      <div class="head">
+        <div>
+          <div class="title">独立后端一键诊断报告</div>
+          <div class="sub">通过 stdio JSON-RPC 子进程收集系统、驱动、遥测与游戏库摘要</div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="btnExport" class="btn primary">生成诊断报告 (.txt)</button>
+        <button id="btnOpenDir" class="btn">打开报告目录</button>
+      </div>
+      <div id="diagStatus" class="status">待命：点击上方按钮导出完整排障报告</div>
+    </div>
   </div>
+
   <script>
-    (async () => {
-      await HaloDeckPlugin.ready();
-      const out = document.getElementById("out");
+    const wattsHist = [];
+    const tempHist = [];
+    let lastTelemetry = null;
 
-      HaloDeckPlugin.onEvent((name, data) => {
-        out.textContent = `[事件 ${name}] ${JSON.stringify(data, null, 2)}\n` + out.textContent;
-      });
+    function buildPoints(arr, minV, maxV) {
+      if (arr.length === 0) return "";
+      const n = Math.max(arr.length - 1, 1);
+      return arr.map((v, i) => {
+        const x = (i / n) * 300;
+        const norm = Math.min(1, Math.max(0, (v - minV) / (maxV - minV)));
+        const y = 84 - norm * 76;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+    }
 
-      document.getElementById("btnPing").addEventListener("click", async () => {
-        try {
-          const res = await HaloDeckPlugin.backend.call("ping", { message: "Hello HaloDeck Plugin Host!" });
-          out.textContent = JSON.stringify(res, null, 2);
-          HaloDeckPlugin.toast(`后端响应成功 (PID ${res.pid})`, "success");
-        } catch (err) {
-          out.textContent = `错误: ${err.message}`;
-        }
-      });
+    async function pollTelemetry() {
+      try {
+        const t = await HaloDeckPlugin.telemetry.get();
+        if (!t) return;
+        lastTelemetry = t;
+        const w = Number(t.apuPowerWatts ?? t.apuWatts ?? 0);
+        const c = Number(t.cpuTempC ?? t.gpuTempC ?? t.apuTempC ?? 0);
+        const bat = Number(t.batteryPercent ?? 0);
+        document.getElementById("mWatts").textContent = w > 0 ? `${w.toFixed(1)} W` : "-- W";
+        document.getElementById("mTemp").textContent = c > 0 ? `${Math.round(c)} °C` : "-- °C";
+        document.getElementById("mBat").textContent = bat > 0 ? `${Math.round(bat)} %` : "-- %";
 
-      document.getElementById("btnTel").addEventListener("click", async () => {
-        const tel = await HaloDeckPlugin.getTelemetry();
-        out.textContent = JSON.stringify(tel, null, 2);
-      });
+        wattsHist.push(w);
+        tempHist.push(c);
+        if (wattsHist.length > 30) wattsHist.shift();
+        if (tempHist.length > 30) tempHist.shift();
 
-      document.getElementById("btnDir").addEventListener("click", () => HaloDeckPlugin.openDataFolder());
-    })();
+        const peak = Math.max(...wattsHist, 0);
+        document.getElementById("peakLabel").textContent = `峰值 ${peak.toFixed(1)}W`;
+        document.getElementById("lineWatts").setAttribute("points", buildPoints(wattsHist, 0, 80));
+        document.getElementById("lineTemp").setAttribute("points", buildPoints(tempHist, 30, 100));
+      } catch {}
+    }
+
+    HaloDeckPlugin.on("progress", (p) => {
+      if (p?.text) {
+        document.getElementById("diagStatus").textContent = `${p.text} (${p.percent || 0}%)`;
+      }
+    });
+
+    document.getElementById("btnExport").addEventListener("click", async () => {
+      const btn = document.getElementById("btnExport");
+      btn.disabled = true;
+      document.getElementById("diagStatus").textContent = "正在启动独立后端子进程收集硬件信息...";
+      try {
+        const games = await HaloDeckPlugin.games.list().catch(() => []);
+        const res = await HaloDeckPlugin.backend.call("exportDiagnosticReport", {
+          telemetry: lastTelemetry,
+          gameCount: Array.isArray(games) ? games.length : 0
+        });
+        document.getElementById("diagStatus").textContent = `已导出：${res?.fileName || "诊断报告"}（点击右侧「打开报告目录」查看）`;
+        HaloDeckPlugin.ui.toast("诊断报告导出成功", "success");
+      } catch (err) {
+        document.getElementById("diagStatus").textContent = "导出失败：" + err.message;
+        HaloDeckPlugin.ui.toast("导出失败：" + err.message, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("btnOpenDir").addEventListener("click", async () => {
+      try {
+        await HaloDeckPlugin.shell.openDataFolder();
+      } catch (err) {
+        HaloDeckPlugin.ui.toast(err.message, "error");
+      }
+    });
+
+    pollTelemetry();
+    setInterval(pollTelemetry, 1500);
   </script>
 </body>
 </html>

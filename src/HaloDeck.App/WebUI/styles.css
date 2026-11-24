@@ -2923,6 +2923,7 @@ body[data-theme="frost"] {
   --bg-card: linear-gradient(165deg, rgba(255, 255, 255, 0.92) 0%, rgba(246, 250, 255, 0.84) 100%);
   --bg-card-solid: #ffffff;
   --bg-subtile: rgba(15, 23, 42, 0.036);
+  --bg-row: rgba(232, 239, 249, 0.92);
   --bg-well: rgba(224, 233, 245, 0.82);
   --surface-subtle: rgba(15, 23, 42, 0.052);
   --accent: #2563eb;
@@ -4553,7 +4554,7 @@ body[data-theme="frost"] ::-webkit-scrollbar-thumb {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--bg-app);
+  background: var(--bg-base);
 }
 
 .plugin-frame-bar {
@@ -4654,12 +4655,12 @@ body[data-theme="frost"] ::-webkit-scrollbar-thumb {
 body[data-theme="frost"] .plugin-card,
 body[data-theme="frost"] .qam-plugin-item,
 body[data-theme="frost"] .plugins-empty {
-  background: rgba(255, 255, 255, 0.72);
-  border-color: rgba(15, 23, 42, 0.12);
+  background: var(--bg-card);
+  border-color: var(--border);
 }
 
 body[data-theme="frost"] .plugin-frame-bar {
-  background: rgba(241, 245, 249, 0.92);
+  background: var(--bg-elevated);
 }
 
 .plugin-subtabs {
@@ -4817,8 +4818,8 @@ body[data-theme="frost"] .plugin-frame-bar {
 }
 
 body[data-theme="frost"] .qam-plugin-manage-row {
-  background: rgba(255, 255, 255, 0.72);
-  border-color: rgba(15, 23, 42, 0.12);
+  background: var(--bg-card);
+  border-color: var(--border);
 }
 
 .full-kb-grid {
@@ -4879,3 +4880,28 @@ body[data-theme="frost"] .plugin-trust-pill.is-sandbox { color: #059669; }
 body[data-theme="frost"] .plugin-trust-pill.is-backend { color: #b45309; }
 body[data-theme="frost"] .plugin-trust-pill.is-verified { color: #1d4ed8; }
 body[data-theme="frost"] .plugin-trust-pill.is-revoked { color: #dc2626; }
+
+/* Plugin Theme Override: replace hardcoded aurora/frost backdrop glare & card shadow highlights cleanly */
+body.has-plugin-theme .ambient-backdrop {
+  background: radial-gradient(circle at 18% 12%, var(--accent-soft), transparent 48%), var(--bg-base) !important;
+}
+
+body.has-plugin-theme .ambient-vignette {
+  background: transparent !important;
+}
+
+body.has-plugin-theme .hh-card,
+body.has-plugin-theme .chart-card,
+body.has-plugin-theme .hero-card,
+body.has-plugin-theme .action-dock,
+body.has-plugin-theme.mode-qam .qam-section {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16) !important;
+}
+
+body.has-plugin-theme[data-theme="frost"] .hh-card,
+body.has-plugin-theme[data-theme="frost"] .chart-card,
+body.has-plugin-theme[data-theme="frost"] .hero-card,
+body.has-plugin-theme[data-theme="frost"] .action-dock,
+body.has-plugin-theme[data-theme="frost"].mode-qam .qam-section {
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08) !important;
+}

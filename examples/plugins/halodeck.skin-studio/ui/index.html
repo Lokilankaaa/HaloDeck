@@ -3,288 +3,466 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>霓虹主题工坊</title>
+  <title>视觉主题工坊</title>
   <script src="https://app.halodeck.local/plugin-sdk.js"></script>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      padding: 12px;
-      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-      background: var(--bg-app, #0b111b);
-      color: var(--text-primary, #f1f5f9);
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg-base, #0e1014);
+      color: var(--text-primary, #f2f5fa);
+      padding: 14px;
       font-size: 13px;
+      line-height: 1.45;
     }
-    .wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+    .stack { display: flex; flex-direction: column; gap: 12px; }
     .card {
-      background: var(--bg-card, #111827);
-      border: 1px solid var(--border, rgba(255,255,255,0.1));
-      border-radius: 12px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+      background: var(--bg-card, rgba(24, 28, 35, 0.85));
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+      border-radius: var(--radius-lg, 14px);
+      padding: 13px 14px;
     }
-    .head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .muted {
-      font-size: 11.5px;
-      color: var(--text-muted, #94a3b8);
-    }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .title { font-size: 13.5px; font-weight: 700; }
+    .sub { font-size: 11.5px; color: var(--text-muted, #6c7688); margin-top: 2px; }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
-      gap: 8px;
-    }
-    .skin-btn {
-      display: flex;
-      align-items: center;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
       gap: 9px;
-      padding: 9px 10px;
-      border-radius: 10px;
-      border: 1px solid var(--border, rgba(255,255,255,0.12));
-      background: var(--bg-well, #0d1422);
-      color: var(--text-primary, #f1f5f9);
+    }
+    .skin-card {
       cursor: pointer;
+      border-radius: 11px;
+      border: 1.5px solid var(--border, rgba(255, 255, 255, 0.1));
+      background: var(--bg-row, rgba(31, 36, 45, 0.72));
+      padding: 10px;
       text-align: left;
-      transition: border-color 0.14s ease, transform 0.12s ease;
-    }
-    .skin-btn:hover { border-color: var(--accent, #1a8cff); }
-    .skin-btn.active {
-      border-color: var(--accent, #1a8cff);
-      box-shadow: 0 0 0 1px var(--accent, #1a8cff);
-    }
-    .swatch {
-      width: 22px;
-      height: 22px;
-      border-radius: 999px;
-      flex-shrink: 0;
-      border: 2px solid rgba(255,255,255,0.28);
-    }
-    .skin-meta {
+      color: inherit;
+      transition: transform 0.12s ease, border-color 0.15s ease, box-shadow 0.15s ease;
       display: flex;
       flex-direction: column;
-      gap: 1px;
-      min-width: 0;
+      gap: 8px;
     }
-    .skin-meta strong { font-size: 12px; }
-    .skin-meta span { font-size: 10.5px; color: var(--text-muted, #94a3b8); }
-    .custom-row {
+    .skin-card:hover { transform: translateY(-1px); border-color: var(--border-strong, rgba(255,255,255,0.22)); }
+    .skin-card.active {
+      border-color: var(--accent, #1a8cff);
+      box-shadow: 0 0 0 2px var(--accent-soft, rgba(26, 140, 255, 0.2));
+    }
+    .mini-ui {
+      height: 46px;
+      border-radius: 7px;
+      padding: 6px;
       display: flex;
-      align-items: center;
+      flex-direction: column;
       justify-content: space-between;
-      gap: 10px;
-      padding: 8px 10px;
-      border-radius: 10px;
-      background: var(--bg-well, #0d1422);
-      border: 1px solid var(--border, rgba(255,255,255,0.1));
+      border: 1px solid rgba(128,128,128,0.22);
     }
-    .btn {
-      border: 1px solid var(--border, rgba(255,255,255,0.16));
-      background: var(--bg-well, #0d1422);
-      color: var(--text-primary, #f1f5f9);
-      padding: 6px 11px;
+    .mini-bar { display: flex; align-items: center; justify-content: space-between; }
+    .mini-dots { display: flex; gap: 4px; }
+    .mini-dot { width: 6px; height: 6px; border-radius: 999px; }
+    .mini-pill { height: 7px; width: 34px; border-radius: 999px; }
+    .mini-row { display: flex; gap: 5px; }
+    .mini-box { flex: 1; height: 18px; border-radius: 4px; }
+    .skin-name { font-size: 12.5px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .skin-desc { font-size: 11px; color: var(--text-secondary, #a7b1c2); }
+    .tag {
+      font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+      background: var(--accent-soft, rgba(26,140,255,0.16)); color: var(--accent, #1a8cff);
+    }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .seg-btn {
+      flex: 1;
+      min-width: 72px;
+      padding: 7px 10px;
       border-radius: 8px;
+      border: 1px solid var(--border, rgba(255,255,255,0.1));
+      background: var(--bg-well, rgba(11,13,17,0.85));
+      color: var(--text-secondary, #a7b1c2);
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
     }
-    .btn-primary {
-      background: var(--accent, #1a8cff);
+    .seg-btn.active {
+      background: var(--accent-soft, rgba(26,140,255,0.18));
       border-color: var(--accent, #1a8cff);
-      color: #fff;
+      color: var(--accent, #1a8cff);
     }
-    input[type="color"] {
-      width: 34px;
-      height: 28px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
-      cursor: pointer;
+    .swatch-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .swatch {
+      width: 26px; height: 26px; border-radius: 999px; cursor: pointer;
+      border: 2px solid transparent; transition: transform 0.12s ease;
     }
+    .swatch:hover { transform: scale(1.12); }
+    .swatch.active { border-color: var(--text-primary, #fff); transform: scale(1.12); }
+    .hue-bar {
+      display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap;
+    }
+    .hue-range {
+      flex: 1; min-width: 140px; height: 10px; border-radius: 999px; appearance: none; outline: none; cursor: pointer;
+      background: linear-gradient(90deg, #ff4d4d, #f59e0b, #22c55e, #14b8a6, #1a9fff, #6366f1, #ec4899, #ff4d4d);
+    }
+    .hue-range::-webkit-slider-thumb {
+      appearance: none; width: 18px; height: 18px; border-radius: 999px;
+      background: #fff; border: 2px solid #0f172a; box-shadow: 0 1px 4px rgba(0,0,0,0.45);
+    }
+    .hex-input {
+      width: 82px; padding: 5px 8px; border-radius: 7px; font-family: Consolas, monospace; font-size: 12px;
+      border: 1px solid var(--border-strong); background: var(--bg-well); color: var(--text-primary); outline: none;
+    }
+    .preview-dot {
+      width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border-strong); flex-shrink: 0;
+    }
+    .btn {
+      padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-strong, rgba(255,255,255,0.16));
+      background: var(--bg-row, rgba(31,36,45,0.8)); color: var(--text-primary, #f2f5fa);
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .btn.primary { background: var(--accent, #1a8cff); border-color: transparent; color: #fff; }
+    .btn:hover { filter: brightness(1.08); }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="stack">
     <div class="card">
       <div class="head">
         <div>
-          <strong>霓虹主题工坊 · 社区皮肤示例</strong>
-          <div class="muted">实时作用于主界面与侧栏，停用插件自动还原原生皮肤</div>
+          <div class="title">掌机精选全局皮肤</div>
+          <div class="sub">同步替换底色、顶栏、卡片层次、边框与文字对比度，停用插件自动恢复默认</div>
         </div>
-        <button id="btnReset" class="btn">恢复默认</button>
+        <button id="btnReset" class="btn">还原默认</button>
       </div>
+      <div id="skinGrid" class="grid"></div>
+    </div>
 
-      <div id="presetGrid" class="grid"></div>
-
-      <div class="custom-row">
+    <div class="card">
+      <div class="head">
         <div>
-          <strong style="font-size:12px;">自定义主强调色</strong>
-          <div class="muted">保留当前底色，仅替换全局按钮与高亮色</div>
+          <div class="title">卡片圆角风格</div>
+          <div class="sub">自由切换硬朗电竞折角或 SteamOS 柔和圆角</div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <input id="accentPicker" type="color" value="#a855f7" />
-          <button id="btnApplyAccent" class="btn btn-primary">应用强调色</button>
+      </div>
+      <div id="radiusRow" class="row"></div>
+    </div>
+
+    <div class="card">
+      <div class="head">
+        <div>
+          <div class="title">主强调色精调</div>
+          <div class="sub">点选色卡、拖动色相滑条或输入色号，侧栏与主界面均可零弹窗丝滑调色</div>
         </div>
+      </div>
+      <div id="swatches" class="swatch-row"></div>
+      <div class="hue-bar">
+        <span id="accentPreviewDot" class="preview-dot" style="background:#1a9fff;"></span>
+        <input id="hueSlider" class="hue-range" type="range" min="0" max="360" value="205" />
+        <input id="customAccentHex" class="hex-input" type="text" value="#1a9fff" maxlength="7" />
+        <button id="btnApplyAccent" class="btn primary">应用强调色</button>
       </div>
     </div>
   </div>
 
   <script>
-    (async () => {
-      await HaloDeckPlugin.ready();
-
-      const PRESETS = [
-        {
-          id: "cyber_neon",
-          name: "赛博霓虹",
-          sub: "紫青赛博暗黑",
-          dot: "linear-gradient(135deg, #ec4899, #06b6d4)",
-          vars: {
-            "--bg-app": "#090714",
-            "--bg-panel": "#120d26",
-            "--bg-card": "#16102e",
-            "--bg-well": "#0e0a1f",
-            "--text-primary": "#f8fafc",
-            "--text-secondary": "#c4b5fd",
-            "--border": "rgba(236, 72, 153, 0.28)",
-            "--accent": "#ec4899",
-            "--accent-soft": "rgba(236, 72, 153, 0.2)",
-            "--accent-glow": "rgba(236, 72, 153, 0.45)"
-          }
-        },
-        {
-          id: "crimson_rog",
-          name: "赤红电竞",
-          sub: "碳黑 + 猩红光效",
-          dot: "linear-gradient(135deg, #ef4444, #991b1b)",
-          vars: {
-            "--bg-app": "#0c0a0c",
-            "--bg-panel": "#171215",
-            "--bg-card": "#1a1418",
-            "--bg-well": "#120d10",
-            "--text-primary": "#f9fafb",
-            "--text-secondary": "#d1d5db",
-            "--border": "rgba(239, 68, 68, 0.28)",
-            "--accent": "#ef4444",
-            "--accent-soft": "rgba(239, 68, 68, 0.18)",
-            "--accent-glow": "rgba(239, 68, 68, 0.42)"
-          }
-        },
-        {
-          id: "emerald_deck",
-          name: "翡翠护眼",
-          sub: "深松石 + 薄荷绿",
-          dot: "linear-gradient(135deg, #10b981, #065f46)",
-          vars: {
-            "--bg-app": "#071312",
-            "--bg-panel": "#0c1f1d",
-            "--bg-card": "#0f2623",
-            "--bg-well": "#091917",
-            "--text-primary": "#ecfdf5",
-            "--text-secondary": "#a7f3d0",
-            "--border": "rgba(16, 185, 129, 0.26)",
-            "--accent": "#10b981",
-            "--accent-soft": "rgba(16, 185, 129, 0.18)",
-            "--accent-glow": "rgba(16, 185, 129, 0.4)"
-          }
-        },
-        {
-          id: "amber_retro",
-          name: "琥珀复古",
-          sub: "暖棕黑 + 复古橙金",
-          dot: "linear-gradient(135deg, #f59e0b, #b45309)",
-          vars: {
-            "--bg-app": "#120f0b",
-            "--bg-panel": "#1c1711",
-            "--bg-card": "#211b13",
-            "--bg-well": "#17120c",
-            "--text-primary": "#fef3c7",
-            "--text-secondary": "#fcd34d",
-            "--border": "rgba(245, 158, 11, 0.28)",
-            "--accent": "#f59e0b",
-            "--accent-soft": "rgba(245, 158, 11, 0.2)",
-            "--accent-glow": "rgba(245, 158, 11, 0.42)"
-          }
-        },
-        {
-          id: "sakura_frost",
-          name: "樱雪柔粉",
-          sub: "明亮浅粉凝霜",
-          dot: "linear-gradient(135deg, #f472b6, #fbcfe8)",
-          vars: {
-            "--bg-app": "#fdf2f8",
-            "--bg-panel": "#ffffff",
-            "--bg-card": "#ffffff",
-            "--bg-well": "#fce7f3",
-            "--text-primary": "#3b0764",
-            "--text-secondary": "#831843",
-            "--text-muted": "#9d174d",
-            "--border": "rgba(219, 39, 119, 0.2)",
-            "--accent": "#db2777",
-            "--accent-soft": "rgba(219, 39, 119, 0.14)",
-            "--accent-glow": "rgba(219, 39, 119, 0.34)"
-          }
+    const SKINS = [
+      {
+        id: "steamos-oled",
+        name: "SteamOS OLED",
+        tag: "深色",
+        desc: "深邃石墨蓝 · 经典掌机质感",
+        preview: { base: "#0d1117", card: "#18202c", accent: "#1a9fff" },
+        vars: {
+          "--bg-base": "#0d1117",
+          "--bg-elevated": "rgba(18, 24, 34, 0.90)",
+          "--bg-card": "rgba(24, 32, 44, 0.86)",
+          "--bg-row": "rgba(32, 42, 58, 0.72)",
+          "--bg-well": "rgba(10, 14, 20, 0.92)",
+          "--text-primary": "#edf2f7",
+          "--text-secondary": "#9fb0c6",
+          "--text-muted": "#66778e",
+          "--border": "rgba(148, 179, 214, 0.13)",
+          "--border-strong": "rgba(148, 179, 214, 0.25)",
+          "--accent": "#1a9fff",
+          "--accent-hover": "#3eb0ff",
+          "--accent-soft": "rgba(26, 159, 255, 0.18)",
+          "--accent-glow": "rgba(26, 159, 255, 0.34)"
         }
-      ];
+      },
+      {
+        id: "rog-obsidian",
+        name: "曜石电竞红",
+        tag: "深色",
+        desc: "哑光纯黑底 · 锐利绯红高亮",
+        preview: { base: "#0b0c10", card: "#171820", accent: "#e63950" },
+        vars: {
+          "--bg-base": "#0b0c10",
+          "--bg-elevated": "rgba(18, 19, 25, 0.92)",
+          "--bg-card": "rgba(24, 26, 34, 0.88)",
+          "--bg-row": "rgba(33, 35, 46, 0.76)",
+          "--bg-well": "rgba(9, 10, 14, 0.94)",
+          "--text-primary": "#f5f6fa",
+          "--text-secondary": "#a8abb8",
+          "--text-muted": "#6d707f",
+          "--border": "rgba(255, 255, 255, 0.09)",
+          "--border-strong": "rgba(230, 57, 80, 0.35)",
+          "--accent": "#e63950",
+          "--accent-hover": "#f2556a",
+          "--accent-soft": "rgba(230, 57, 80, 0.18)",
+          "--accent-glow": "rgba(230, 57, 80, 0.36)"
+        }
+      },
+      {
+        id: "mac-frost",
+        name: "凝霜玻璃白",
+        tag: "浅色",
+        desc: "高级通透浅白 · 日间高对比度",
+        preview: { base: "#edf1f7", card: "#ffffff", accent: "#2563eb" },
+        vars: {
+          "--bg-base": "#edf1f7",
+          "--bg-elevated": "rgba(255, 255, 255, 0.90)",
+          "--bg-card": "rgba(255, 255, 255, 0.86)",
+          "--bg-row": "rgba(236, 241, 248, 0.92)",
+          "--bg-well": "rgba(224, 231, 241, 0.92)",
+          "--text-primary": "#0f172a",
+          "--text-secondary": "#475569",
+          "--text-muted": "#64748b",
+          "--border": "rgba(15, 23, 42, 0.11)",
+          "--border-strong": "rgba(15, 23, 42, 0.22)",
+          "--accent": "#2563eb",
+          "--accent-hover": "#3b82f6",
+          "--accent-soft": "rgba(37, 99, 235, 0.14)",
+          "--accent-glow": "rgba(37, 99, 235, 0.28)"
+        }
+      },
+      {
+        id: "nordic-teal",
+        name: "北欧午夜青",
+        tag: "深色",
+        desc: "静谧深海青灰 · 冰川绿松石",
+        preview: { base: "#0b1418", card: "#132229", accent: "#14b8a6" },
+        vars: {
+          "--bg-base": "#0b1418",
+          "--bg-elevated": "rgba(15, 27, 33, 0.90)",
+          "--bg-card": "rgba(20, 35, 42, 0.86)",
+          "--bg-row": "rgba(27, 46, 55, 0.72)",
+          "--bg-well": "rgba(8, 16, 20, 0.92)",
+          "--text-primary": "#ecfdf5",
+          "--text-secondary": "#94b8b5",
+          "--text-muted": "#5d7e7d",
+          "--border": "rgba(45, 212, 191, 0.14)",
+          "--border-strong": "rgba(45, 212, 191, 0.28)",
+          "--accent": "#14b8a6",
+          "--accent-hover": "#2dd4bf",
+          "--accent-soft": "rgba(20, 184, 166, 0.18)",
+          "--accent-glow": "rgba(20, 184, 166, 0.34)"
+        }
+      },
+      {
+        id: "warm-amber",
+        name: "暖琥珀护眼",
+        tag: "护眼",
+        desc: "深夜低蓝光暖棕 · 柔和琥珀金",
+        preview: { base: "#14110f", card: "#221c18", accent: "#f59e0b" },
+        vars: {
+          "--bg-base": "#14110f",
+          "--bg-elevated": "rgba(28, 23, 19, 0.90)",
+          "--bg-card": "rgba(36, 30, 25, 0.86)",
+          "--bg-row": "rgba(48, 40, 33, 0.76)",
+          "--bg-well": "rgba(15, 12, 10, 0.92)",
+          "--text-primary": "#faf3e8",
+          "--text-secondary": "#c7b6a1",
+          "--text-muted": "#877664",
+          "--border": "rgba(245, 158, 11, 0.15)",
+          "--border-strong": "rgba(245, 158, 11, 0.30)",
+          "--accent": "#f59e0b",
+          "--accent-hover": "#fbbf24",
+          "--accent-soft": "rgba(245, 158, 11, 0.18)",
+          "--accent-glow": "rgba(245, 158, 11, 0.32)"
+        }
+      },
+      {
+        id: "midnight-violet",
+        name: "深空紫罗兰",
+        tag: "深色",
+        desc: "沉静靛蓝夜色 · 柔和薰衣草",
+        preview: { base: "#0f0f1a", card: "#1a1a2e", accent: "#8b5cf6" },
+        vars: {
+          "--bg-base": "#0f0f1a",
+          "--bg-elevated": "rgba(20, 20, 36, 0.90)",
+          "--bg-card": "rgba(27, 27, 48, 0.86)",
+          "--bg-row": "rgba(37, 37, 64, 0.74)",
+          "--bg-well": "rgba(11, 11, 21, 0.92)",
+          "--text-primary": "#f3f1ff",
+          "--text-secondary": "#aba6cc",
+          "--text-muted": "#6e6991",
+          "--border": "rgba(139, 92, 246, 0.16)",
+          "--border-strong": "rgba(139, 92, 246, 0.32)",
+          "--accent": "#8b5cf6",
+          "--accent-hover": "#a78bfa",
+          "--accent-soft": "rgba(139, 92, 246, 0.20)",
+          "--accent-glow": "rgba(139, 92, 246, 0.36)"
+        }
+      }
+    ];
 
-      let activeId = (await HaloDeckPlugin.storage.get("activePresetId")) || "";
-      const grid = document.getElementById("presetGrid");
-      const picker = document.getElementById("accentPicker");
+    const RADIUS_PRESETS = [
+      { id: "sharp", label: "硬朗折角", vars: { "--radius-sm": "4px", "--radius-md": "6px", "--radius-lg": "9px", "--radius-card": "10px", "--radius-inner": "7px" } },
+      { id: "balanced", label: "经典均衡", vars: { "--radius-sm": "6px", "--radius-md": "10px", "--radius-lg": "14px", "--radius-card": "16px", "--radius-inner": "11px" } },
+      { id: "pill", label: "柔润掌机", vars: { "--radius-sm": "9px", "--radius-md": "14px", "--radius-lg": "18px", "--radius-card": "22px", "--radius-inner": "14px" } }
+    ];
 
-      function renderPresets() {
-        grid.innerHTML = PRESETS.map((p) => `
-          <button class="skin-btn ${activeId === p.id ? "active" : ""}" data-skin="${p.id}">
-            <span class="swatch" style="background:${p.dot};"></span>
-            <span class="skin-meta">
-              <strong>${p.name}</strong>
-              <span>${p.sub}</span>
-            </span>
-          </button>
-        `).join("");
+    const ACCENT_SWATCHES = ["#1a9fff", "#2563eb", "#06b6d4", "#14b8a6", "#22c55e", "#f59e0b", "#f97316", "#e63950", "#ec4899", "#8b5cf6"];
 
-        grid.querySelectorAll("[data-skin]").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const p = PRESETS.find((x) => x.id === btn.dataset.skin);
-            if (!p) return;
-            await HaloDeckPlugin.theme.applyVariables(p.vars);
-            activeId = p.id;
-            await HaloDeckPlugin.storage.set("activePresetId", activeId);
-            renderPresets();
-            HaloDeckPlugin.toast(`已应用皮肤：${p.name}`, "success");
-          });
-        });
+    function hslToHex(h, s, l) {
+      s /= 100; l /= 100;
+      const k = (n) => (n + h / 30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      return "#" + [f(0), f(8), f(4)].map((x) => Math.round(255 * x).toString(16).padStart(2, "0")).join("");
+    }
+
+    function syncAccentInputs(hex) {
+      if (!/^#[0-9a-f]{6}$/i.test(hex || "")) return;
+      document.getElementById("customAccentHex").value = hex.toLowerCase();
+      document.getElementById("accentPreviewDot").style.background = hex;
+    }
+
+    let currentState = { skinId: null, radiusId: "balanced", customAccent: null };
+
+    function hexToRgba(hex, alpha) {
+      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+      if (!m) return `rgba(26, 140, 255, ${alpha})`;
+      return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+    }
+
+    function lightenHex(hex, amount) {
+      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+      if (!m) return hex;
+      const clamp = (v) => Math.min(255, Math.max(0, v));
+      const r = clamp(parseInt(m[1], 16) + amount);
+      const g = clamp(parseInt(m[2], 16) + amount);
+      const b = clamp(parseInt(m[3], 16) + amount);
+      return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function applyComposedTheme(toastText) {
+      const skin = SKINS.find((s) => s.id === currentState.skinId);
+      const radius = RADIUS_PRESETS.find((r) => r.id === currentState.radiusId) || RADIUS_PRESETS[1];
+      const vars = { ...(skin ? skin.vars : {}), ...radius.vars };
+      if (skin) {
+        vars["--bg-subtile"] = skin.vars["--bg-row"];
+        vars["--bg-card-solid"] = skin.preview.card;
       }
 
-      document.getElementById("btnApplyAccent").addEventListener("click", async () => {
-        const hex = picker.value || "#a855f7";
-        await HaloDeckPlugin.theme.applyVariables({
-          "--accent": hex,
-          "--accent-glow": hex
+      if (currentState.customAccent) {
+        vars["--accent"] = currentState.customAccent;
+        vars["--accent-hover"] = lightenHex(currentState.customAccent, 24);
+        vars["--accent-soft"] = hexToRgba(currentState.customAccent, 0.18);
+        vars["--accent-glow"] = hexToRgba(currentState.customAccent, 0.34);
+      }
+
+      await HaloDeckPlugin.theme.setVariables(vars);
+      await HaloDeckPlugin.storage.set("skinStudioState", currentState);
+      if (toastText) HaloDeckPlugin.ui.toast(toastText, "success");
+      render();
+    }
+
+    function render() {
+      const grid = document.getElementById("skinGrid");
+      grid.innerHTML = SKINS.map((s) => `
+        <button class="skin-card ${currentState.skinId === s.id ? "active" : ""}" data-skin="${s.id}">
+          <div class="mini-ui" style="background:${s.preview.base};">
+            <div class="mini-bar">
+              <div class="mini-dots">
+                <span class="mini-dot" style="background:${s.preview.accent};"></span>
+                <span class="mini-dot" style="background:${s.vars["--text-muted"]};"></span>
+              </div>
+              <span class="mini-pill" style="background:${s.preview.accent};"></span>
+            </div>
+            <div class="mini-row">
+              <div class="mini-box" style="background:${s.preview.card};"></div>
+              <div class="mini-box" style="background:${s.preview.card};"></div>
+            </div>
+          </div>
+          <div class="skin-name"><span>${s.name}</span><span class="tag">${s.tag}</span></div>
+          <div class="skin-desc">${s.desc}</div>
+        </button>
+      `).join("");
+
+      grid.querySelectorAll("[data-skin]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const skin = SKINS.find((x) => x.id === btn.dataset.skin);
+          if (!skin) return;
+          currentState.skinId = skin.id;
+          currentState.customAccent = null;
+          syncAccentInputs(skin.preview.accent);
+          await applyComposedTheme(`已应用皮肤「${skin.name}」`);
         });
-        activeId = "custom";
-        await HaloDeckPlugin.storage.set("activePresetId", activeId);
-        renderPresets();
-        HaloDeckPlugin.toast(`已应用自定义强调色 ${hex}`, "success");
       });
 
-      document.getElementById("btnReset").addEventListener("click", async () => {
-        await HaloDeckPlugin.theme.reset();
-        activeId = "";
-        await HaloDeckPlugin.storage.remove("activePresetId");
-        renderPresets();
-        HaloDeckPlugin.toast("已恢复 HaloDeck 原生皮肤", "info");
+      const rRow = document.getElementById("radiusRow");
+      rRow.innerHTML = RADIUS_PRESETS.map((r) => `
+        <button class="seg-btn ${currentState.radiusId === r.id ? "active" : ""}" data-radius="${r.id}">${r.label}</button>
+      `).join("");
+      rRow.querySelectorAll("[data-radius]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          currentState.radiusId = btn.dataset.radius;
+          await applyComposedTheme(`已切换圆角风格：${RADIUS_PRESETS.find((x) => x.id === currentState.radiusId)?.label}`);
+        });
       });
 
-      renderPresets();
+      const swWrap = document.getElementById("swatches");
+      const activeAccent = currentState.customAccent || SKINS.find((s) => s.id === currentState.skinId)?.preview.accent || "#1a9fff";
+      swWrap.innerHTML = ACCENT_SWATCHES.map((hex) => `
+        <button class="swatch ${activeAccent.toLowerCase() === hex ? "active" : ""}" data-swatch="${hex}" style="background:${hex};" title="${hex}"></button>
+      `).join("");
+      swWrap.querySelectorAll("[data-swatch]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          currentState.customAccent = btn.dataset.swatch;
+          syncAccentInputs(btn.dataset.swatch);
+          await applyComposedTheme("已应用主强调色");
+        });
+      });
+    }
+
+    document.getElementById("hueSlider").addEventListener("input", (e) => {
+      const hex = hslToHex(Number(e.target.value), 86, 56);
+      syncAccentInputs(hex);
+    });
+
+    document.getElementById("customAccentHex").addEventListener("input", (e) => {
+      const v = e.target.value.trim();
+      if (/^#[0-9a-f]{6}$/i.test(v)) {
+        document.getElementById("accentPreviewDot").style.background = v;
+      }
+    });
+
+    document.getElementById("btnApplyAccent").addEventListener("click", async () => {
+      const hex = document.getElementById("customAccentHex").value.trim();
+      if (!/^#[0-9a-f]{6}$/i.test(hex)) {
+        HaloDeckPlugin.toast("请输入合法的 6 位色号，如 #1a9fff", "warn");
+        return;
+      }
+      currentState.customAccent = hex;
+      await applyComposedTheme("已应用自定义强调色");
+    });
+
+    document.getElementById("btnReset").addEventListener("click", async () => {
+      currentState = { skinId: null, radiusId: "balanced", customAccent: null };
+      await HaloDeckPlugin.theme.reset();
+      await HaloDeckPlugin.storage.set("skinStudioState", currentState);
+      HaloDeckPlugin.toast("已还原 HaloDeck 默认主题", "info");
+      render();
+    });
+
+    (async () => {
+      try {
+        const saved = await HaloDeckPlugin.storage.get("skinStudioState");
+        if (saved && typeof saved === "object") {
+          currentState = { skinId: saved.skinId || null, radiusId: saved.radiusId || "balanced", customAccent: saved.customAccent || null };
+          const accent = currentState.customAccent || SKINS.find((s) => s.id === currentState.skinId)?.preview.accent;
+          if (accent) syncAccentInputs(accent);
+        }
+      } catch {}
+      render();
     })();
   </script>
 </body>

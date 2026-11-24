@@ -3,112 +3,322 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>掌机游戏备忘笔记</title>
+  <title>掌机游玩计时与游戏备忘</title>
   <script src="https://app.halodeck.local/plugin-sdk.js"></script>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      padding: 12px;
-      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-      background: var(--bg-app, #0b111b);
-      color: var(--text-primary, #f1f5f9);
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg-base, #0e1014);
+      color: var(--text-primary, #f2f5fa);
+      padding: 14px;
       font-size: 13px;
     }
+    .stack { display: flex; flex-direction: column; gap: 11px; }
     .card {
-      background: var(--bg-card, #111827);
-      border: 1px solid var(--border, rgba(255,255,255,0.1));
-      border-radius: 12px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+      background: var(--bg-card, rgba(24, 28, 35, 0.85));
+      border: 1px solid var(--border, rgba(255,255,255,0.09));
+      border-radius: var(--radius-lg, 14px);
+      padding: 12px 14px;
     }
-    .row { display: flex; gap: 8px; align-items: center; }
-    select, textarea {
-      width: 100%;
-      border-radius: 8px;
-      border: 1px solid var(--border, rgba(255,255,255,0.14));
-      background: var(--bg-well, #0d1422);
-      color: var(--text-primary, #f1f5f9);
-      padding: 8px 10px;
-      font: inherit;
-      outline: none;
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .title { font-size: 13.5px; font-weight: 700; }
+    .badge {
+      font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+      background: var(--accent-soft, rgba(26,140,255,0.16)); color: var(--accent, #1a8cff);
     }
-    textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
-    button {
-      border: 1px solid var(--accent, #1a8cff);
-      background: var(--accent, #1a8cff);
-      color: #fff;
-      padding: 7px 12px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
+    .badge.live { background: rgba(34,197,94,0.18); color: #22c55e; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+    .stat-box {
+      background: var(--bg-well, rgba(11,13,17,0.85));
+      border: 1px solid var(--border, rgba(255,255,255,0.08));
+      border-radius: 9px; padding: 8px 10px;
     }
-    .muted { font-size: 11.5px; color: var(--text-muted, #94a3b8); }
+    .stat-k { font-size: 10.5px; color: var(--text-muted, #6c7688); }
+    .stat-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+
+    /* Pure-DOM custom dropdown (100% immune to WS_EX_NOACTIVATE popup closing) */
+    .dropdown { position: relative; }
+    .dd-trigger {
+      width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      border-radius: 9px; border: 1px solid var(--border-strong, rgba(255,255,255,0.15));
+      background: var(--bg-well, rgba(11,13,17,0.88)); color: var(--text-primary, #f2f5fa);
+      font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 11px; cursor: pointer; text-align: left;
+    }
+    .dd-trigger:hover { border-color: var(--accent, #1a8cff); }
+    .dd-menu {
+      margin-top: 6px; border-radius: 10px;
+      border: 1px solid var(--border-strong, rgba(255,255,255,0.18));
+      background: var(--bg-elevated, rgba(18,22,29,0.98));
+      padding: 6px; display: none; flex-direction: column; gap: 4px;
+      max-height: 210px; overflow-y: auto;
+    }
+    .dd-menu.open { display: flex; }
+    .dd-search {
+      width: 100%; padding: 6px 9px; border-radius: 7px; font-size: 12px;
+      border: 1px solid var(--border); background: var(--bg-well); color: var(--text-primary);
+      outline: none; margin-bottom: 2px;
+    }
+    .dd-search:focus { border-color: var(--accent, #1a8cff); }
+    .dd-item {
+      width: 100%; border: none; border-radius: 7px; padding: 7px 9px; cursor: pointer;
+      background: transparent; color: var(--text-primary); font-family: inherit; font-size: 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left;
+    }
+    .dd-item:hover { background: var(--bg-row, rgba(255,255,255,0.08)); }
+    .dd-item.active { background: var(--accent-soft, rgba(26,140,255,0.18)); color: var(--accent, #1a8cff); font-weight: 700; }
+    .dd-meta { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
+
+    textarea {
+      width: 100%; border-radius: 9px;
+      border: 1px solid var(--border-strong, rgba(255,255,255,0.15));
+      background: var(--bg-well, rgba(11,13,17,0.88));
+      color: var(--text-primary, #f2f5fa);
+      font-family: inherit; font-size: 12.5px; padding: 8px 10px; outline: none;
+      min-height: 118px; resize: vertical; line-height: 1.55; margin-top: 8px;
+    }
+    textarea:focus { border-color: var(--accent, #1a8cff); }
+    .tpl-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .pill {
+      padding: 4px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer;
+      border: 1px solid var(--border, rgba(255,255,255,0.12));
+      background: var(--bg-row, rgba(31,36,45,0.72)); color: var(--text-secondary, #a7b1c2);
+    }
+    .pill:hover { border-color: var(--accent, #1a8cff); color: var(--accent, #1a8cff); }
+    .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 9px; gap: 8px; }
+    .hint { font-size: 11px; color: var(--text-muted, #6c7688); }
+    .btn {
+      padding: 6px 13px; border-radius: 8px; border: 1px solid var(--border-strong);
+      background: var(--accent, #1a8cff); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .btn.ghost { background: var(--bg-row); color: var(--text-primary); }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="row" style="justify-content:space-between;">
-      <strong>游戏备忘笔记</strong>
-      <span id="runningTag" class="muted">未运行游戏</span>
+  <div class="stack">
+    <div class="card">
+      <div class="head">
+        <span class="title">当前游戏与游玩统计</span>
+        <span id="runBadge" class="badge">桌面待命</span>
+      </div>
+      <div class="dropdown">
+        <button id="ddTrigger" type="button" class="dd-trigger">
+          <span id="ddLabel">加载游戏列表...</span>
+          <span id="ddArrow">▾</span>
+        </button>
+        <div id="ddMenu" class="dd-menu">
+          <input id="ddSearch" class="dd-search" type="text" placeholder="搜索游戏名..." />
+          <div id="ddList"></div>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat-box"><div class="stat-k">累计游玩</div><div id="stTotal" class="stat-v">0 分钟</div></div>
+        <div class="stat-box"><div class="stat-k">本次会话</div><div id="stSession" class="stat-v">--</div></div>
+        <div class="stat-box"><div class="stat-k">记录次数</div><div id="stLaunches" class="stat-v">0 次</div></div>
+      </div>
     </div>
-    <select id="gameSelect"></select>
-    <textarea id="noteInput" placeholder="记录 Boss 招式、画质参数、键位提醒..."></textarea>
-    <div class="row" style="justify-content:space-between;">
-      <span id="statusText" class="muted">自动按游戏 ID 保存在插件私有存储</span>
-      <button id="btnSave">保存笔记</button>
+
+    <div class="card">
+      <div class="head">
+        <span class="title">游戏专属攻略与键位备忘</span>
+        <span id="saveState" class="hint">自动保存</span>
+      </div>
+      <div class="tpl-row">
+        <button class="pill" data-tpl="🎮 背键映射：L4 =  / R4 = ">+ 背键记录</button>
+        <button class="pill" data-tpl="⚡ 推荐画质：TDP W · 分辨率  · 帧率上限 ">+ 功耗/画质</button>
+        <button class="pill" data-tpl="📌 当前进度/Boss 弱点：">+ 攻略节点</button>
+      </div>
+      <textarea id="noteArea" placeholder="在这里记录这款游戏的出招表、背键方案、最佳 TDP/超分配置或支线待办..."></textarea>
+      <div class="actions">
+        <button id="btnClearNote" class="btn ghost">清空当前</button>
+        <button id="btnSaveNote" class="btn">立即保存</button>
+      </div>
     </div>
   </div>
+
   <script>
+    let games = [];
+    let activeGameId = "_global";
+    let runningGameId = null;
+    let sessionStartMs = null;
+    let storeData = { notes: {}, stats: {} };
+    let saveTimer = null;
+    let ddOpen = false;
+
+    function fmtDuration(sec) {
+      sec = Math.max(0, Math.floor(sec || 0));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function getStat(gid) {
+      if (!storeData.stats[gid]) storeData.stats[gid] = { totalSeconds: 0, launches: 0, lastPlayedAt: null };
+      return storeData.stats[gid];
+    }
+
+    function getDisplayTitle(gid) {
+      if (gid === "_global") return "📌 通用全局备忘（桌面/全部游戏）";
+      const found = games.find((g) => g.id === gid);
+      return found ? found.title : gid;
+    }
+
+    async function persist() {
+      await HaloDeckPlugin.storage.set("gameNotebookV2", storeData);
+      document.getElementById("saveState").textContent = "已保存 · " + new Date().toLocaleTimeString();
+    }
+
+    function renderDropdownList() {
+      const q = (document.getElementById("ddSearch").value || "").trim().toLowerCase();
+      const allOpts = [{ id: "_global", title: "📌 通用全局备忘（桌面/全部游戏）" }, ...games];
+      const filtered = q ? allOpts.filter((o) => (o.title || "").toLowerCase().includes(q)) : allOpts;
+      const listEl = document.getElementById("ddList");
+      listEl.innerHTML = filtered.map((o) => {
+        const st = storeData.stats[o.id];
+        const meta = st?.totalSeconds > 0 ? fmtDuration(st.totalSeconds) : (storeData.notes[o.id]?.trim() ? "有备忘" : "");
+        return `<button type="button" class="dd-item ${o.id === activeGameId ? "active" : ""}" data-gid="${o.id.replace(/"/g, "&quot;")}">
+          <span>${o.title.replace(/</g, "&lt;")}</span>
+          ${meta ? `<span class="dd-meta">${meta}</span>` : ""}
+        </button>`;
+      }).join("");
+      listEl.querySelectorAll("[data-gid]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectGame(btn.dataset.gid);
+          toggleDropdown(false);
+        });
+      });
+    }
+
+    function toggleDropdown(next) {
+      ddOpen = typeof next === "boolean" ? next : !ddOpen;
+      document.getElementById("ddMenu").classList.toggle("open", ddOpen);
+      document.getElementById("ddArrow").textContent = ddOpen ? "▴" : "▾";
+      if (ddOpen) {
+        renderDropdownList();
+      }
+    }
+
+    function renderStats() {
+      const st = getStat(activeGameId);
+      const liveDelta = (runningGameId && runningGameId === activeGameId && sessionStartMs)
+        ? Math.floor((Date.now() - sessionStartMs) / 1000)
+        : 0;
+      document.getElementById("stTotal").textContent = fmtDuration((st.totalSeconds || 0) + liveDelta);
+      document.getElementById("stSession").textContent = liveDelta > 0 ? fmtDuration(liveDelta) : "--";
+      document.getElementById("stLaunches").textContent = `${st.launches || 0} 次`;
+
+      const badge = document.getElementById("runBadge");
+      if (runningGameId) {
+        const rg = games.find((g) => g.id === runningGameId);
+        badge.textContent = `● 运行中：${rg ? rg.title : runningGameId}`;
+        badge.className = "badge live";
+      } else {
+        badge.textContent = "桌面待命";
+        badge.className = "badge";
+      }
+    }
+
+    function selectGame(gid) {
+      activeGameId = gid || "_global";
+      document.getElementById("ddLabel").textContent = getDisplayTitle(activeGameId);
+      document.getElementById("noteArea").value = storeData.notes[activeGameId] || "";
+      renderStats();
+    }
+
+    async function commitRunningSession() {
+      if (!runningGameId || !sessionStartMs) return;
+      const elapsed = Math.floor((Date.now() - sessionStartMs) / 1000);
+      if (elapsed > 0) {
+        const st = getStat(runningGameId);
+        st.totalSeconds = (st.totalSeconds || 0) + elapsed;
+        st.lastPlayedAt = new Date().toISOString();
+        await persist();
+      }
+      sessionStartMs = null;
+    }
+
+    document.getElementById("ddTrigger").addEventListener("click", () => toggleDropdown());
+    document.getElementById("ddSearch").addEventListener("input", () => renderDropdownList());
+
+    document.getElementById("noteArea").addEventListener("input", (e) => {
+      storeData.notes[activeGameId] = e.target.value;
+      document.getElementById("saveState").textContent = "输入中...";
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => persist().catch(() => {}), 450);
+    });
+
+    document.getElementById("btnSaveNote").addEventListener("click", async () => {
+      storeData.notes[activeGameId] = document.getElementById("noteArea").value;
+      await persist();
+      HaloDeckPlugin.toast("游戏备忘已保存", "success");
+    });
+
+    document.getElementById("btnClearNote").addEventListener("click", async () => {
+      document.getElementById("noteArea").value = "";
+      storeData.notes[activeGameId] = "";
+      await persist();
+      HaloDeckPlugin.toast("已清空当前游戏备忘", "info");
+    });
+
+    document.querySelectorAll("[data-tpl]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const area = document.getElementById("noteArea");
+        const prefix = area.value && !area.value.endsWith("\n") ? "\n" : "";
+        area.value = area.value + prefix + btn.dataset.tpl;
+        storeData.notes[activeGameId] = area.value;
+        area.focus();
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => persist().catch(() => {}), 350);
+      });
+    });
+
+    HaloDeckPlugin.on("gameStarted", async (data) => {
+      await commitRunningSession();
+      if (data?.gameId) {
+        runningGameId = data.gameId;
+        sessionStartMs = Date.now();
+        const st = getStat(runningGameId);
+        st.launches = (st.launches || 0) + 1;
+        await persist();
+        selectGame(runningGameId);
+      }
+    });
+
+    HaloDeckPlugin.on("gameStopped", async () => {
+      await commitRunningSession();
+      runningGameId = null;
+      renderStats();
+    });
+
+    setInterval(renderStats, 1000);
+
     (async () => {
-      await HaloDeckPlugin.ready();
-      const selectEl = document.getElementById("gameSelect");
-      const noteEl = document.getElementById("noteInput");
-      const runningEl = document.getElementById("runningTag");
-      const statusEl = document.getElementById("statusText");
-
-      let notesMap = (await HaloDeckPlugin.storage.get("notesByGame")) || {};
-      let games = await HaloDeckPlugin.getGames();
-      let running = await HaloDeckPlugin.getRunningGame();
-
-      function syncRunningLabel(g) {
-        runningEl.textContent = g ? `运行中：${g.title}` : "未运行游戏";
-      }
-
-      function populateGames(preferId) {
-        const opts = [{ id: "__global__", title: "通用备忘录" }, ...games];
-        selectEl.innerHTML = opts.map((g) => `<option value="${g.id}">${g.title}</option>`).join("");
-        if (preferId && opts.some((g) => g.id === preferId)) {
-          selectEl.value = preferId;
+      try {
+        const saved = await HaloDeckPlugin.storage.get("gameNotebookV2");
+        if (saved && typeof saved === "object") {
+          storeData = { notes: saved.notes || {}, stats: saved.stats || {} };
         }
-        noteEl.value = notesMap[selectEl.value] || "";
-      }
+        const [list, running] = await Promise.all([
+          HaloDeckPlugin.getGames().catch(() => []),
+          HaloDeckPlugin.getRunningGame().catch(() => null)
+        ]);
+        games = Array.isArray(list) ? list : [];
 
-      syncRunningLabel(running);
-      populateGames(running?.id || "__global__");
-
-      selectEl.addEventListener("change", () => {
-        noteEl.value = notesMap[selectEl.value] || "";
-      });
-
-      document.getElementById("btnSave").addEventListener("click", async () => {
-        notesMap[selectEl.value] = noteEl.value;
-        await HaloDeckPlugin.storage.set("notesByGame", notesMap);
-        statusEl.textContent = `已保存 (${new Date().toLocaleTimeString()})`;
-        HaloDeckPlugin.toast("备忘笔记已保存", "success");
-      });
-
-      HaloDeckPlugin.onEvent((name, game) => {
-        if (name === "gameStarted" && game?.id) {
-          syncRunningLabel(game);
-          selectEl.value = game.id;
-          noteEl.value = notesMap[game.id] || "";
-        } else if (name === "gameStopped") {
-          syncRunningLabel(null);
+        if (running?.id) {
+          runningGameId = running.id;
+          sessionStartMs = Date.now();
+          selectGame(running.id);
+        } else if (games.length > 0) {
+          selectGame(games[0].id);
+        } else {
+          selectGame("_global");
         }
-      });
+      } catch (err) {
+        HaloDeckPlugin.toast("加载游戏列表失败：" + err.message, "error");
+      }
     })();
   </script>
 </body>

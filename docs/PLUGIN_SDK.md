@@ -169,21 +169,23 @@ HaloDeck 启动后端子进程时会注入以下环境变量：
 ## 6. 官方示例模板
 
 仓库 `examples/plugins/` 内置了三套可直接打包 `.zip` 测试的开箱示例：
-1. **`examples/plugins/halodeck.game-notes`** — 纯前端零后端示例（单机游戏备忘笔记，支持 QAM 与主界面，自动联动当前运行游戏与浅/深主题）。
-2. **`examples/plugins/halodeck.skin-studio`** — 皮肤主题插件示例（Decky CSS Loader 风格，通过 `ui:theme` 权限提供 5 套掌机皮肤 + 自定义强调色，停用插件自动还原原生皮肤）。
-3. **`examples/plugins/halodeck.backend-demo`** — 带 `stdio JSON-RPC 2.0` PowerShell 独立后端示例（演示后端 RPC 调用、流式进度推送、`stderr` 调试日志与游戏生命周期事件）。
+1. **`examples/plugins/halodeck.skin-studio`** — 视觉主题工坊（Decky CSS Loader 风格，通过 `ui:theme` 权限提供 6 套掌机主题、3 种圆角风格与自定义主强调色调色板，停用插件自动还原原生皮肤）。
+2. **`examples/plugins/halodeck.game-notes`** — 掌机游玩计时与游戏备忘（纯前端零后端，自动追踪每款游戏的累计游玩时长、启动次数与最近游玩时间，支持自定义下拉选择游戏、快捷备忘模板与双主题自适应）。
+3. **`examples/plugins/halodeck.backend-demo`** — 硬件曲线与一键诊断报告（带 `stdio JSON-RPC 2.0` PowerShell 独立后端，实时绘制 APU 功耗/温度 SVG 曲线并一键导出硬件与游戏库诊断报告，同时演示后端 RPC 调用、`stderr` 调试日志与游戏生命周期事件）。
 
 打包方法：将单个插件目录（或目录内全部文件）压缩为 `.zip`，确保压缩包根目录或唯一一层子目录包含 `plugin.json`，在 HaloDeck 顶部点击 🔌 → **「导入 .zip 插件」** 即可体验。
 
+> 💡 **掌机手柄与双主题提示**：`plugin-sdk.js` 已内置掌机手柄自动空间导航（方向键、`A` 确认、`B` 返回、左右调节 `<input type="range">` 滑块）以及深/浅双主题 CSS 变量自动同步；建议下拉框/颜色选择器使用纯 DOM 组件以确保在 QAM 无焦点侧栏窗口下稳定交互。
 
 ---
 
-## 7. 零服务器发布到社区插件商店（`store.json` / GitHub 直装）
+## 7. 发布与分发（官方商店 Decky 审核 / 社区独立源）
 
-无需任何后端服务器，社区开发者可通过两种方式分发插件：
-
-1. **GitHub 仓库直装（最快）**：
+1. **提交上架官方纯净商店（推荐，Decky 审核模式）**：
+   - 开源仓库 + 锁定 40 位不可变 `commit` SHA + 禁止源码夹带预编译二进制 + GitHub Actions 干净环境重编译与 `SHA-256` 核验；
+   - 完整提交流程与 JSON 登记模板见 [`plugins/submissions/README.md`](../plugins/submissions/README.md)。
+2. **GitHub 仓库直装（最快）**：
    - 将你的插件打包为 `.zip`（根目录或单层子目录含 `plugin.json`）上传至自己仓库的 GitHub Release；
    - 用户只需在 HaloDeck「插件中心 → **链接 / GitHub 直装**」输入你的 `owner/repo` 或 `.zip` 链接即可一键安装。
-2. **搭建第三方社区商店源（`store.json`）**：
+3. **搭建第三方社区商店源（`store.json`）**：
    - 在 GitHub / Gitee 托管一个静态 `store.json`（格式参考本仓库 [`plugins/store.json`](../plugins/store.json)），用户可在「插件中心 → **插件商店**」点击 **「+ 订阅源」** 粘入 `https://...` 地址，自动支持版本比对与一键更新（更新时保留 `plugin_data` 用户数据）。

@@ -1155,10 +1155,27 @@
   }
 
   const PLUGIN_THEME_VAR_ALLOWLIST = [
-    "--bg-app", "--bg-panel", "--bg-card", "--bg-well", "--surface-subtle",
-    "--text-primary", "--text-secondary", "--text-muted", "--border",
-    "--accent", "--accent-soft", "--accent-glow"
+    "--bg-base", "--bg-elevated", "--bg-card", "--bg-card-solid", "--bg-subtile", "--bg-row", "--bg-well",
+    "--text-primary", "--text-secondary", "--text-muted",
+    "--border", "--border-strong",
+    "--accent", "--accent-hover", "--accent-soft", "--accent-glow", "--accent-grad",
+    "--radius-sm", "--radius-md", "--radius-lg", "--radius-card", "--radius-inner",
+    "--bg-app", "--bg-panel", "--surface-subtle"
   ];
+
+  function detectColorBrightness(colorStr) {
+    if (typeof colorStr !== "string") return null;
+    const s = colorStr.trim();
+    const hex = /^#([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(s);
+    if (hex) {
+      return 0.299 * parseInt(hex[1], 16) + 0.587 * parseInt(hex[2], 16) + 0.114 * parseInt(hex[3], 16);
+    }
+    const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+    if (rgb) {
+      return 0.299 * Number(rgb[1]) + 0.587 * Number(rgb[2]) + 0.114 * Number(rgb[3]);
+    }
+    return null;
+  }
 
   function applyPluginThemeOverride(themeObj) {
     const target = document.body.style;
@@ -1166,11 +1183,28 @@
       target.removeProperty(k);
     }
     const vars = themeObj?.variables;
-    if (!vars || typeof vars !== "object") return;
+    if (!vars || typeof vars !== "object") {
+      document.body.classList.remove("has-plugin-theme");
+      // Restore user's base Aurora/Frost mode when plugin theme is cleared
+      syncThemeDom(state.snapshot?.settings?.uiTheme || "aurora");
+      return;
+    }
+    document.body.classList.add("has-plugin-theme");
+    // Automatically align Aurora/Frost surface contrast rules with the plugin skin's base luminance
+    // so applying a dark skin while in Frost mode (or light skin in Aurora mode) never produces inverted patches.
+    const bgSample = vars["--bg-base"] || vars["--bg-app"];
+    const luma = detectColorBrightness(bgSample);
+    if (luma !== null) {
+      document.body.dataset.theme = luma > 145 ? "frost" : "aurora";
+    }
     for (const k of PLUGIN_THEME_VAR_ALLOWLIST) {
       if (typeof vars[k] === "string" && vars[k].trim()) {
         target.setProperty(k, vars[k].trim());
       }
+    }
+    // Keep --accent-grad synced with custom --accent so active pills/tabs never stay hardcoded blue
+    if (vars["--accent"] && !vars["--accent-grad"]) {
+      target.setProperty("--accent-grad", vars["--accent"].trim());
     }
   }
 
@@ -2319,6 +2353,13 @@
                   { value: "1", label: "100%" }
                 ], String(opacity >= 0.95 ? 1 : opacity >= 0.82 ? 0.88 : opacity >= 0.65 ? 0.75 : 0.55), "compact")}
               </div>
+              <div class="cw-row" style="min-height:42px;padding:7px 12px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">管理员游戏侧栏 / OSD 穿透 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
+                  <span class="cw-row-sub">平时保持普通权限即可兼容 Steam 大屏幕；仅游玩《终末地》《异环》等提权游戏出现侧栏/OSD 穿透异常时按需点击提权</span>
+                </div>
+                ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : `<span class="hh-card-badge live">已提权</span>`}
+              </div>
             </div>
           </div>
 
@@ -2643,11 +2684,11 @@
 
                 <div class="cw-row" style="min-height:44px;padding:8px 12px;">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">以管理员权限运行 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
-                    <span class="cw-row-sub">突破《终末地》《异环》等提权游戏的侧栏焦点与 Insert 拦截</span>
+                    <span class="cw-row-title">管理员提权穿透（按需启用） <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
+                    <span class="cw-row-sub">默认普通权限打开以防 Steam 大屏幕串线；仅游玩《终末地》《异环》等提权游戏时点右侧「临时提权重启」</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:6px;">
-                    ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">立即提权重启</button>` : ""}
+                    ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : ""}
                     ${renderSwitch("swRunAsAdmin", !!settings.runAsAdministrator)}
                   </div>
                 </div>
@@ -3496,8 +3537,8 @@
             </div>
             ${!snap.isElevated ? `
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">管理员权限游戏提权穿透</span>
-              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">提权重启</button>
+              <span class="cw-row-title">提权游戏侧栏 / OSD 穿透（本次临时）</span>
+              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权</button>
             </div>` : ""}
           </div>
 
@@ -3721,6 +3762,29 @@
     }
 
     if (mainView) {
+      // Preserve live mounted plugin <iframe> across background stateChanged telemetry ticks!
+      // Otherwise rebuilding innerHTML every 1-2s destroys <input type="color">, <select> popups, and form focus.
+      const isViewingPlugin =
+        !!state.activePluginId &&
+        ((IS_QAM && state.qamTab === "plugins") || (!IS_QAM && state.tab === "plugins"));
+      const existingFrame = isViewingPlugin ? document.getElementById("activePluginFrame") : null;
+      const activePluginStillValid = isViewingPlugin
+        ? (state.snapshot?.plugins || []).some((p) =>
+            p.id === state.activePluginId && p.enabled && p.isValid && !p.revokedByStore &&
+            (!IS_QAM || (p.mount || []).includes("qam")))
+        : false;
+      const keepMountedPluginFrame =
+        !!existingFrame &&
+        activePluginStillValid &&
+        existingFrame.dataset.pluginId === state.activePluginId &&
+        existingFrame.dataset.reloadNonce === String(state.pluginReloadNonce);
+
+      if (keepMountedPluginFrame) {
+        pushThemeToActivePluginFrame();
+        renderFooterLegend();
+        return;
+      }
+
       if (IS_QAM) {
         mainView.innerHTML = renderQamView();
       } else if (state.tab === "handheld") {
@@ -3792,21 +3856,30 @@
   function collectPluginThemePayload() {
     const cs = getComputedStyle(document.body);
     const pick = (name, fallback) => (cs.getPropertyValue(name) || "").trim() || fallback;
-    const theme = state.snapshot?.settings?.uiTheme || document.body.dataset.theme || "aurora";
+    const theme = document.body.dataset.theme === "frost" ? "frost" : "aurora";
+    const isLight = theme === "frost";
     return {
       __halodeckPluginTheme: true,
       theme,
       surface: IS_QAM ? "qam" : "console",
       cssVars: {
-        "--bg-app": pick("--bg-app", theme === "frost" ? "#eef2f8" : "#0b111b"),
-        "--bg-card": pick("--bg-card", theme === "frost" ? "#ffffff" : "#111827"),
-        "--bg-well": pick("--bg-well", theme === "frost" ? "#e5ebf5" : "#0d1422"),
-        "--text-primary": pick("--text-primary", theme === "frost" ? "#0f172a" : "#f1f5f9"),
-        "--text-secondary": pick("--text-secondary", theme === "frost" ? "#475569" : "#94a3b8"),
-        "--text-muted": pick("--text-muted", theme === "frost" ? "#64748b" : "#64748b"),
-        "--border": pick("--border", theme === "frost" ? "rgba(15,23,42,0.12)" : "rgba(255,255,255,0.1)"),
-        "--accent": pick("--accent", "#1a8cff"),
-        "--accent-soft": pick("--accent-soft", "rgba(26,140,255,0.16)"),
+        "--bg-base": pick("--bg-base", isLight ? "#ebf1f9" : "#0e1014"),
+        "--bg-app": pick("--bg-base", isLight ? "#ebf1f9" : "#0e1014"),
+        "--bg-elevated": pick("--bg-elevated", isLight ? "rgba(255,255,255,0.92)" : "rgba(20,23,29,0.88)"),
+        "--bg-card": pick("--bg-card-solid", isLight ? "#ffffff" : "rgba(24,28,35,0.86)"),
+        "--bg-row": pick("--bg-row", isLight ? "rgba(232,239,249,0.92)" : "rgba(31,36,45,0.72)"),
+        "--bg-subtile": pick("--bg-subtile", isLight ? "rgba(232,239,249,0.88)" : "rgba(31,36,45,0.72)"),
+        "--bg-well": pick("--bg-well", isLight ? "rgba(224,233,245,0.88)" : "rgba(11,13,17,0.88)"),
+        "--text-primary": pick("--text-primary", isLight ? "#0f172a" : "#f2f5fa"),
+        "--text-secondary": pick("--text-secondary", isLight ? "#475569" : "#a7b1c2"),
+        "--text-muted": pick("--text-muted", isLight ? "#64748b" : "#6c7688"),
+        "--border": pick("--border", isLight ? "rgba(15,23,42,0.11)" : "rgba(255,255,255,0.09)"),
+        "--border-strong": pick("--border-strong", isLight ? "rgba(15,23,42,0.20)" : "rgba(255,255,255,0.16)"),
+        "--accent": pick("--accent", isLight ? "#2563eb" : "#1a8cff"),
+        "--accent-hover": pick("--accent-hover", isLight ? "#1d4ed8" : "#3399ff"),
+        "--accent-soft": pick("--accent-soft", isLight ? "rgba(37,99,235,0.14)" : "rgba(26,140,255,0.16)"),
+        "--radius-md": pick("--radius-md", "10px"),
+        "--radius-lg": pick("--radius-lg", "14px"),
         "--success": "#22c55e",
         "--warn": "#f59e0b",
         "--danger": "#ef4444"
@@ -3814,11 +3887,17 @@
     };
   }
 
-  function pushThemeToActivePluginFrame() {
+  let lastPushedPluginThemeSig = "";
+
+  function pushThemeToActivePluginFrame(force = false) {
     const iframe = document.getElementById("activePluginFrame");
     if (!iframe?.contentWindow) return;
+    const payload = collectPluginThemePayload();
+    const sig = `${iframe.dataset.pluginId || ""}|${iframe.dataset.reloadNonce || ""}|${JSON.stringify(payload)}`;
+    if (!force && sig === lastPushedPluginThemeSig) return;
+    lastPushedPluginThemeSig = sig;
     try {
-      iframe.contentWindow.postMessage(collectPluginThemePayload(), "*");
+      iframe.contentWindow.postMessage(payload, "*");
     } catch {}
   }
 
@@ -3875,6 +3954,8 @@
         <iframe
           id="activePluginFrame"
           class="plugin-iframe"
+          data-plugin-id="${esc(plugin.id)}"
+          data-reload-nonce="${state.pluginReloadNonce}"
           sandbox="allow-scripts allow-forms"
           src="${esc(buildPluginIframeSrc(plugin))}"
           title="${esc(plugin.name)}">
@@ -4289,7 +4370,7 @@
   function bindPluginViewEvents() {
     const iframe = document.getElementById("activePluginFrame");
     if (iframe) {
-      iframe.addEventListener("load", () => pushThemeToActivePluginFrame());
+      iframe.addEventListener("load", () => pushThemeToActivePluginFrame(true));
       document.getElementById("btnPluginBack")?.addEventListener("click", () => {
         state.activePluginId = null;
         state.focusIndex = 0;
@@ -4520,7 +4601,7 @@
     }
 
     if (msg.action === "sdkLoaded") {
-      pushThemeToActivePluginFrame();
+      pushThemeToActivePluginFrame(true);
       return;
     }
 
@@ -5499,7 +5580,8 @@
     });
     document.getElementById("btnRelaunchAdmin")?.addEventListener("click", async () => {
       try {
-        const res = await rpc("relaunchAsAdmin", { persist: true });
+        // On-demand single-session elevation (persist: false) so normal launches remain non-elevated and Steam Big Picture friendly.
+        const res = await rpc("relaunchAsAdmin", { persist: false });
         if (res?.message) showToast(res.message, res.ok ? "success" : "warn");
       } catch (err) {
         showToast(err.message, "error");

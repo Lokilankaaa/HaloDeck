@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "id": "halodeck.game-notes",
-  "name": "掌机游戏备忘笔记",
-  "version": "1.0.0",
+  "name": "掌机游玩计时与游戏备忘",
+  "version": "1.1.0",
   "author": "HaloDeck",
-  "description": "纯前端示例插件：按游戏记录攻略备忘、按键提醒与通关清单，支持侧栏与主界面。",
-  "homepage": "https://github.com/Lokilankaaa/HaloDeck",
+  "description": "自动记录每款游戏的累计游玩时长、启动次数与最近游玩时间，并支持按游戏保存键位提醒、TDP/超分推荐与通关攻略备忘。",
+  "homepage": "https://github.com/Lokilankaaa/HaloDeck/tree/main/examples/plugins/halodeck.game-notes",
   "minHaloDeckVersion": "0.6.0",
   "mount": ["console", "qam"],
-  "activation": ["onView"],
+  "activation": ["onView", "onGameLaunch"],
   "entry": "ui/index.html",
   "permissions": ["games:read", "events:game", "storage"]
 }
