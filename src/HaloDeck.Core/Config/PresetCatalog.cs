@@ -119,6 +119,15 @@ public static class PresetCatalog
         return all.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? all[0];
     }
 
+    public static int NormalizeXeFgMultiplier(int multiplier) => multiplier switch
+    {
+        <= 2 => 2,
+        3 => 3,
+        _ => 4
+    };
+
+    public static int NormalizeXeFgDynamicTargetFps(int targetFps) => targetFps >= 10 ? targetFps : 0;
+
     private static string NormalizeUpscaler(string? value, bool isV10)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -299,6 +308,25 @@ public static class PresetCatalog
 
         if (isV10)
         {
+            if (fg == "xefg")
+            {
+                var multiplier = NormalizeXeFgMultiplier(config.XeFgMultiplier);
+                var interpCount = (multiplier - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                ini.Set("XeFG", "InterpolationCount", interpCount);
+                ini.Set("XeFG", "DynamicMFG", config.XeFgDynamicMfg ? "true" : "false");
+                var dmfgTarget = config.XeFgDynamicMfg ? NormalizeXeFgDynamicTargetFps(config.XeFgDynamicTargetFps) : 0;
+                ini.Set("XeFG", "FramerateTargetDMFG",
+                    dmfgTarget >= 10
+                        ? dmfgTarget.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : "auto");
+            }
+            else
+            {
+                ini.Set("XeFG", "InterpolationCount", "auto");
+                ini.Set("XeFG", "DynamicMFG", "auto");
+                ini.Set("XeFG", "FramerateTargetDMFG", "auto");
+            }
+
             var vsync = (config.VsyncMode ?? "on").Trim().ToLowerInvariant();
             switch (vsync)
             {
@@ -465,6 +493,36 @@ public static class PresetCatalog
             cfg.FgInputMode = fgInput;
         }
 
+        var xeInterp = ini.Get("XeFG", "InterpolationCount")?.Trim();
+        if (string.Equals(xeInterp, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.XeFgMultiplier = 2;
+        }
+        else if (int.TryParse(xeInterp, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var interpCount) && interpCount >= 1)
+        {
+            cfg.XeFgMultiplier = NormalizeXeFgMultiplier(interpCount + 1);
+        }
+
+        var xeDynamic = ini.Get("XeFG", "DynamicMFG")?.Trim();
+        if (string.Equals(xeDynamic, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.XeFgDynamicMfg = false;
+        }
+        else if (TryParseIniBool(xeDynamic, out var dynamicMfg))
+        {
+            cfg.XeFgDynamicMfg = dynamicMfg;
+        }
+
+        var xeDmfgTarget = ini.Get("XeFG", "FramerateTargetDMFG")?.Trim();
+        if (string.Equals(xeDmfgTarget, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.XeFgDynamicTargetFps = 0;
+        }
+        else if (double.TryParse(xeDmfgTarget, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dmfgTargetFps))
+        {
+            cfg.XeFgDynamicTargetFps = dmfgTargetFps >= 10.0 ? (int)Math.Round(dmfgTargetFps) : 0;
+        }
+
         var overrideVsync = ini.Get("V-Sync", "OverrideVsync")?.Trim().ToLowerInvariant();
         var forceVsync = ini.Get("V-Sync", "ForceVsync")?.Trim().ToLowerInvariant();
         if (overrideVsync == "true" && forceVsync == "true")
@@ -556,11 +614,23 @@ public static class PresetCatalog
         var vsync = (config.VsyncMode ?? "on").Trim().ToLowerInvariant();
         var vendor = (config.SpoofedVendorId ?? "auto").Trim().ToLowerInvariant();
 
+        var effectiveXeFgMult = fg == "xefg" ? NormalizeXeFgMultiplier(config.XeFgMultiplier) : 2;
+        var effectiveXeFgDmfg = fg == "xefg" && config.XeFgDynamicMfg;
+        var effectiveXeFgTarget = effectiveXeFgDmfg ? NormalizeXeFgDynamicTargetFps(config.XeFgDynamicTargetFps) : 0;
+
         foreach (var preset in GetPresets())
         {
             var pc = preset.Config;
+            var presetFg = pc.FgType.Trim().ToLowerInvariant();
+            var presetXeFgMult = presetFg == "xefg" ? NormalizeXeFgMultiplier(pc.XeFgMultiplier) : 2;
+            var presetXeFgDmfg = presetFg == "xefg" && pc.XeFgDynamicMfg;
+            var presetXeFgTarget = presetXeFgDmfg ? NormalizeXeFgDynamicTargetFps(pc.XeFgDynamicTargetFps) : 0;
+
             if (effectiveSr == ResolveEffectiveSrMode(pc) &&
-                fg == pc.FgType.Trim().ToLowerInvariant() &&
+                fg == presetFg &&
+                effectiveXeFgMult == presetXeFgMult &&
+                effectiveXeFgDmfg == presetXeFgDmfg &&
+                effectiveXeFgTarget == presetXeFgTarget &&
                 vsync == pc.VsyncMode.Trim().ToLowerInvariant() &&
                 config.FramerateLimit == pc.FramerateLimit &&
                 config.EnableOptiPatcher == pc.EnableOptiPatcher &&
