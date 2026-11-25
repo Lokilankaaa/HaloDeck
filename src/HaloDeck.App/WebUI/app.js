@@ -1260,7 +1260,8 @@
     patchLiveTelemetryDom(snap?.systemControl);
     if (snap?.hardwareProfile?.deviceName) {
       const el = document.getElementById("deviceTag");
-      if (el) el.textContent = "GPD WIN 5 · 8060S";
+      const curVer = snap?.appVersion || "0.6.2";
+      if (el) el.textContent = `GPD WIN 5 · v${curVer}`;
     }
     if (state.isDraggingRange || Date.now() < state.dragCooldownUntil) {
       state.pendingSnapshot = snap;
@@ -3804,14 +3805,22 @@
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
       const topVerBtn = document.getElementById("btnTopAppVersion");
+      const topVerLabel = document.getElementById("topAppUpdateLabel");
       if (topVerBtn) {
         const curVer = state.snapshot?.appVersion || "0.6.2";
         const upd = state.snapshot?.latestUpdate;
         const hasUpd = !!(upd && upd.hasUpdate);
         topVerBtn.classList.toggle("has-update", hasUpd);
-        topVerBtn.textContent = hasUpd
-          ? `⬆ v${upd.latestVersion}`
-          : `v${curVer}`;
+        topVerBtn.title = hasUpd
+          ? `发现新版本 v${upd.latestVersion}，点击查看更新日志并一键更新`
+          : `当前版本 v${curVer}，点击检查在线更新`;
+        const labelText = state.appUpdateChecking
+          ? "检查中..."
+          : (hasUpd ? `更新 v${upd.latestVersion}` : "检查更新");
+        if (topVerLabel) topVerLabel.textContent = labelText;
+        else topVerBtn.textContent = labelText;
+        const devTag = document.getElementById("deviceTag");
+        if (devTag) devTag.textContent = `GPD WIN 5 · v${curVer}`;
       }
     }
 
@@ -6947,7 +6956,7 @@
     sub.textContent = `当前版本 v${curVer} · 走零限流 GitHub Releases 通道（支持镜像前缀与 SHA-256 校验）`;
 
     body.innerHTML = `
-      <div class="plugin-detail-box">
+      <div class="update-modal-layout">
         <div class="plugin-detail-head">
           <span class="hh-card-badge">当前版本：v${esc(curVer)}</span>
           ${upd ? `<span class="hh-card-badge ${hasUpd ? "live" : ""}">${hasUpd ? `发现新版：v${esc(upd.latestVersion)}${upd.isPrerelease ? " (测试版)" : ""}` : `最新版本：v${esc(upd.latestVersion)}（已是最新）`}</span>` : `<span class="hh-card-badge">尚未检查</span>`}
@@ -6959,23 +6968,24 @@
         </div>
 
         ${upd?.releaseNotes ? `
-          <div class="plugin-detail-meta">
-            <div style="font-size:12px;font-weight:700;margin-bottom:4px;">${esc(upd.title || `v${upd.latestVersion}`)} 更新说明</div>
-            <pre class="log-viewer" style="max-height:220px;margin:0;white-space:pre-wrap;">${esc(upd.releaseNotes)}</pre>
+          <div class="update-notes-card">
+            <div class="update-notes-title">${esc(upd.title || `v${upd.latestVersion}`)} 更新说明</div>
+            <pre class="update-notes-pre">${esc(upd.releaseNotes)}</pre>
           </div>
         ` : `
-          <div class="plugin-detail-meta">
+          <div class="update-notes-card">
             <div class="cw-row-sub">点击下方「立即检查更新」即可获取最新版本信息；如国内下载较慢，可在「插件扩展 → 链接直装与网络加速」中配置 GitHub 镜像前缀。</div>
           </div>
         `}
 
-        <div class="modal-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        <div class="update-modal-footer">
           <button id="btnModalCheckAppUpdate" class="btn" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "立即检查更新"}</button>
           ${hasUpd && upd.downloadUrl ? `<button id="btnModalApplyAppUpdate" class="btn btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? "更新中..." : `一键下载并更新 v${esc(upd.latestVersion)}`}</button>` : ""}
           <button id="btnModalOpenReleases" class="btn" data-focusable="true">前往 Release 页面 ↗</button>
         </div>
       </div>
     `;
+    body.scrollTop = 0;
 
     document.getElementById("btnModalTogglePre")?.addEventListener("click", async () => {
       state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
