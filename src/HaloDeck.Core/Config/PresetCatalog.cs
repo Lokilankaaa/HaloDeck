@@ -381,10 +381,10 @@ public static class PresetCatalog
 
             ini.Set("Spoofing", "Dxgi", hasExplicitVendor ? "true" : "auto");
 
-            if (config.DxgiVramGb > 0)
-            {
-                ini.Set("Spoofing", "DxgiVRAM", config.DxgiVramGb.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            }
+            ini.Set("Spoofing", "DxgiVRAM",
+                config.DxgiVramGb > 0
+                    ? config.DxgiVramGb.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "auto");
 
             if (hasExplicitVendor)
             {
@@ -584,7 +584,11 @@ public static class PresetCatalog
         }
 
         var vramStr = ini.Get("Spoofing", "DxgiVRAM")?.Trim();
-        if (int.TryParse(vramStr, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var vram) && vram > 0)
+        if (string.Equals(vramStr, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            cfg.DxgiVramGb = 0;
+        }
+        else if (int.TryParse(vramStr, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var vram) && vram > 0)
         {
             cfg.DxgiVramGb = vram;
         }

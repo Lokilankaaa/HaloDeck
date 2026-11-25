@@ -554,6 +554,124 @@ public sealed class XeFgMfgTests : IDisposable
         Assert.Equal("USER_CUSTOM_MFG_UNLOCKER", await File.ReadAllTextAsync(userMfgPath));
     }
 
+    [Fact]
+    public void ApplyToIni_DefaultDxgiVramIsZero_AndOverwritesStaleSpoofedVramWithAuto()
+    {
+        var cfg = new OptiScalerConfig();
+        Assert.Equal(0, cfg.DxgiVramGb);
+
+        var iniWithStaleVram = V10Template + "\n[Spoofing]\nDxgi=auto\nDxgiVRAM=10\n";
+        var doc = IniDocument.Parse(iniWithStaleVram);
+
+        PresetCatalog.ApplyToIni(doc, cfg);
+
+        Assert.Equal("auto", doc.Get("Spoofing", "DxgiVRAM"));
+        Assert.Equal(0, PresetCatalog.ReadConfigFromIni(doc, cfg).DxgiVramGb);
+    }
+
+    [Fact]
+    public async Task InjectionEngine_AutoResetsLegacyOverReportedDxgiVramToAuto_On8GbDedicatedVramHost()
+    {
+        var appData = Path.Combine(_tempRoot, "AppDataVramGuard");
+        var staging = Path.Combine(_tempRoot, "StagingVramGuard");
+        var gameDir = Path.Combine(_tempRoot, "GameVramGuard");
+        Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(gameDir);
+
+        var nightlyZip = CreateZipPackage(
+            Path.Combine(staging, "OptiScaler_v10.zip"),
+            new Dictionary<string, string>
+            {
+                ["OptiScaler.dll"] = "OPTISCALER_V10_BINARY",
+                ["OptiScaler.ini"] = V10Template + "\n[Spoofing]\nDxgi=auto\nDxgiVRAM=auto\n"
+            });
+
+        var cm = new ComponentManager(appData);
+        cm.ImportLocalPackage(ComponentSlot.OptiScalerNightly, nightlyZip, "v10.0.0-pre1");
+
+        var game = new GameEntry
+        {
+            Id = "custom:vram-guard",
+            Title = "VRAM Guard Game",
+            InstallDirectory = gameDir,
+            TargetRenderDirectory = gameDir,
+            Architecture = PeArchitecture.X64,
+            IsWritable = true
+        };
+
+        var legacyCfg = PresetCatalog.GetById("strix-halo-quality").Config.Clone();
+        legacyCfg.EnableOptiPatcher = false;
+        legacyCfg.EnableFakenvapi = false;
+        legacyCfg.DxgiVramGb = 10; // Simulates legacy saved manifest/UI value > 8014 MB
+
+        var engine8Gb = new InjectionEngine(cm, appData, dedicatedVramMbProvider: () => 8014);
+        var res = await engine8Gb.InjectAsync(game, legacyCfg, nameof(ComponentSlot.OptiScalerNightly), "strix-halo-quality");
+        Assert.True(res.Success);
+        Assert.NotNull(res.Manifest);
+        Assert.Equal(0, res.Manifest!.AppliedConfig.DxgiVramGb);
+        Assert.Contains(res.Warnings, w => w.Contains("DxgiVRAM=10 GB 自动重置为 auto"));
+
+        var ini = IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini"));
+        Assert.Equal("auto", ini.Get("Spoofing", "DxgiVRAM"));
+    }
+
+    [Fact]
+    public async Task InjectionEngine_PreservesExplicitDxgiVramWithinPhysicalBudget_AndSkipsAutoUmaUnder2Gb()
+    {
+        var appData = Path.Combine(_tempRoot, "AppDataVramExplicit");
+        var staging = Path.Combine(_tempRoot, "StagingVramExplicit");
+        var gameDir = Path.Combine(_tempRoot, "GameVramExplicit");
+        Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(gameDir);
+
+        var nightlyZip = CreateZipPackage(
+            Path.Combine(staging, "OptiScaler_v10.zip"),
+            new Dictionary<string, string>
+            {
+                ["OptiScaler.dll"] = "OPTISCALER_V10_BINARY",
+                ["OptiScaler.ini"] = V10Template + "\n[Spoofing]\nDxgi=auto\nDxgiVRAM=auto\n"
+            });
+
+        var cm = new ComponentManager(appData);
+        cm.ImportLocalPackage(ComponentSlot.OptiScalerNightly, nightlyZip, "v10.0.0-pre1");
+
+        var game = new GameEntry
+        {
+            Id = "custom:vram-explicit",
+            Title = "VRAM Explicit Game",
+            InstallDirectory = gameDir,
+            TargetRenderDirectory = gameDir,
+            Architecture = PeArchitecture.X64,
+            IsWritable = true
+        };
+
+        var explicitCfg = PresetCatalog.GetById("strix-halo-quality").Config.Clone();
+        explicitCfg.EnableOptiPatcher = false;
+        explicitCfg.EnableFakenvapi = false;
+        explicitCfg.DxgiVramGb = 8;
+
+        // 16 GB physical VRAM host: explicit 8 GB is within budget -> preserved without warning
+        var engine16Gb = new InjectionEngine(cm, appData, dedicatedVramMbProvider: () => 16384);
+        var res16 = await engine16Gb.InjectAsync(game, explicitCfg, nameof(ComponentSlot.OptiScalerNightly), "strix-halo-quality");
+        Assert.True(res16.Success);
+        Assert.Equal(8, res16.Manifest!.AppliedConfig.DxgiVramGb);
+        Assert.DoesNotContain(res16.Warnings, w => w.Contains("DxgiVRAM"));
+        Assert.Equal("8", IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini")).Get("Spoofing", "DxgiVRAM"));
+
+        // 512 MB BIOS Auto-UMA host (< 2048 MB): do not falsely reset explicit setting; default 0 writes auto
+        var engineUma512 = new InjectionEngine(cm, appData, dedicatedVramMbProvider: () => 512);
+        var res512Explicit = await engineUma512.InjectAsync(game, explicitCfg, nameof(ComponentSlot.OptiScalerNightly), "strix-halo-quality");
+        Assert.True(res512Explicit.Success);
+        Assert.Equal(8, res512Explicit.Manifest!.AppliedConfig.DxgiVramGb);
+        Assert.DoesNotContain(res512Explicit.Warnings, w => w.Contains("DxgiVRAM"));
+        Assert.Equal("8", IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini")).Get("Spoofing", "DxgiVRAM"));
+
+        explicitCfg.DxgiVramGb = 0;
+        var res512Auto = await engineUma512.InjectAsync(game, explicitCfg, nameof(ComponentSlot.OptiScalerNightly), "strix-halo-quality");
+        Assert.True(res512Auto.Success);
+        Assert.Equal("auto", IniDocument.Load(Path.Combine(gameDir, "OptiScaler.ini")).Get("Spoofing", "DxgiVRAM"));
+    }
+
     private static string CreateZipPackage(string zipPath, Dictionary<string, string> files)
     {
         File.WriteAllBytes(zipPath, CreateZipBytes(files));

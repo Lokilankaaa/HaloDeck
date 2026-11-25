@@ -26,7 +26,7 @@
     enableFakenvapi: true,
     enableCustomDlls: true,
     spoofDxgi: true,
-    dxgiVramGb: 10,
+    dxgiVramGb: 0,
     spoofedVendorId: "auto",
     spoofedDeviceId: "auto",
     spoofedGpuName: "",

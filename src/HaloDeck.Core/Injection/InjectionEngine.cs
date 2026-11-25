@@ -43,12 +43,17 @@ public sealed class InjectionEngine
     private readonly ComponentManager _components;
     private readonly string _indexFilePath;
     private readonly object _indexLock = new();
+    private readonly Func<int> _dedicatedVramMbProvider;
 
-    public InjectionEngine(ComponentManager components, string? appDataRoot = null)
+    public InjectionEngine(
+        ComponentManager components,
+        string? appDataRoot = null,
+        Func<int>? dedicatedVramMbProvider = null)
     {
         _components = components;
         var root = HaloDeckPaths.ResolveAppDataRoot(appDataRoot);
         _indexFilePath = Path.Combine(root, "injected_index.json");
+        _dedicatedVramMbProvider = dedicatedVramMbProvider ?? DxgiVramDetector.TryDetectDedicatedVramMb;
     }
 
     public Task<InjectionResult> InjectAsync(
@@ -423,6 +428,19 @@ public sealed class InjectionEngine
             {
                 iniDoc = new IniDocument();
                 createdSet.Add("OptiScaler.ini");
+            }
+
+            if (effectiveConfig.SpoofDxgi && effectiveConfig.DxgiVramGb > 0)
+            {
+                int detectedVramMb = _dedicatedVramMbProvider();
+                if (detectedVramMb >= 2048 && (long)effectiveConfig.DxgiVramGb * 1024L > detectedVramMb)
+                {
+                    int legacyVramGb = effectiveConfig.DxgiVramGb;
+                    effectiveConfig.DxgiVramGb = 0;
+                    manifest.AppliedConfig.DxgiVramGb = 0;
+                    warnings.Add(
+                        $"检测到本机物理专用显存约 {detectedVramMb / 1024.0:F1} GB，已将配置中的 DxgiVRAM={legacyVramGb} GB 自动重置为 auto（直通本机真实显存），避免虚报显存导致换页卡顿。");
+                }
             }
 
             PresetCatalog.ApplyToIni(iniDoc, effectiveConfig, game.NativeUpscalers.HasDlssG);
