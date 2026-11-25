@@ -666,62 +666,6 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
-    public async Task<bool> SendFgToggleKeyToGameAsync()
-    {
-        ushort vk = 0x23; // VK_END (OptiScaler default FGShortcutKey)
-        var running = _runningGame;
-        if (running is not null && !string.IsNullOrWhiteSpace(running.TargetRenderDirectory))
-        {
-            var iniPath = Path.Combine(running.TargetRenderDirectory, "OptiScaler.ini");
-            if (File.Exists(iniPath))
-            {
-                var ini = IniDocument.Load(iniPath);
-                var shortcut = ini.Get("Menu", "FGShortcutKey")?.Trim();
-                if (!string.IsNullOrWhiteSpace(shortcut) &&
-                    !string.Equals(shortcut, "auto", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (shortcut == "-1")
-                    {
-                        BroadcastEvent("toast", new { kind = "warn", message = "当前游戏 OptiScaler.ini 已将 FGShortcutKey 设为 -1（禁用），请改为 auto 或 0x23" });
-                        return false;
-                    }
-
-                    if (shortcut.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (ushort.TryParse(shortcut[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var parsedHex) && parsedHex > 0)
-                        {
-                            vk = parsedHex;
-                        }
-                    }
-                    else if (ushort.TryParse(shortcut, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDec) && parsedDec > 0)
-                    {
-                        vk = parsedDec;
-                    }
-                }
-            }
-        }
-
-        bool selfElevated = Win32Interop.IsCurrentProcessElevated();
-        nint fgHwnd = Win32Interop.GetForegroundWindow();
-        bool fgBlockedByUipi = !selfElevated && Win32Interop.IsWindowProcessElevated(fgHwnd);
-
-        await Win32Interop.SendKeyHoldAsync(vk, _settings.InsertHoldDurationMs).ConfigureAwait(false);
-        if (fgBlockedByUipi)
-        {
-            BroadcastEvent("toast", new
-            {
-                kind = "warn",
-                message = $"前台游戏以管理员权限运行，Windows 安全隔离会拦截插帧快捷键 (0x{vk:X2})；请在「手柄与设置」开启「以管理员权限运行」后重试"
-            });
-        }
-        else
-        {
-            BroadcastEvent("toast", new { kind = "info", message = $"已实时切换游戏内帧生成状态 (0x{vk:X2})" });
-        }
-
-        return true;
-    }
-
     private async Task HandleWebMessageAsync(WebView2 sender, string json)
     {
         string? requestId = null;
@@ -764,7 +708,6 @@ public sealed class WebUiBridge : IDisposable
                 "beginRecordBackButton" => InvokeBeginRecordBackButton(),
                 "cancelRecordBackButton" => InvokeCancelRecordBackButton(),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
-                "toggleLiveFg" => await TriggerFgToggleFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
                 "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
                 "showConsole" => ShowConsoleAndNavigate(payload),
@@ -1445,14 +1388,6 @@ public sealed class WebUiBridge : IDisposable
         await Task.Delay(120).ConfigureAwait(false);
         await SendInsertKeyToGameAsync().ConfigureAwait(false);
         return new { sent = true };
-    }
-
-    private async Task<object> TriggerFgToggleFromUiAsync()
-    {
-        await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
-        await Task.Delay(120).ConfigureAwait(false);
-        var sent = await SendFgToggleKeyToGameAsync().ConfigureAwait(false);
-        return new { sent };
     }
 
     private async Task<object> RunBackgroundAutoInjectAsync()

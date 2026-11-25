@@ -23,9 +23,6 @@ public sealed class OptiScalerConfig
     public bool Fsr4Watermark { get; set; } = false;
     public int FramerateLimit { get; set; } = 0;
     public string VsyncMode { get; set; } = "on";
-    public int XeFgMultiplier { get; set; } = 2;
-    public bool XeFgDynamicMfg { get; set; } = false;
-    public int XeFgDynamicTargetFps { get; set; } = 0;
 
     public OptiScalerConfig Clone() => new()
     {
@@ -49,10 +46,7 @@ public sealed class OptiScalerConfig
         EnableFsr4Int8Hint = EnableFsr4Int8Hint,
         Fsr4Watermark = Fsr4Watermark,
         FramerateLimit = FramerateLimit,
-        VsyncMode = VsyncMode,
-        XeFgMultiplier = XeFgMultiplier,
-        XeFgDynamicMfg = XeFgDynamicMfg,
-        XeFgDynamicTargetFps = XeFgDynamicTargetFps
+        VsyncMode = VsyncMode
     };
 }
 
