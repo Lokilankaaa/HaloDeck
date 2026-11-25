@@ -436,6 +436,14 @@ public partial class App : System.Windows.Application
             });
         };
 
+        _bridge.RequestHideQamAsync += async () =>
+        {
+            _inputHub?.SuppressUntilGamepadRelease();
+            await _qamWindow.HideAndRestoreGameFocusAsync();
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
+        };
+
         _bridge.RequestToggleQam += () =>
         {
             Dispatcher.InvokeAsync(async () =>

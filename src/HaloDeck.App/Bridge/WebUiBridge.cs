@@ -88,6 +88,7 @@ public sealed class WebUiBridge : IDisposable
     private CancellationTokenSource? _saveCts;
 
     public event Action? RequestHideQam;
+    public event Func<Task>? RequestHideQamAsync;
     public event Action? RequestToggleQam;
     public event Action? RequestShowConsole;
     public event Action? RequestToggleFullscreen;
@@ -680,6 +681,62 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
+    public async Task<bool> SendFgToggleKeyToGameAsync()
+    {
+        ushort vk = 0x23; // VK_END (OptiScaler default FGShortcutKey)
+        var running = _runningGame;
+        if (running is not null && !string.IsNullOrWhiteSpace(running.TargetRenderDirectory))
+        {
+            var iniPath = Path.Combine(running.TargetRenderDirectory, "OptiScaler.ini");
+            if (File.Exists(iniPath))
+            {
+                var ini = IniDocument.Load(iniPath);
+                var shortcut = ini.Get("Menu", "FGShortcutKey")?.Trim();
+                if (!string.IsNullOrWhiteSpace(shortcut) &&
+                    !string.Equals(shortcut, "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (shortcut == "-1")
+                    {
+                        BroadcastEvent("toast", new { kind = "warn", message = "当前游戏 OptiScaler.ini 已将 FGShortcutKey 设为 -1（禁用），请改为 auto 或 0x23" });
+                        return false;
+                    }
+
+                    if (shortcut.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ushort.TryParse(shortcut[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var parsedHex) && parsedHex > 0)
+                        {
+                            vk = parsedHex;
+                        }
+                    }
+                    else if (ushort.TryParse(shortcut, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDec) && parsedDec > 0)
+                    {
+                        vk = parsedDec;
+                    }
+                }
+            }
+        }
+
+        bool selfElevated = Win32Interop.IsCurrentProcessElevated();
+        nint fgHwnd = Win32Interop.GetForegroundWindow();
+        bool fgBlockedByUipi = !selfElevated && Win32Interop.IsWindowProcessElevated(fgHwnd);
+
+        await Win32Interop.SendKeyHoldAsync(vk, _settings.InsertHoldDurationMs).ConfigureAwait(false);
+        if (fgBlockedByUipi)
+        {
+            BroadcastEvent("toast", new
+            {
+                kind = "warn",
+                message = $"前台游戏以管理员权限运行，Windows 安全隔离会拦截插帧快捷键 (0x{vk:X2})；请在「手柄与设置」开启「以管理员权限运行」后重试"
+            });
+        }
+        else
+        {
+            BroadcastEvent("toast", new { kind = "info", message = $"已实时切换游戏内帧生成状态 (0x{vk:X2})" });
+        }
+
+        return true;
+    }
+
     private async Task HandleWebMessageAsync(WebView2 sender, string json)
     {
         string? requestId = null;
@@ -710,7 +767,7 @@ public sealed class WebUiBridge : IDisposable
                 "addCustomGamePath" => AddCustomGamePath(payload),
                 "removeCustomGame" => RemoveCustomGame(payload),
                 "readGameConfigAndLog" => ReadGameConfigAndLog(payload),
-                "refreshComponents" => await _componentManager.RefreshCatalogAsync(),
+                "refreshComponents" => await _componentManager.RefreshCatalogAsync(_settings.PluginDownloadMirrorPrefix),
                 "installComponent" => await InstallComponentAsync(payload),
                 "importComponentFile" => await ImportComponentFileAsync(payload),
                 "importCustomExtension" => await ImportCustomExtensionAsync(),
@@ -722,6 +779,7 @@ public sealed class WebUiBridge : IDisposable
                 "beginRecordBackButton" => InvokeBeginRecordBackButton(),
                 "cancelRecordBackButton" => InvokeCancelRecordBackButton(),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
+                "toggleLiveFg" => await TriggerFgToggleFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
                 "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
                 "showConsole" => ShowConsoleAndNavigate(payload),
@@ -1139,7 +1197,7 @@ public sealed class WebUiBridge : IDisposable
             BroadcastEvent("componentProgress", new { slot = slot.ToString(), percent = Math.Round(pct, 1) });
         });
 
-        var info = await _componentManager.InstallOrUpdateAsync(slot, progress).ConfigureAwait(false);
+        var info = await _componentManager.InstallOrUpdateAsync(slot, progress, _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
         BroadcastStateSnapshot();
         return info;
     }
@@ -1396,12 +1454,51 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
+    private async Task HideQamAndWaitForGameFocusAsync()
+    {
+        if (RequestHideQamAsync is { } hideAsync)
+        {
+            await _dispatcher.InvokeAsync(hideAsync).Task.Unwrap().ConfigureAwait(false);
+        }
+        else
+        {
+            await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
+            await Task.Delay(120).ConfigureAwait(false);
+        }
+
+        // Wait until foreground window actually returns from HaloDeck to the game window,
+        // then let Win32 focus/key-release messages settle so OptiInput doesn't double-toggle on poll + WM_KEYUP.
+        uint selfPid = (uint)Environment.ProcessId;
+        var deadline = DateTime.UtcNow.AddMilliseconds(350);
+        while (DateTime.UtcNow < deadline)
+        {
+            nint fg = Win32Interop.GetForegroundWindow();
+            if (fg != 0)
+            {
+                Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
+                if (fgPid != 0 && fgPid != selfPid)
+                {
+                    break;
+                }
+            }
+            await Task.Delay(15).ConfigureAwait(false);
+        }
+
+        await Task.Delay(80).ConfigureAwait(false);
+    }
+
     private async Task<object> TriggerInsertFromUiAsync()
     {
-        await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
-        await Task.Delay(120).ConfigureAwait(false);
+        await HideQamAndWaitForGameFocusAsync().ConfigureAwait(false);
         await SendInsertKeyToGameAsync().ConfigureAwait(false);
         return new { sent = true };
+    }
+
+    private async Task<object> TriggerFgToggleFromUiAsync()
+    {
+        await HideQamAndWaitForGameFocusAsync().ConfigureAwait(false);
+        var sent = await SendFgToggleKeyToGameAsync().ConfigureAwait(false);
+        return new { sent };
     }
 
     private async Task<object> RunBackgroundAutoInjectAsync()
@@ -1422,7 +1519,7 @@ public sealed class WebUiBridge : IDisposable
     {
         try
         {
-            await _componentManager.RefreshCatalogAsync().ConfigureAwait(false);
+            await _componentManager.RefreshCatalogAsync(_settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
             BroadcastStateSnapshot();
         }
         catch

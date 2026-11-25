@@ -5098,3 +5098,110 @@ body[data-theme="frost"] .update-notes-pre {
   border-color: rgba(148, 163, 184, 0.36);
   color: #1e293b;
 }
+
+/* XeFG MFG */
+.comp-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.xefg-mfg-hint {
+  margin: 0 14px 10px;
+  padding: 8px 11px;
+  border-radius: var(--radius-inner);
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(245, 158, 11, 0.36);
+  color: #fbbf24;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.xefg-mfg-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.xefg-mfg-hint-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.xefg-mfg-hint.is-qam {
+  margin: 0;
+  padding: 5px 8px;
+  font-size: 10.5px;
+}
+
+body[data-theme="frost"] .xefg-mfg-hint {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(217, 119, 6, 0.34);
+  color: #92400e;
+}
+
+.qam-xefg-mfg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qam-xefg-mfg-row .seg-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.qam-xefg-mfg-row .seg-group .seg-btn {
+  flex: 1;
+  text-align: center;
+}
+
+.qam-dmfg-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 5px 9px;
+}
+
+.qam-live-fg-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.qam-live-fg-row.has-restart {
+  grid-template-columns: 1.25fr 1fr;
+}
+
+.xefg-live-fg-btn {
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(14, 165, 233, 0.14);
+  color: #7dd3fc;
+}
+
+.xefg-live-fg-btn:hover {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(14, 165, 233, 0.24);
+  color: #e0f2fe;
+}
+
+body[data-theme="frost"] .xefg-live-fg-btn {
+  border-color: rgba(2, 132, 199, 0.38);
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+}
+
+body[data-theme="frost"] .xefg-live-fg-btn:hover {
+  border-color: rgba(2, 132, 199, 0.58);
+  background: rgba(14, 165, 233, 0.2);
+  color: #075985;
+}
+
+.xefg-mfg-note {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  text-align: center;
+}
