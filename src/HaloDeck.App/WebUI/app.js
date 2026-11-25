@@ -3810,8 +3810,8 @@
         const hasUpd = !!(upd && upd.hasUpdate);
         topVerBtn.classList.toggle("has-update", hasUpd);
         topVerBtn.textContent = hasUpd
-          ? `⬆ 新版 v${upd.latestVersion}`
-          : `v${curVer} · 更新`;
+          ? `⬆ v${upd.latestVersion}`
+          : `v${curVer}`;
       }
     }
 
