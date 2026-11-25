@@ -16,6 +16,7 @@ public enum XInputButtons : ushort
     RightThumb = 0x0080,
     LeftShoulder = 0x0100,
     RightShoulder = 0x0200,
+    Guide = 0x0400,
     A = 0x1000,
     B = 0x2000,
     X = 0x4000,
@@ -45,12 +46,17 @@ internal static class XInputInterop
 {
     private const uint ERROR_SUCCESS = 0;
 
+    // Undocumented ordinal #100 (XInputGetStateEx) exposes hidden bit 0x0400 (Guide / GPD Menu button).
+    [DllImport("xinput1_4.dll", EntryPoint = "#100")]
+    private static extern uint XInputGetStateEx_1_4(uint dwUserIndex, out XInputState pState);
+
     [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
     private static extern uint XInputGetState_1_4(uint dwUserIndex, out XInputState pState);
 
     [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState")]
     private static extern uint XInputGetState_9_1_0(uint dwUserIndex, out XInputState pState);
 
+    private static bool _useFallbackStandard14;
     private static bool _useFallback910;
     private static long _lastButtonOrTriggerTick64;
     private static readonly long[] DisconnectedRetryTick64 = new long[4];
@@ -143,10 +149,22 @@ internal static class XInputInterop
         state = default;
         try
         {
-            uint res = _useFallback910
-                ? XInputGetState_9_1_0(userIndex, out state)
-                : XInputGetState_1_4(userIndex, out state);
-            return res == ERROR_SUCCESS;
+            if (_useFallback910)
+            {
+                return XInputGetState_9_1_0(userIndex, out state) == ERROR_SUCCESS;
+            }
+            if (!_useFallbackStandard14)
+            {
+                try
+                {
+                    return XInputGetStateEx_1_4(userIndex, out state) == ERROR_SUCCESS;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    _useFallbackStandard14 = true;
+                }
+            }
+            return XInputGetState_1_4(userIndex, out state) == ERROR_SUCCESS;
         }
         catch (DllNotFoundException)
         {

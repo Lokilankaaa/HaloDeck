@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using HaloDeck.Core.Models;
+using HaloDeck.Core.Services;
 
 namespace HaloDeck.App.Native;
 
@@ -54,6 +55,7 @@ public sealed class InputHubService : IDisposable
     private bool _ctrlWinOSwallowedDown;
     private DateTime _lastOskTriggerAtUtc = DateTime.MinValue;
     private int _oskReleaseDispatchPending;
+    private readonly GuideMenuTriggerGuard _guideMenuGuard = new();
 
     public event Action? ToggleQamRequested;
     public event Action? ToggleConsoleRequested;
@@ -262,6 +264,20 @@ public sealed class InputHubService : IDisposable
                 return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
             }
 
+            // Fallback capture for GPD Win 5 physical menu key VK_F13 (0x7C) in WH_KEYBOARD_LL
+            // so firmware/drivers whose F13 does not trigger RegisterHotKey still reliably summon QAM.
+            if (kb.vkCode == 0x7C && _settings.InterceptPhysicalMenuButton)
+            {
+                int msgF13 = wParam.ToInt32();
+                if (msgF13 is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN)
+                {
+                    if (_guideMenuGuard.TryClaimQamMenuToggle(Environment.TickCount64))
+                    {
+                        _ = Task.Run(() => ToggleQamRequested?.Invoke());
+                    }
+                }
+            }
+
             // Suppress GPD Win 5 firmware's unconditional raw F14 (0x7D) / F15 (0x7E) duplicate keystrokes
             // when L4/R4 are mapped to other keys (or disabled) so games/apps only receive the programmed key.
             if (kb.vkCode == 0x7D && _suppressFirmwareGhostF14)
@@ -377,7 +393,10 @@ public sealed class InputHubService : IDisposable
 
             if (id is HotkeyQamId or HotkeyPaddleQamF13Id)
             {
-                ToggleQamRequested?.Invoke();
+                if (id != HotkeyPaddleQamF13Id || _guideMenuGuard.TryClaimQamMenuToggle(now))
+                {
+                    ToggleQamRequested?.Invoke();
+                }
                 handled = true;
             }
             else if (id is HotkeyInsertId or HotkeyPaddleInsF15Id)
@@ -484,7 +503,26 @@ public sealed class InputHubService : IDisposable
                         continue;
                     }
 
-                    // 0. Check global Main Console (Frontend) toggle combo (require >=2 buttons so single gameplay buttons like Start are never hijacked)
+                    // 0. Check solo short-press of XInput hidden Guide/Menu button (0x0400 via XInputGetStateEx #100)
+                    // Matches GPDTool's dual-channel 0x0400007C (Guide + F13) while preserving Steam Guide+Button chords.
+                    if (_settings.InterceptGuideMenuButton)
+                    {
+                        bool guideDown = buttons.HasFlag(XInputButtons.Guide);
+                        bool otherActive = (buttons & ~XInputButtons.Guide) != XInputButtons.None ||
+                                           gamepad.bLeftTrigger > 30 || gamepad.bRightTrigger > 30;
+                        if (_guideMenuGuard.UpdateGuideState(guideDown, otherActive, Environment.TickCount64))
+                        {
+                            _suppressNavigationUntilRelease = true;
+                            _directionRepeatAt.Clear();
+                            ToggleQamRequested?.Invoke();
+                        }
+                    }
+                    else
+                    {
+                        _guideMenuGuard.Reset();
+                    }
+
+                    // 0.5 Check global Main Console (Frontend) toggle combo (require >=2 buttons so single gameplay buttons like Start are never hijacked)
                     var consoleMask = XInputInterop.CombineMask(_settings.ConsoleGamepadCombo?.Buttons ?? []);
                     if (IsValidGlobalComboMask(consoleMask))
                     {
