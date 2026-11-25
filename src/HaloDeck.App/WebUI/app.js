@@ -26,7 +26,7 @@
     enableFakenvapi: true,
     enableCustomDlls: true,
     spoofDxgi: true,
-    dxgiVramGb: 10,
+    dxgiVramGb: 0,
     spoofedVendorId: "auto",
     spoofedDeviceId: "auto",
     spoofedGpuName: "",
@@ -35,7 +35,10 @@
     enableFsr4Int8Hint: true,
     fsr4Watermark: false,
     framerateLimit: 0,
-    vsyncMode: "on"
+    vsyncMode: "on",
+    xeFgMultiplier: 2,
+    xeFgDynamicMfg: false,
+    xeFgDynamicTargetFps: 0
   };
 
   const GPD_BACK_GAMEPAD_OPTIONS = [
@@ -1069,7 +1072,19 @@
       : { fsr4_int8: "FSR 4.1.2", fsr4_int8_lite: "FSR 4.1.2 Lite", xess: "XeSS 2.0", fsr31: "FSR 3.1" };
     const fgLabels = { xefg: "XeFG", optifg: "OptiFG", nukems: "Nukem", nofg: "无插帧" };
     const sr = srLabels[cfg.srMode] || cfg.srMode || "FSR";
-    const fg = fgLabels[cfg.fgType] || cfg.fgType || "XeFG";
+    let fg = fgLabels[cfg.fgType] || cfg.fgType || "XeFG";
+    if ((cfg.fgType || "xefg") === "xefg") {
+      const mult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+      const dmfg = !!cfg.xeFgDynamicMfg;
+      const dmfgTarget = dmfg && (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+      if (compact) {
+        if (dmfg) fg = `XeFG ${mult}X·DMFG`;
+        else if (mult > 2) fg = `XeFG ${mult}X`;
+      } else {
+        if (dmfg) fg = dmfgTarget >= 10 ? `XeFG ${mult}X · DMFG ${dmfgTarget}帧` : `XeFG ${mult}X · DMFG`;
+        else if (mult > 2) fg = `XeFG ${mult}X`;
+      }
+    }
     if (compact) {
       const cap = cfg.framerateLimit > 0 ? `·${cfg.framerateLimit}` : "";
       return `${sr}+${fg}${cap}`;
@@ -1329,6 +1344,11 @@
     const slot = state.snapshot?.settings?.activeOptiScalerSlot || "OptiScalerNightly";
     const comps = state.snapshot?.components || [];
     return comps.find((c) => c.slot === slot) || { slot, displayName: slot, installedVersion: "" };
+  }
+
+  function isMfgUnlockerInstalled() {
+    const comps = state.snapshot?.components || [];
+    return comps.some((c) => c.slot === "MfgUnlocker" && c.isInstalled);
   }
 
   function syncSrModeConfig(srMode) {
@@ -2810,6 +2830,14 @@
 
     const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
     const kernelShort = kernel.slot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4";
+    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg.xeFgDynamicMfg;
+    const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
+    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
+    const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
 
     return `
       <div class="tune-layout">
@@ -2960,6 +2988,66 @@
                   { value: "nofg", label: "关闭插帧" }
                 ], cfg.fgType)}
               </div>
+
+              ${cfg.fgType === "xefg" ? `
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">XeFG 插帧倍率 (MFG)</span>
+                    <span class="cw-row-sub">2X 甜点 · 3X 推荐多帧 · 4X 算力开销更高（改固定倍率需「注入并重开」）</span>
+                  </div>
+                  ${renderSegmented("data-xefg-mult", [
+                    { value: "2", label: "2X" },
+                    { value: "3", label: "3X" },
+                    { value: "4", label: "4X" }
+                  ], String(xeFgMult), "compact")}
+                </div>
+
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">动态多帧 (DMFG)</span>
+                    <span class="cw-row-sub">游戏内按目标帧率在 1X–${xeFgMult}X 间自动实时升降</span>
+                  </div>
+                  ${renderSwitch("swXeFgDmfg", xeFgDmfg)}
+                </div>
+
+                ${xeFgDmfg ? `
+                  <div class="cw-row">
+                    <div class="cw-row-copy">
+                      <span class="cw-row-title">DMFG 目标帧率</span>
+                      <span class="cw-row-sub">${xeFgDmfgTarget > 0 && ![60, 90, 120].includes(xeFgDmfgTarget) ? `当前自定义 ${xeFgDmfgTarget} FPS · ` : ""}自动贴合屏幕刷新率或帧率上限（如 120Hz → 116 FPS）</span>
+                    </div>
+                    ${renderSegmented("data-xefg-dmfg-fps", [
+                      { value: "0", label: "自动贴合" },
+                      { value: "60", label: "60" },
+                      { value: "90", label: "90" },
+                      { value: "120", label: "120" }
+                    ], String(xeFgDmfgTarget), "compact")}
+                  </div>
+                ` : ""}
+
+                ${showMissingMfgUnlockerHint ? `
+                  <div class="xefg-mfg-hint xefg-mfg-hint-row">
+                    <span>AMD 8060S 原版 <code>libxess_fg.dll</code> 最高仅支持 2X，解锁 3X/4X 与 DMFG 需安装 <strong>MFG Unlocker (by dashdogy)</strong>（单机专用）。</span>
+                    <button id="btnGoMfgUnlockerComp" class="btn btn-sm btn-primary" data-focusable="true">前往组件中心下载</button>
+                  </div>
+                ` : ""}
+
+                ${showXeFgStableHint ? `
+                  <div class="xefg-mfg-hint">
+                    当前内核为 Stable v0.9.4，3X/4X 多帧与 DMFG 需切换至 <strong>Nightly v10+</strong> 内核与 XeSS 3 (<code>libxess_fg.dll</code>)
+                  </div>
+                ` : ""}
+              ` : ""}
+
+              ${canLiveToggleFg ? `
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">游戏内实时插帧开关 (免菜单 / 免重启)</span>
+                    <span class="cw-row-sub">直接触发 OptiScaler 原生热键 (End / FGShortcutKey) 实时开关 FG</span>
+                  </div>
+                  <button id="btnToggleLiveFg" class="btn btn-sm xefg-live-fg-btn" data-focusable="true">实时开关 FG</button>
+                </div>
+              ` : ""}
 
               <div class="cw-row">
                 <div class="cw-row-copy">
@@ -3196,6 +3284,7 @@
                     <span class="cw-row-sub">
                       本地版本：${esc(c.installedVersion || "未安装")} · 在线版本：${esc(c.latestVersion || "待查询")}
                     </span>
+                    ${c.description ? `<span class="comp-desc">${esc(c.description)}</span>` : ""}
                   </div>
                   <div class="comp-actions">
                     ${typeof pct === "number" && pct > 0 && pct < 100
@@ -3663,6 +3752,15 @@
     const inj = active?.injection;
     const cfg = state.config;
     const presets = snap.presets || [];
+    const kernel = getActiveKernelInfo();
+    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg.xeFgDynamicMfg;
+    const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
+    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
+    const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
       : "当前目标原生未注入";
@@ -3704,6 +3802,24 @@
               { value: "optifg", label: "OptiFG" },
               { value: "nofg", label: "关闭插帧" }
             ], cfg.fgType, "compact")}
+            ${cfg.fgType === "xefg" ? `
+              <div class="qam-xefg-mfg-row">
+                ${renderSegmented("data-xefg-mult", [
+                  { value: "2", label: "2X" },
+                  { value: "3", label: "3X" },
+                  { value: "4", label: "4X" }
+                ], String(xeFgMult), "compact")}
+                <button id="swXeFgDmfg" class="pill-btn small qam-dmfg-btn ${xeFgDmfg ? "active" : ""}" role="switch" aria-checked="${xeFgDmfg}" data-focusable="true">DMFG ${xeFgDmfg ? "开" : "关"}</button>
+              </div>
+              ${xeFgDmfg ? renderSegmented("data-xefg-dmfg-fps", [
+                { value: "0", label: "DMFG 自动" },
+                { value: "60", label: "60" },
+                { value: "90", label: "90" },
+                { value: "120", label: "120" }
+              ], String(xeFgDmfgTarget), "compact") : ""}
+              ${showXeFgStableHint ? `<div class="xefg-mfg-hint is-qam">需 Nightly v10+ 内核与 XeSS 3 (libxess_fg.dll)</div>` : ""}
+              ${showMissingMfgUnlockerHint ? `<div class="xefg-mfg-hint is-qam">AMD &gt;2X 需在主控台「组件中心」安装 MFG Unlocker (by dashdogy)</div>` : ""}
+            ` : ""}
             ${renderSegmented("data-fps-limit", [
               { value: "0", label: "不限帧" },
               { value: "60", label: "60帧" },
@@ -3723,6 +3839,13 @@
             ${svgIcon("bolt")}
             <span>${inj?.isInjected ? "应用参数并重新注入" : "一键注入推荐配置"}</span>
           </button>
+          ${canLiveToggleFg ? `
+            <div class="qam-live-fg-row ${active?.isCurrentlyRunning ? "has-restart" : ""}">
+              <button id="btnToggleLiveFg" class="btn btn-sm xefg-live-fg-btn" data-focusable="true">${svgIcon("bolt")}<span>实时开关 FG (免菜单)</span></button>
+              ${active?.isCurrentlyRunning ? `<button id="btnInjectRestart" class="btn btn-sm" data-focusable="true" ${state.busy ? "disabled" : ""}>应用并重开</button>` : ""}
+            </div>
+            <div class="xefg-mfg-note">开关 FG 游戏内即时生效；改固定倍率需重开，开 DMFG 自动实时变倍</div>
+          ` : ""}
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
             <button id="btnLaunchGame" class="btn btn-sm" data-focusable="true" ${!active ? "disabled" : ""}>启动</button>
             <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">游戏内菜单</button>
@@ -6050,6 +6173,35 @@
         render();
       });
     });
+    document.querySelectorAll("[data-xefg-mult]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        state.config.xeFgMultiplier = Math.min(4, Math.max(2, parseInt(el.dataset.xefgMult, 10) || 2));
+        render();
+      });
+    });
+    document.getElementById("swXeFgDmfg")?.addEventListener("click", () => {
+      state.selectedPresetId = "custom";
+      state._userModifiedConfig = true;
+      state.config.xeFgDynamicMfg = !state.config.xeFgDynamicMfg;
+      render();
+    });
+    document.querySelectorAll("[data-xefg-dmfg-fps]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        const val = parseInt(el.dataset.xefgDmfgFps, 10) || 0;
+        state.config.xeFgDynamicTargetFps = val >= 10 ? val : 0;
+        render();
+      });
+    });
+    document.getElementById("btnGoMfgUnlockerComp")?.addEventListener("click", () => {
+      state.tab = "opti";
+      state.optiSubTab = "components";
+      state.focusIndex = 0;
+      render();
+    });
     document.querySelectorAll("[data-fps-limit]").forEach((el) => {
       el.addEventListener("click", () => {
         state.selectedPresetId = "custom";
@@ -6190,6 +6342,7 @@
     document.getElementById("btnInjectRestart")?.addEventListener("click", () => executeInject(true));
     document.getElementById("btnRestore")?.addEventListener("click", () => executeRestore());
     document.getElementById("btnSendInsert")?.addEventListener("click", () => rpc("sendInsertKey"));
+    document.getElementById("btnToggleLiveFg")?.addEventListener("click", () => rpc("toggleLiveFg"));
 
     document.getElementById("btnLaunchGame")?.addEventListener("click", async () => {
       const g = getActiveGame();

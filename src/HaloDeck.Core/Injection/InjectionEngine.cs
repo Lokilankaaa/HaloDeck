@@ -43,12 +43,17 @@ public sealed class InjectionEngine
     private readonly ComponentManager _components;
     private readonly string _indexFilePath;
     private readonly object _indexLock = new();
+    private readonly Func<int> _dedicatedVramMbProvider;
 
-    public InjectionEngine(ComponentManager components, string? appDataRoot = null)
+    public InjectionEngine(
+        ComponentManager components,
+        string? appDataRoot = null,
+        Func<int>? dedicatedVramMbProvider = null)
     {
         _components = components;
         var root = HaloDeckPaths.ResolveAppDataRoot(appDataRoot);
         _indexFilePath = Path.Combine(root, "injected_index.json");
+        _dedicatedVramMbProvider = dedicatedVramMbProvider ?? DxgiVramDetector.TryDetectDedicatedVramMb;
     }
 
     public Task<InjectionResult> InjectAsync(
@@ -244,14 +249,26 @@ public sealed class InjectionEngine
                 DeployFile(file, rel, allowOverwriteBackup: true);
             }
 
-            // 3. Deploy OptiPatcher if enabled (or remove managed copy if disabled on re-inject)
+            // 3. Deploy ASI plugins to OptiScaler's actual plugin directory:
+            //    v10 Nightly puts runtime DLLs inside OptiScaler\ and loads .\OptiScaler\plugins\*.asi,
+            //    while v0.9.4 Stable places runtime DLLs at game root and loads .\plugins\*.asi.
+            bool usesOptiSubfolder = Directory.Exists(Path.Combine(optiRoot, "OptiScaler"));
+            string pluginsSubDir = usesOptiSubfolder ? Path.Combine("OptiScaler", "plugins") : "plugins";
+            string altPluginsSubDir = usesOptiSubfolder ? "plugins" : Path.Combine("OptiScaler", "plugins");
+
             var effectiveConfig = config.Clone();
             if (effectiveConfig.EnableOptiPatcher)
             {
                 var asiPath = _components.ResolveOptiPatcherAsiPath();
                 if (asiPath is not null)
                 {
-                    DeployFile(asiPath, Path.Combine("plugins", Path.GetFileName(asiPath)));
+                    var asiFileName = Path.GetFileName(asiPath);
+                    DeployFile(asiPath, Path.Combine(pluginsSubDir, asiFileName));
+                    var staleAltRel = Path.Combine(altPluginsSubDir, asiFileName);
+                    if (createdSet.Remove(staleAltRel))
+                    {
+                        TryDeleteManagedFile(Path.Combine(targetDir, staleAltRel));
+                    }
                     manifest.HasOptiPatcher = true;
                 }
                 else
@@ -261,10 +278,55 @@ public sealed class InjectionEngine
             }
             else
             {
-                var staleAsiRel = Path.Combine("plugins", "OptiPatcher.asi");
-                if (createdSet.Remove(staleAsiRel))
+                foreach (var staleAsiRel in new[]
                 {
-                    TryDeleteManagedFile(Path.Combine(targetDir, staleAsiRel));
+                    Path.Combine("plugins", "OptiPatcher.asi"),
+                    Path.Combine("OptiScaler", "plugins", "OptiPatcher.asi")
+                })
+                {
+                    if (createdSet.Remove(staleAsiRel))
+                    {
+                        TryDeleteManagedFile(Path.Combine(targetDir, staleAsiRel));
+                    }
+                }
+            }
+
+            // 3b. Deploy MFG Unlocker (by dashdogy) as .asi when XeFG > 2X or Dynamic MFG is enabled
+            bool wantsXeFgMfg = string.Equals(effectiveConfig.FgType, "xefg", StringComparison.OrdinalIgnoreCase) &&
+                                (PresetCatalog.NormalizeXeFgMultiplier(effectiveConfig.XeFgMultiplier) > 2 ||
+                                 effectiveConfig.XeFgDynamicMfg);
+            bool deployedMfgUnlocker = false;
+            if (wantsXeFgMfg)
+            {
+                var mfgBinPath = _components.ResolveMfgUnlockerBinaryPath();
+                if (mfgBinPath is not null)
+                {
+                    DeployFile(mfgBinPath, Path.Combine(pluginsSubDir, "MFGUnlocker.asi"));
+                    var staleAltMfg = Path.Combine(altPluginsSubDir, "MFGUnlocker.asi");
+                    if (createdSet.Remove(staleAltMfg))
+                    {
+                        TryDeleteManagedFile(Path.Combine(targetDir, staleAltMfg));
+                    }
+                    manifest.HasMfgUnlocker = true;
+                    deployedMfgUnlocker = true;
+                }
+                else
+                {
+                    warnings.Add("未安装 MFG Unlocker (by dashdogy) 组件：AMD 显卡原版 libxess_fg.dll 最高仅支持 2X；请前往「组件中心」一键下载 MFG Unlocker 以解锁 3X/4X 多帧生成。");
+                }
+            }
+            else
+            {
+                foreach (var staleMfgRel in new[]
+                {
+                    Path.Combine("plugins", "MFGUnlocker.asi"),
+                    Path.Combine("OptiScaler", "plugins", "MFGUnlocker.asi")
+                })
+                {
+                    if (createdSet.Remove(staleMfgRel))
+                    {
+                        TryDeleteManagedFile(Path.Combine(targetDir, staleMfgRel));
+                    }
                 }
             }
 
@@ -327,7 +389,7 @@ public sealed class InjectionEngine
                     var ext = Path.GetExtension(custom.FileName).ToLowerInvariant();
                     if (ext == ".asi")
                     {
-                        DeployFile(custom.StoredPath, Path.Combine("plugins", custom.FileName));
+                        DeployFile(custom.StoredPath, Path.Combine(pluginsSubDir, custom.FileName));
                         effectiveConfig.EnableOptiPatcher = true; // Ensure LoadAsiPlugins=true
                     }
                     else if (ext is ".dll" or ".ini")
@@ -368,7 +430,24 @@ public sealed class InjectionEngine
                 createdSet.Add("OptiScaler.ini");
             }
 
+            if (effectiveConfig.SpoofDxgi && effectiveConfig.DxgiVramGb > 0)
+            {
+                int detectedVramMb = _dedicatedVramMbProvider();
+                if (detectedVramMb >= 2048 && (long)effectiveConfig.DxgiVramGb * 1024L > detectedVramMb)
+                {
+                    int legacyVramGb = effectiveConfig.DxgiVramGb;
+                    effectiveConfig.DxgiVramGb = 0;
+                    manifest.AppliedConfig.DxgiVramGb = 0;
+                    warnings.Add(
+                        $"检测到本机物理专用显存约 {detectedVramMb / 1024.0:F1} GB，已将配置中的 DxgiVRAM={legacyVramGb} GB 自动重置为 auto（直通本机真实显存），避免虚报显存导致换页卡顿。");
+                }
+            }
+
             PresetCatalog.ApplyToIni(iniDoc, effectiveConfig, game.NativeUpscalers.HasDlssG);
+            if (deployedMfgUnlocker)
+            {
+                iniDoc.Set("Plugins", "LoadAsiPlugins", "true");
+            }
             iniDoc.Save(targetIniPath);
 
             manifest.CreatedFiles = createdSet.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
@@ -475,8 +554,15 @@ public sealed class InjectionEngine
                 try { File.Delete(optiLog); } catch { }
             }
 
-            // 4. Clean empty plugins dir, OptiScaler subdirs & backup dirs
-            foreach (var subName in new[] { "plugins", "D3D12_Optiscaler", Path.Combine("OptiScaler", "D3D12_OptiScaler"), "OptiScaler" })
+            // 4. Clean empty plugins dir, OptiScaler subdirs & backup dirs (children before parent)
+            foreach (var subName in new[]
+            {
+                "plugins",
+                "D3D12_Optiscaler",
+                Path.Combine("OptiScaler", "plugins"),
+                Path.Combine("OptiScaler", "D3D12_OptiScaler"),
+                "OptiScaler"
+            })
             {
                 var subDir = Path.Combine(targetDir, subName);
                 if (Directory.Exists(subDir) && !Directory.EnumerateFileSystemEntries(subDir).Any())
