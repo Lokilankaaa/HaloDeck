@@ -51,6 +51,9 @@ public sealed class WebUiBridge : IDisposable
     private readonly PluginProcessHost _pluginHost = new();
     private readonly PluginRegistryClient _pluginRegistry = new();
     private readonly SemaphoreSlim _pluginInstallGate = new(1, 1);
+    private readonly AppUpdateService _appUpdater = new();
+    private readonly SemaphoreSlim _appUpdateGate = new(1, 1);
+    private AppUpdateInfo? _latestUpdateInfo;
     private readonly PowerPeripheralOptimizer _powerOptimizer;
     private string? _lastPluginRunningGameId;
     private GameEntry? _lastPluginRunningGame;
@@ -199,6 +202,8 @@ public sealed class WebUiBridge : IDisposable
         _pluginHost.Dispose();
         _pluginRegistry.Dispose();
         _pluginInstallGate.Dispose();
+        _appUpdater.Dispose();
+        _appUpdateGate.Dispose();
         _rtssClient.Dispose();
         _xinputIsolator.Dispose();
         FlushPendingSettingsSave();
@@ -237,6 +242,29 @@ public sealed class WebUiBridge : IDisposable
         }
         _ = RefreshComponentsCatalogSilentAsync();
         _ = SyncBackButtonHardwareSilentAsync();
+        _ = CheckAppUpdateSilentOnStartupAsync();
+    }
+
+    private static string CurrentAppVersion
+        => typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2";
+
+    private async Task CheckAppUpdateSilentOnStartupAsync()
+    {
+        if (!_settings.AutoCheckUpdatesOnStartup || IsVerifyOrCaptureCliRun) return;
+        try
+        {
+            await Task.Delay(5000).ConfigureAwait(false);
+            var info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease: false).ConfigureAwait(false);
+            _latestUpdateInfo = info;
+            if (info.HasUpdate)
+            {
+                BroadcastStateSnapshot();
+            }
+        }
+        catch
+        {
+            // Quiet background check; never disturb user on offline boot
+        }
     }
 
     private async Task SyncBackButtonHardwareSilentAsync()
@@ -788,6 +816,8 @@ public sealed class WebUiBridge : IDisposable
                 "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
                 "updatePluginPreferences" => UpdatePluginPreferences(payload),
                 "openExternalUrl" => OpenExternalUrl(payload),
+                "checkAppUpdate" => await CheckAppUpdateAsync(payload),
+                "downloadAndApplyAppUpdate" => await DownloadAndApplyAppUpdateAsync(payload),
                 "pluginHostApi" => await DispatchPluginHostApiAsync(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
@@ -824,6 +854,8 @@ public sealed class WebUiBridge : IDisposable
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             isElevated = Win32Interop.IsCurrentProcessElevated(),
+            appVersion = CurrentAppVersion,
+            latestUpdate = _latestUpdateInfo,
             memoryHealth = Win32Interop.GetSystemMemoryHealth(),
             vrrWindowedEnabled = IsWindowedVrrEnabled(),
             systemControl = sysState,
@@ -2907,6 +2939,103 @@ public sealed class WebUiBridge : IDisposable
             UseShellExecute = true
         });
         return new { ok = true, url };
+    }
+
+    private async Task<object> CheckAppUpdateAsync(JsonElement payload)
+    {
+        bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
+                                 pp.ValueKind == JsonValueKind.True;
+        var info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease).ConfigureAwait(false);
+        _latestUpdateInfo = info;
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            update = info,
+            message = info.HasUpdate
+                ? $"发现新版本 v{info.LatestVersion}{(info.IsPrerelease ? "（测试版）" : "")}"
+                : $"当前 v{info.CurrentVersion} 已是最新版本"
+        };
+    }
+
+    private async Task<object> DownloadAndApplyAppUpdateAsync(JsonElement payload)
+    {
+        bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
+                                 pp.ValueKind == JsonValueKind.True;
+
+        await _appUpdateGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var info = _latestUpdateInfo;
+            if (info is null || !info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+            {
+                info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease).ConfigureAwait(false);
+                _latestUpdateInfo = info;
+            }
+            if (!info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+            {
+                return new { ok = false, message = "当前已是最新版本或未找到便携包附件" };
+            }
+
+            string targetDir = AppContext.BaseDirectory;
+            // Verify target directory is writable before downloading ~70MB
+            try
+            {
+                string probe = Path.Combine(targetDir, $".update_probe_{Guid.NewGuid():N}");
+                File.WriteAllText(probe, "ok");
+                File.Delete(probe);
+            }
+            catch
+            {
+                throw new InvalidOperationException("当前安装目录无写入权限，请点击「查看更新说明」前往 GitHub 手动下载覆盖");
+            }
+
+            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 0.0, status = "downloading" });
+            var progress = new Progress<double>(pct =>
+            {
+                BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = Math.Round(pct, 1), status = "downloading" });
+            });
+
+            var staged = await _appUpdater.DownloadAndStageUpdateAsync(
+                info,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                progress: progress).ConfigureAwait(false);
+
+            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 100.0, status = "applying" });
+
+            string updaterScript = AppUpdateService.WritePortableUpdaterScript(staged, targetDir, Environment.ProcessId);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{updaterScript}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            SuppressHardwareCleanupOnDispose = true;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(350).ConfigureAwait(false);
+                await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
+            });
+
+            return new
+            {
+                ok = true,
+                version = info.LatestVersion,
+                verifiedSha256 = staged.VerifiedSha256,
+                message = $"v{info.LatestVersion} 校验通过，正在重启并原地更新..."
+            };
+        }
+        catch
+        {
+            BroadcastEvent("appUpdateProgress", new { version = "", percent = 0.0, status = "idle" });
+            throw;
+        }
+        finally
+        {
+            _appUpdateGate.Release();
+        }
     }
 
     private object UpdatePluginPreferences(JsonElement payload)

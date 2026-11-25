@@ -94,6 +94,10 @@ public sealed class AppSettings
     // Short-press of GPD Win 5 physical GPD Tool / gamepad-mouse toggle key emits VK_F13 (0x7C).
     // Kept enabled by default and completely decoupled from L4/R4 back-button F14/F15 takeover.
     public bool InterceptPhysicalMenuButton { get; set; } = true;
+    // Solo short-press of XInput hidden Guide/Menu button (0x0400 via XInputGetStateEx #100), matching GPDTool 0x0400007C.
+    public bool InterceptGuideMenuButton { get; set; } = true;
+    // Quietly check GitHub Releases for newer HaloDeck versions on startup (non-intrusive badge only).
+    public bool AutoCheckUpdatesOnStartup { get; set; } = true;
     public string PreferredOskMode { get; set; } = "tabtip"; // "tabtip" | "osk"
     // Disabled by default so native L4/R4 back buttons (which emit F14/F15 in GPD Win 5 firmware) are never hijacked in games.
     public bool EnableBackButtonHotkeys { get; set; } = false;

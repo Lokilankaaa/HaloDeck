@@ -272,6 +272,9 @@
     pluginDirectUrlDraft: "",
     pluginMirrorDraft: null,
     pluginDownloadProgress: null,
+    appUpdateChecking: false,
+    appUpdateProgress: null,
+    appUpdateIncludePrerelease: false,
     focusIndex: 0,
     lastInputModality: "pointer",
     isDraggingRange: false,
@@ -434,6 +437,18 @@
         } else {
           bar.classList.remove("hidden");
           bar.textContent = `正在下载：${data.label || "插件"} · ${Math.round(data.percent || 0)}%`;
+        }
+      }
+    } else if (name === "appUpdateProgress" && data) {
+      state.appUpdateProgress = data.status === "idle" ? null : { version: data.version || "", percent: data.percent || 0, status: data.status || "downloading" };
+      const btn = document.getElementById("btnApplyAppUpdate");
+      if (btn) {
+        if (data.status === "applying") {
+          btn.textContent = "校验通过，正在更新...";
+          btn.disabled = true;
+        } else if (data.status === "downloading") {
+          btn.textContent = `下载中 ${Math.round(data.percent || 0)}%`;
+          btn.disabled = true;
         }
       }
     } else if (name === "toast" && data?.message) {
@@ -2454,6 +2469,7 @@
     const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
     const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
+    const interceptGuideBtn = settings.interceptGuideMenuButton !== false;
     const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
     const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
@@ -2473,7 +2489,7 @@
               <div class="hh-card-head">
                 <span class="hh-card-title">手柄背键与震动 (L4 / R4)</span>
                 <div style="display:flex;align-items:center;gap:6px;">
-                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}` : "未检测到手柄"}</span>
+                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测到手柄"}</span>
                   <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 映射并恢复原厂震动与死区">恢复原厂</button>
                   <button id="btnReadGpd" class="btn btn-sm" data-focusable="true" ${state.gpdSaving ? "disabled" : ""}>刷新</button>
                 </div>
@@ -2547,6 +2563,13 @@
                     <span class="cw-row-sub">短按 GPD Win 5 原 GPD Tool / 切鼠键呼出 HaloDeck 快捷侧栏</span>
                   </div>
                   ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
+                </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">接管手柄菜单 / Guide 键 (0x0400)</span>
+                    <span class="cw-row-sub">兼容原厂 GPDTool 双通道，单独短按呼出侧栏（不拦截 Steam 组合键与长按）</span>
+                  </div>
+                  ${renderSwitch("swInterceptGuideBtn", interceptGuideBtn)}
                 </div>
                 <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                   <div class="cw-row-copy">
@@ -2723,6 +2746,30 @@
                     ${renderSwitch("setAutoInject", !!settings.backgroundAutoInjectEnabled)}
                   </div>
                 </div>
+
+                ${(() => {
+                  const curVer = snap.appVersion || "0.6.2";
+                  const upd = snap.latestUpdate;
+                  const hasUpd = !!(upd && upd.hasUpdate);
+                  const prog = state.appUpdateProgress;
+                  const badgeHtml = hasUpd
+                    ? `<span class="hh-card-badge live" style="margin-left:4px;">可更新至 v${esc(upd.latestVersion)}${upd.isPrerelease ? " RC" : ""}</span>`
+                    : (upd ? `<span class="hh-card-badge" style="margin-left:4px;">已是最新</span>` : "");
+                  return `
+                    <div class="cw-row" style="min-height:46px;padding:8px 12px;">
+                      <div class="cw-row-copy">
+                        <span class="cw-row-title">HaloDeck 版本与在线更新 <span class="hh-card-badge" style="margin-left:4px;">v${esc(curVer)}</span>${badgeHtml}</span>
+                        <span class="cw-row-sub">${hasUpd ? `发现新版 v${esc(upd.latestVersion)}（下载自动校验 SHA-256，保留全部本地配置与游戏档案）` : "支持从 GitHub Releases 检查正式版或测试版并一键原地更新"}</span>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                        <button id="btnTogglePrereleaseCheck" class="pill-btn small ${state.appUpdateIncludePrerelease ? "active" : ""}" data-focusable="true" title="开启后也会检查 -rc / -beta 预发布测试版">${state.appUpdateIncludePrerelease ? "含测试版" : "仅正式版"}</button>
+                        <button id="btnCheckAppUpdate" class="btn btn-sm" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "检查更新"}</button>
+                        ${hasUpd && upd.downloadUrl ? `<button id="btnApplyAppUpdate" class="btn btn-sm btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? (prog.status === "applying" ? "正在更新..." : `下载中 ${Math.round(prog.percent || 0)}%`) : `更新 v${esc(upd.latestVersion)}`}</button>` : ""}
+                        ${hasUpd && upd.htmlUrl ? `<button id="btnOpenUpdateNotes" class="btn btn-sm" data-focusable="true">更新日志</button>` : ""}
+                      </div>
+                    </div>
+                  `;
+                })()}
 
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <span class="cw-row-title">系统服务与配置文件</span>
@@ -3579,7 +3626,7 @@
           <div class="qam-section">
             <div class="qam-section-title">
               <span>手柄背键 (L4 / R4)</span>
-              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测手柄"}</span>
+              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测手柄"}</span>
             </div>
             <div class="backkey-slot-list compact" style="margin-bottom:8px;">
               <button id="btnPickL4" class="backkey-slot-row btn-like" data-focusable="true">
@@ -5730,6 +5777,50 @@
       const next = s.interceptPhysicalMenuButton === false;
       await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
       showToast(next ? "已开启机身快捷菜单键 (F13) 呼出侧栏" : "已释放机身快捷菜单键 (F13)", "info");
+    });
+    document.getElementById("swInterceptGuideBtn")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = s.interceptGuideMenuButton === false;
+      await rpc("saveSettings", { ...s, interceptGuideMenuButton: next });
+      showToast(next ? "已开启手柄菜单 / Guide 键 (0x0400) 单独短按呼出侧栏" : "已关闭手柄 Guide 键 (0x0400) 接管", "info");
+    });
+    document.getElementById("btnTogglePrereleaseCheck")?.addEventListener("click", () => {
+      state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
+      render();
+    });
+    document.getElementById("btnCheckAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateChecking) return;
+      state.appUpdateChecking = true;
+      render();
+      try {
+        const res = await rpc("checkAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "检查更新完成", res?.update?.hasUpdate ? "success" : "info");
+      } catch (err) {
+        showToast(err.message || "检查更新失败", "error");
+      } finally {
+        state.appUpdateChecking = false;
+        render();
+      }
+    });
+    document.getElementById("btnApplyAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateProgress) return;
+      try {
+        const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
+      } catch (err) {
+        state.appUpdateProgress = null;
+        showToast(err.message || "下载或应用更新失败", "error");
+        render();
+      }
+    });
+    document.getElementById("btnOpenUpdateNotes")?.addEventListener("click", async () => {
+      const url = state.snapshot?.latestUpdate?.htmlUrl || "https://github.com/Lokilankaaa/HaloDeck/releases";
+      try {
+        await rpc("openExternalUrl", { url });
+      } catch (err) {
+        showToast(err.message, "error");
+      }
     });
     document.getElementById("swBackButtonHotkeys")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
