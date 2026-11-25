@@ -82,6 +82,10 @@ public sealed class MenuButtonAndUpdaterTests
         var handler = new StubHandler(req =>
         {
             string u = req.RequestUri!.AbsoluteUri;
+            if (u.Contains("releases.atom") || u.Contains("github.com/Lokilankaaa/HaloDeck/releases/latest"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
             string payload = u.Contains("/releases/latest") ? latestJson : listJson;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -103,6 +107,68 @@ public sealed class MenuButtonAndUpdaterTests
         Assert.True(rc.HasUpdate);
         Assert.Equal("0.6.2-rc.1", rc.LatestVersion);
         Assert.True(rc.IsPrerelease);
+    }
+
+    [Fact]
+    public async Task AppUpdateService_PrimaryAtomFeedSucceedsEvenWhenGitHubApiReturns403()
+    {
+        string atomXml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>tag:github.com,2008:Repository/1/plugin-store-builds</id>
+                <link rel="alternate" href="https://github.com/Lokilankaaa/HaloDeck/releases/tag/plugin-store-builds"/>
+                <title>Store Builds</title>
+              </entry>
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v0.6.2-rc.1</id>
+                <link rel="alternate" href="https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.2-rc.1"/>
+                <title>HaloDeck v0.6.2-rc.1 (预发布测试版)</title>
+                <updated>2026-11-25T14:46:29Z</updated>
+                <content type="html">&lt;p&gt;Dual-channel menu button + self-updater&lt;/p&gt;</content>
+              </entry>
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v0.6.1</id>
+                <link rel="alternate" href="https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.1"/>
+                <title>HaloDeck v0.6.1</title>
+                <updated>2026-11-24T17:12:56Z</updated>
+                <content type="html">&lt;h2&gt;v0.6.1&lt;/h2&gt;&lt;p&gt;Stable notes&lt;/p&gt;</content>
+              </entry>
+            </feed>
+            """;
+
+        var handler = new StubHandler(req =>
+        {
+            string u = req.RequestUri!.AbsoluteUri;
+            if (u.Contains("api.github.com"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.Forbidden); // Simulate real-world 403 rate limit!
+            }
+            if (u.Contains("releases.atom"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(atomXml, Encoding.UTF8, "application/atom+xml")
+                };
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        using var http = new HttpClient(handler);
+        using var svc = new AppUpdateService(http);
+
+        var stable = await svc.CheckForUpdateAsync("0.6.0", includePrerelease: false);
+        Assert.True(stable.HasUpdate);
+        Assert.Equal("0.6.1", stable.LatestVersion);
+        Assert.False(stable.IsPrerelease);
+        Assert.Contains("Stable notes", stable.ReleaseNotes);
+        Assert.EndsWith("/v0.6.1/HaloDeck-win-x64-portable.zip", stable.DownloadUrl);
+
+        var rc = await svc.CheckForUpdateAsync("0.6.1", includePrerelease: true);
+        Assert.True(rc.HasUpdate);
+        Assert.Equal("0.6.2-rc.1", rc.LatestVersion);
+        Assert.True(rc.IsPrerelease);
+        Assert.Contains("Dual-channel", rc.ReleaseNotes);
     }
 
     [Fact]

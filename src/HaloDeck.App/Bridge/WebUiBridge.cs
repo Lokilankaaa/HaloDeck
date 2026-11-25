@@ -254,7 +254,10 @@ public sealed class WebUiBridge : IDisposable
         try
         {
             await Task.Delay(5000).ConfigureAwait(false);
-            var info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease: false).ConfigureAwait(false);
+            var info = await _appUpdater.CheckForUpdateAsync(
+                CurrentAppVersion,
+                includePrerelease: false,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
             _latestUpdateInfo = info;
             if (info.HasUpdate)
             {
@@ -2945,7 +2948,10 @@ public sealed class WebUiBridge : IDisposable
     {
         bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
                                  pp.ValueKind == JsonValueKind.True;
-        var info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease).ConfigureAwait(false);
+        var info = await _appUpdater.CheckForUpdateAsync(
+            CurrentAppVersion,
+            includePrerelease,
+            mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
         _latestUpdateInfo = info;
         BroadcastStateSnapshot();
         return new
@@ -2969,7 +2975,10 @@ public sealed class WebUiBridge : IDisposable
             var info = _latestUpdateInfo;
             if (info is null || !info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
             {
-                info = await _appUpdater.CheckForUpdateAsync(CurrentAppVersion, includePrerelease).ConfigureAwait(false);
+                info = await _appUpdater.CheckForUpdateAsync(
+                    CurrentAppVersion,
+                    includePrerelease,
+                    mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
                 _latestUpdateInfo = info;
             }
             if (!info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))

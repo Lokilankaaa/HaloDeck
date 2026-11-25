@@ -1,8 +1,10 @@
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using HaloDeck.Core.Plugins;
 
 namespace HaloDeck.Core.Services;
@@ -40,12 +42,16 @@ public sealed class StagedAppUpdate
 /// </summary>
 public sealed class AppUpdateService : IDisposable
 {
+    public const string ReleasesAtomUrl = "https://github.com/Lokilankaaa/HaloDeck/releases.atom";
+    public const string LatestReleaseWebUrl = "https://github.com/Lokilankaaa/HaloDeck/releases/latest";
     public const string LatestReleaseApiUrl = "https://api.github.com/repos/Lokilankaaa/HaloDeck/releases/latest";
     public const string ReleasesListApiUrl = "https://api.github.com/repos/Lokilankaaa/HaloDeck/releases?per_page=10";
     public const string ReleasesPageUrl = "https://github.com/Lokilankaaa/HaloDeck/releases";
 
     private const long MaxUpdateZipBytes = 350L * 1024L * 1024L;
     private static readonly Regex Sha256HexRegex = new(@"\b[a-fA-F0-9]{64}\b", RegexOptions.Compiled);
+    private static readonly Regex HtmlTagRegex = new(@"<[^>]+>", RegexOptions.Compiled);
+    private static readonly Regex TagInUrlRegex = new(@"/releases/tag/(?<tag>[^/?#]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -69,9 +75,175 @@ public sealed class AppUpdateService : IDisposable
     public async Task<AppUpdateInfo> CheckForUpdateAsync(
         string currentVersion,
         bool includePrerelease = false,
+        string? mirrorPrefix = null,
         CancellationToken ct = default)
     {
         string normalizedCurrent = NormalizeVersionTag(currentVersion);
+        var errors = new List<string>();
+
+        // 1. Primary: GitHub Releases Atom feed (zero API rate limit, never hits 403 on shared IPs,
+        //    returns both stable & pre-release versions with titles and release notes).
+        foreach (string atomUrl in PluginRegistryClient.BuildDownloadCandidateUrls(ReleasesAtomUrl, mirrorPrefix))
+        {
+            try
+            {
+                string xml = await _http.GetStringAsync(atomUrl, ct).ConfigureAwait(false);
+                var fromAtom = ParseReleasesAtomFeed(xml, normalizedCurrent, includePrerelease);
+                if (fromAtom is not null)
+                {
+                    return fromAtom;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                errors.Add($"Atom({ex.Message})");
+            }
+        }
+
+        // 2. Fallback (stable channel): GitHub /releases/latest redirect (also zero API rate limit).
+        if (!includePrerelease)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, LatestReleaseWebUrl);
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                string finalUrl = resp.RequestMessage?.RequestUri?.AbsoluteUri ?? string.Empty;
+                var m = TagInUrlRegex.Match(finalUrl);
+                if (resp.IsSuccessStatusCode && m.Success)
+                {
+                    string tag = Uri.UnescapeDataString(m.Groups["tag"].Value);
+                    return BuildInfoFromTag(normalizedCurrent, tag, $"HaloDeck {tag}", "", finalUrl, "", IsPrereleaseTag(tag));
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                errors.Add($"Redirect({ex.Message})");
+            }
+        }
+
+        // 3. Final fallback: GitHub REST API (may be rate-limited 403 on shared exit IPs).
+        try
+        {
+            return await CheckViaGitHubRestApiAsync(normalizedCurrent, includePrerelease, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            errors.Add($"API({ex.Message})");
+            throw new InvalidOperationException($"检查更新失败，请检查网络或配置镜像前缀：{errors[0]}");
+        }
+    }
+
+    public static AppUpdateInfo? ParseReleasesAtomFeed(string atomXml, string normalizedCurrent, bool includePrerelease)
+    {
+        if (string.IsNullOrWhiteSpace(atomXml)) return null;
+        var doc = XDocument.Parse(atomXml);
+        XNamespace ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+
+        AppUpdateInfo? best = null;
+        foreach (var entry in doc.Descendants(ns + "entry"))
+        {
+            string linkHref = entry.Elements(ns + "link")
+                .Select(l => (string?)l.Attribute("href") ?? "")
+                .FirstOrDefault(h => h.Contains("/releases/tag/", StringComparison.OrdinalIgnoreCase)) ?? "";
+
+            string tag = string.Empty;
+            var m = TagInUrlRegex.Match(linkHref);
+            if (m.Success)
+            {
+                tag = Uri.UnescapeDataString(m.Groups["tag"].Value);
+            }
+            else
+            {
+                string idVal = (string?)entry.Element(ns + "id") ?? "";
+                int lastSlash = idVal.LastIndexOf('/');
+                if (lastSlash >= 0 && lastSlash + 1 < idVal.Length)
+                {
+                    tag = idVal[(lastSlash + 1)..];
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(tag) ||
+                !tag.StartsWith("v", StringComparison.OrdinalIgnoreCase) ||
+                tag.Equals("plugin-store-builds", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            bool isPre = IsPrereleaseTag(tag);
+            if (isPre && !includePrerelease) continue;
+
+            string title = ((string?)entry.Element(ns + "title") ?? tag).Trim();
+            string updated = ((string?)entry.Element(ns + "updated") ?? "").Trim();
+            string rawHtml = (string?)entry.Element(ns + "content") ?? "";
+            string notes = StripHtmlToPlainText(rawHtml);
+            string htmlUrl = PluginRegistryClient.IsAllowedHttpsUrl(linkHref)
+                ? linkHref
+                : $"https://github.com/Lokilankaaa/HaloDeck/releases/tag/{Uri.EscapeDataString(tag)}";
+
+            var candidate = BuildInfoFromTag(normalizedCurrent, tag, title, notes, htmlUrl, updated, isPre);
+            if (best is null || CompareVersions(candidate.LatestVersion, best.LatestVersion) > 0)
+            {
+                best = candidate;
+            }
+        }
+
+        return best;
+    }
+
+    private static AppUpdateInfo BuildInfoFromTag(
+        string normalizedCurrent,
+        string tagName,
+        string title,
+        string notes,
+        string htmlUrl,
+        string publishedAt,
+        bool isPrerelease)
+    {
+        string latestVer = NormalizeVersionTag(tagName);
+        string escapedTag = Uri.EscapeDataString(tagName);
+        string dlBase = $"https://github.com/Lokilankaaa/HaloDeck/releases/download/{escapedTag}";
+        return new AppUpdateInfo
+        {
+            CurrentVersion = normalizedCurrent,
+            LatestVersion = latestVer,
+            TagName = tagName,
+            Title = string.IsNullOrWhiteSpace(title) ? tagName : title,
+            ReleaseNotes = notes.Length > 2400 ? notes[..2400] + "\n..." : notes,
+            HtmlUrl = PluginRegistryClient.IsAllowedHttpsUrl(htmlUrl) ? htmlUrl : ReleasesPageUrl,
+            DownloadUrl = $"{dlBase}/HaloDeck-win-x64-portable.zip",
+            Sha256Url = $"{dlBase}/HaloDeck-win-x64-portable.zip.sha256",
+            IsPrerelease = isPrerelease,
+            HasUpdate = CompareVersions(latestVer, normalizedCurrent) > 0,
+            PublishedAt = publishedAt,
+            CheckedAtUtc = DateTimeOffset.UtcNow
+        };
+    }
+
+    private static bool IsPrereleaseTag(string tag)
+        => tag.Contains("-rc", StringComparison.OrdinalIgnoreCase) ||
+           tag.Contains("-beta", StringComparison.OrdinalIgnoreCase) ||
+           tag.Contains("-alpha", StringComparison.OrdinalIgnoreCase);
+
+    private static string StripHtmlToPlainText(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return string.Empty;
+        string s = Regex.Replace(html, @"<\s*(br|p|div|li|h[1-6]|tr)\b[^>]*>", "\n", RegexOptions.IgnoreCase);
+        s = HtmlTagRegex.Replace(s, "");
+        s = WebUtility.HtmlDecode(s);
+        var lines = s.Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0);
+        return string.Join("\n", lines);
+    }
+
+    private async Task<AppUpdateInfo> CheckViaGitHubRestApiAsync(
+        string normalizedCurrent,
+        bool includePrerelease,
+        CancellationToken ct)
+    {
         string apiUrl = includePrerelease ? ReleasesListApiUrl : LatestReleaseApiUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
@@ -79,7 +251,7 @@ public sealed class AppUpdateService : IDisposable
         using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"检查更新失败：GitHub API 返回 HTTP {(int)resp.StatusCode}");
+            throw new InvalidOperationException($"GitHub API 返回 HTTP {(int)resp.StatusCode}");
         }
 
         string json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);

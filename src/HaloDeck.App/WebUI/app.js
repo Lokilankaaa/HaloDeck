@@ -442,14 +442,22 @@
     } else if (name === "appUpdateProgress" && data) {
       state.appUpdateProgress = data.status === "idle" ? null : { version: data.version || "", percent: data.percent || 0, status: data.status || "downloading" };
       const btn = document.getElementById("btnApplyAppUpdate");
+      const modalBtn = document.getElementById("btnModalApplyAppUpdate");
+      const modalProg = document.getElementById("appUpdateModalProg");
+      const text = data.status === "applying"
+        ? "校验通过，正在重启更新..."
+        : `下载中 ${Math.round(data.percent || 0)}%`;
       if (btn) {
-        if (data.status === "applying") {
-          btn.textContent = "校验通过，正在更新...";
-          btn.disabled = true;
-        } else if (data.status === "downloading") {
-          btn.textContent = `下载中 ${Math.round(data.percent || 0)}%`;
-          btn.disabled = true;
-        }
+        btn.textContent = text;
+        btn.disabled = true;
+      }
+      if (modalBtn) {
+        modalBtn.textContent = text;
+        modalBtn.disabled = true;
+      }
+      if (modalProg) {
+        modalProg.classList.remove("hidden");
+        modalProg.textContent = text;
       }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
@@ -3899,6 +3907,16 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
+      const topVerBtn = document.getElementById("btnTopAppVersion");
+      if (topVerBtn) {
+        const curVer = state.snapshot?.appVersion || "0.6.2";
+        const upd = state.snapshot?.latestUpdate;
+        const hasUpd = !!(upd && upd.hasUpdate);
+        topVerBtn.classList.toggle("has-update", hasUpd);
+        topVerBtn.textContent = hasUpd
+          ? `⬆ 新版 v${upd.latestVersion}`
+          : `v${curVer} · 更新`;
+      }
     }
 
     const mainView = document.getElementById("mainView");
@@ -7040,6 +7058,107 @@
     showToast(`已切换界面皮肤：${next.label}`, "info");
   });
 
+  function renderAppUpdateModalBody() {
+    const modal = document.getElementById("modalBackdrop");
+    const title = document.getElementById("modalTitle");
+    const sub = document.getElementById("modalSubtitle");
+    const body = document.getElementById("modalBody");
+    if (!modal || !title || !sub || !body) return;
+
+    const curVer = state.snapshot?.appVersion || "0.6.2";
+    const upd = state.snapshot?.latestUpdate;
+    const hasUpd = !!(upd && upd.hasUpdate);
+    const prog = state.appUpdateProgress;
+    const includePre = !!state.appUpdateIncludePrerelease;
+
+    title.textContent = "HaloDeck 在线检查与自我更新";
+    sub.textContent = `当前版本 v${curVer} · 走零限流 GitHub Releases 通道（支持镜像前缀与 SHA-256 校验）`;
+
+    body.innerHTML = `
+      <div class="plugin-detail-box">
+        <div class="plugin-detail-head">
+          <span class="hh-card-badge">当前版本：v${esc(curVer)}</span>
+          ${upd ? `<span class="hh-card-badge ${hasUpd ? "live" : ""}">${hasUpd ? `发现新版：v${esc(upd.latestVersion)}${upd.isPrerelease ? " (测试版)" : ""}` : `最新版本：v${esc(upd.latestVersion)}（已是最新）`}</span>` : `<span class="hh-card-badge">尚未检查</span>`}
+          <button id="btnModalTogglePre" class="pill-btn small ${includePre ? "active" : ""}" data-focusable="true">${includePre ? "通道：含测试版 (-rc)" : "通道：仅正式版"}</button>
+        </div>
+
+        <div id="appUpdateModalProg" class="plugin-dl-banner ${prog ? "" : "hidden"}">
+          ${prog ? (prog.status === "applying" ? "SHA-256 校验通过，正在重启原地更新..." : `正在下载 v${esc(prog.version)} · ${Math.round(prog.percent || 0)}%`) : ""}
+        </div>
+
+        ${upd?.releaseNotes ? `
+          <div class="plugin-detail-meta">
+            <div style="font-size:12px;font-weight:700;margin-bottom:4px;">${esc(upd.title || `v${upd.latestVersion}`)} 更新说明</div>
+            <pre class="log-viewer" style="max-height:220px;margin:0;white-space:pre-wrap;">${esc(upd.releaseNotes)}</pre>
+          </div>
+        ` : `
+          <div class="plugin-detail-meta">
+            <div class="cw-row-sub">点击下方「立即检查更新」即可获取最新版本信息；如国内下载较慢，可在「插件扩展 → 链接直装与网络加速」中配置 GitHub 镜像前缀。</div>
+          </div>
+        `}
+
+        <div class="modal-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+          <button id="btnModalCheckAppUpdate" class="btn" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "立即检查更新"}</button>
+          ${hasUpd && upd.downloadUrl ? `<button id="btnModalApplyAppUpdate" class="btn btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? "更新中..." : `一键下载并更新 v${esc(upd.latestVersion)}`}</button>` : ""}
+          <button id="btnModalOpenReleases" class="btn" data-focusable="true">前往 Release 页面 ↗</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById("btnModalTogglePre")?.addEventListener("click", async () => {
+      state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
+      renderAppUpdateModalBody();
+      await runAppUpdateCheck(true);
+    });
+    document.getElementById("btnModalCheckAppUpdate")?.addEventListener("click", () => runAppUpdateCheck(true));
+    document.getElementById("btnModalApplyAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateProgress) return;
+      try {
+        const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
+      } catch (err) {
+        state.appUpdateProgress = null;
+        showToast(err.message || "下载或应用更新失败", "error");
+        renderAppUpdateModalBody();
+      }
+    });
+    document.getElementById("btnModalOpenReleases")?.addEventListener("click", async () => {
+      const url = state.snapshot?.latestUpdate?.htmlUrl || "https://github.com/Lokilankaaa/HaloDeck/releases";
+      try { await rpc("openExternalUrl", { url }); } catch (err) { showToast(err.message, "error"); }
+    });
+  }
+
+  async function runAppUpdateCheck(refreshModal = false) {
+    if (state.appUpdateChecking) return;
+    state.appUpdateChecking = true;
+    if (refreshModal) renderAppUpdateModalBody();
+    else render();
+    try {
+      const res = await rpc("checkAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+      if (res?.update && state.snapshot) {
+        state.snapshot.latestUpdate = res.update;
+      }
+      showToast(res?.message || "检查更新完成", res?.update?.hasUpdate ? "success" : "info");
+    } catch (err) {
+      showToast(err.message || "检查更新失败", "error");
+    } finally {
+      state.appUpdateChecking = false;
+      render();
+      if (refreshModal) renderAppUpdateModalBody();
+    }
+  }
+
+  function openAppUpdateModal() {
+    const modal = document.getElementById("modalBackdrop");
+    if (!modal) return;
+    renderAppUpdateModalBody();
+    modal.classList.remove("hidden");
+    if (!state.snapshot?.latestUpdate) {
+      runAppUpdateCheck(true);
+    }
+  }
+
+  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => openAppUpdateModal());
   document.getElementById("btnOpenQam")?.addEventListener("click", () => rpc("toggleQam"));
   document.getElementById("btnMinimize")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));

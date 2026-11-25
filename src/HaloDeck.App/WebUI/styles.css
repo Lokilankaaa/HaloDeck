@@ -5062,3 +5062,37 @@ body[data-theme="frost"] .xefg-live-fg-btn:hover {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* Top Bar Prominent Version & Self-Update Pill */
+.top-ver-pill {
+  margin-left: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-well);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+}
+
+.top-ver-pill:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.top-ver-pill.has-update {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(20, 184, 166, 0.18);
+  color: #5eead4;
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.25);
+}
+
+body[data-theme="frost"] .top-ver-pill.has-update {
+  border-color: rgba(13, 148, 136, 0.45);
+  background: rgba(20, 184, 166, 0.14);
+  color: #0f766e;
+  box-shadow: none;
+}
