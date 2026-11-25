@@ -108,4 +108,8 @@ public sealed class AppSettings
     public List<string> DisabledCustomDlls { get; set; } = new();
     // User-subscribed third-party community plugin store JSON URLs (Decky-style zero-server catalogs).
     public List<string> PluginStoreUrls { get; set; } = new();
+    // Optional HTTPS mirror prefix for China-friendly GitHub Release plugin zip downloads (e.g. "https://gh-proxy.com/").
+    public string PluginDownloadMirrorPrefix { get; set; } = string.Empty;
+    // Developer mode exposes hot-reload UI, restart backend, open plugin directory, and direct folder import.
+    public bool PluginDeveloperMode { get; set; } = false;
 }

@@ -108,8 +108,8 @@ HaloDeck 面向 **GPD Win 5** 等高功耗 AMD Strix Halo Windows 掌机深度�
 - **反作弊守护与无损还原**：自动扫描 Steam 全部盘符构建本地海报墙，识别 `Easy Anti-Cheat (EAC)` / `BattlEye` 等内核反作弊游戏并主动拦截后台自动注入；所有注入操作均以 SHA-256 备份原始 DLL，支持随时一键还原纯净原版。
 
 ### 6. 社区插件生态与安全商店（Decky 风格）
-- **零服务器插件商店 + 双端无缝挂载**：可在主界面 **「插件扩展」** 与侧边栏 **🔌 插件抽屉** 中浏览、安装、启停、更新与卸载插件；支持 **官方纯净商店**、**第三方社区 `store.json` 源订阅**、**GitHub `owner/repo` 链接直装** 与 **本地 `.zip` 导入**。
-- **内置手柄自动导航与双主题联动**：宿主提供的 `plugin-sdk.js` 内建掌机手柄空间导航（方向键移动焦点、`A` 确认、`B` 返回、左右调节滑块），并自动将主界面深/浅双主题（`Aurora` / `Frost`）及自定义皮肤 CSS 变量同步到插件内，社区插件开箱即支持掌机全手柄操作与视觉统一。
+- **零服务器插件商店 + 双端无缝挂载**：可在主界面 **「插件扩展」** 与侧边栏 **🔌 插件抽屉** 中按分类筛选、搜索、查看源码与权限详情、一键批量更新与卸载插件；支持 **官方纯净商店**、**第三方社区 `store.json` 源订阅**、**GitHub `owner/repo` 链接直装**、**可选 GitHub 下载镜像加速** 与 **本地 `.zip` / 目录直导**。
+- **内置手柄自动导航、双主题联动与开发者模式**：宿主提供的 `plugin-sdk.js` 内建掌机手柄空间导航（方向键移动焦点、`A` 确认、`B` 返回、左右调节滑块），并自动将主界面深/浅双主题（`Aurora` / `Frost`）及自定义皮肤 CSS 变量同步到插件内；开启 **🛠 开发者模式** 后支持本地目录同步、一键重载界面与重启独立后端。
 - **官方精选内置插件**：
   - **视觉主题工坊 (`halodeck.skin-studio`)**：Decky CSS Loader 风格全局换肤，提供 6 套掌机配色方案、圆角风格与自定义强调色调色板，停用自动还原原生界面；
   - **掌机游玩计时与游戏备忘 (`halodeck.game-notes`)**：自动追踪每款游戏的累计游玩时长、启动次数与最近游玩时间，并按游戏保存键位提醒、TDP/超分推荐与攻略备忘；
@@ -138,17 +138,17 @@ author.my-plugin/
     └── worker.ps1      # 或编译生成的 .exe / .cmd
 ```
 
-使用 PowerShell 一键打包为 `.zip`（确保压缩包根目录或唯一一层子目录包含 `plugin.json`）：
+使用仓库内置的一键校验与打包脚本（自动执行与官方 Decky CI 一致的清单验证、零二进制检查与静态安全扫描，并生成 `.zip` 与 `SHA-256`）：
 
 ```powershell
-Compress-Archive -Path .\author.my-plugin -DestinationPath .\author.my-plugin.zip -Force
+powershell -ExecutionPolicy Bypass -File .\scripts\pack-plugin.ps1 -PluginDir .\author.my-plugin
 ```
 
 ### 2. 本地验证（如何验证）
 
 发布前建议按以下清单在本地 HaloDeck 中完成验收：
 
-1. **本地导入安装**：打开 HaloDeck → **「插件扩展」** → **「导入 .zip 插件」**，选择打包好的 `.zip`，确认清单解析与权限提示无误后启用。
+1. **本地调试与导入**：打开 HaloDeck → **「插件扩展」**，开启右上角 **「🛠 开发者模式」** 后可直接 **「导入本地目录」** 快速迭代（支持一键 **重载** 前端与 **重启后端**），最终使用 **「导入本地 .zip」** 验证成品包安装与权限弹窗。
 2. **双端与双主题验收**：分别在 **主界面插件中心** 与 **440px QAM 侧栏插件抽屉** 打开插件，切换 **极光深色 (`Aurora`)** 与 **凝霜浅色 (`Frost`)** 主题，确认排版自适应且文字/控件对比度清晰。
 3. **掌机手柄验收**：全程使用手柄方向键、`A` 确认、`B` 返回与滑块调节，确认所有按钮与输入控件均可正常聚焦和操作（建议在自定义弹窗/下拉组件上优先使用纯 DOM 组件以确保 QAM 无焦点窗口下稳定交互）。
 4. **权限与后端日志核查**：确认 `plugin.json` 遵循最小权限原则；若包含独立后端，可在插件卡片点击 **「日志」** 查看 `stderr` 输出并确认停用/退出后子进程正常回收。
@@ -171,8 +171,8 @@ HaloDeck 支持 **官方纯净商店投稿（Decky 审核模式）** 与 **社�
      "category": "utility"
    }
    ```
-3. **CI 自动验证与重编译**：向 `Lokilankaaa/HaloDeck` 发起 Pull Request 后，[`.github/workflows/verify-plugin-store.yml`](.github/workflows/verify-plugin-store.yml) 会自动拉取指定 `commit`，校验 `plugin.json` 规范、扫描黑盒二进制与高危混淆脚本，并在干净环境中编译打包生成 `.zip` 与 `SHA-256`。
-4. **合并上架与全球同步**：维护者完成代码 diff 审核并合并 PR 后，插件信息写入 `plugins/store.json`，并通过 CDN 自动同步至全球 HaloDeck 客户端。
+3. **CI 自动验证与报告**：向 `Lokilankaaa/HaloDeck` 发起 Pull Request 后，[`.github/workflows/verify-plugin-store.yml`](.github/workflows/verify-plugin-store.yml) 会自动拉取指定 `commit`，校验 `plugin.json` 规范、扫描黑盒二进制与高危混淆脚本，在干净环境中编译打包生成 `.zip` 与 `SHA-256`，并自动在 PR 下发表结构化安全审核报告。
+4. **合并即全自动上架**：维护者完成代码 diff 审核并合并 PR 后，[`.github/workflows/publish-plugin-store.yml`](.github/workflows/publish-plugin-store.yml) 自动在干净环境重编译、发布至 `plugin-store-builds` Release 并同步写入 `plugins/store.json`，通过 CDN 自动推送至全球 HaloDeck 客户端。
 
 #### 方式 B：社区独立分发（无需提交官方审核）
 - **GitHub 仓库直装**：将插件 `.zip` 上传至自己仓库的 GitHub Release，用户直接在 HaloDeck **「插件扩展 → 链接 / GitHub 直装」** 输入 `owner/repo` 或 `.zip` 链接即可安装。

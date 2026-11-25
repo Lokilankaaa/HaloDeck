@@ -68,7 +68,8 @@ public sealed class PluginRegistryClient : IDisposable
         else
         {
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("HaloDeck", "0.6.0"));
+            string ver = typeof(PluginRegistryClient).Assembly.GetName().Version?.ToString(3) ?? "0.6.2";
+            _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("HaloDeck", ver));
             _ownsHttp = true;
         }
     }
@@ -139,6 +140,8 @@ public sealed class PluginRegistryClient : IDisposable
         string urlOrOwnerRepo,
         string? expectedSha256 = null,
         IProgress<double>? progress = null,
+        string? mirrorPrefix = null,
+        Action<string>? beforeOverwrite = null,
         CancellationToken ct = default)
     {
         string resolvedZipUrl = await ResolveZipDownloadUrlAsync(urlOrOwnerRepo, ct).ConfigureAwait(false);
@@ -147,51 +150,97 @@ public sealed class PluginRegistryClient : IDisposable
             throw new InvalidOperationException("插件下载地址必须为合法的 https:// 链接");
         }
 
+        IReadOnlyList<string> candidates = BuildDownloadCandidateUrls(resolvedZipUrl, mirrorPrefix);
         string tempZip = Path.Combine(Path.GetTempPath(), $"HaloDeck_PluginDl_{Guid.NewGuid():N}.zip");
         try
         {
-            using var resp = await _http.GetAsync(resolvedZipUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
+            Exception? lastErr = null;
+            bool downloaded = false;
 
-            long? contentLen = resp.Content.Headers.ContentLength;
-            if (contentLen is > MaxZipDownloadBytes)
+            foreach (string downloadUrl in candidates)
             {
-                throw new InvalidOperationException("插件包体积超过 100 MB 安全上限");
-            }
-
-            await using (var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
-            await using (var dst = new FileStream(tempZip, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
-            {
-                byte[] buf = new byte[81920];
-                long total = 0;
-                int read;
-                while ((read = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+                try
                 {
-                    total += read;
-                    if (total > MaxZipDownloadBytes)
+                    using var resp = await _http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                    resp.EnsureSuccessStatusCode();
+
+                    long? contentLen = resp.Content.Headers.ContentLength;
+                    if (contentLen is > MaxZipDownloadBytes)
                     {
-                        throw new InvalidOperationException("插件包下载体积超过 100 MB 安全上限");
+                        throw new InvalidOperationException("插件包体积超过 100 MB 安全上限");
                     }
-                    await dst.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
-                    if (contentLen is > 0)
+
+                    await using (var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+                    await using (var dst = new FileStream(tempZip, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                     {
-                        progress?.Report(Math.Clamp((double)total / contentLen.Value * 100.0, 0, 100));
+                        byte[] buf = new byte[81920];
+                        long total = 0;
+                        int read;
+                        while ((read = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+                        {
+                            total += read;
+                            if (total > MaxZipDownloadBytes)
+                            {
+                                throw new InvalidOperationException("插件包下载体积超过 100 MB 安全上限");
+                            }
+                            await dst.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
+                            if (contentLen is > 0)
+                            {
+                                progress?.Report(Math.Clamp((double)total / contentLen.Value * 100.0, 0, 100));
+                            }
+                        }
                     }
+
+                    if (!string.IsNullOrWhiteSpace(expectedSha256))
+                    {
+                        VerifySha256(tempZip, expectedSha256);
+                    }
+
+                    downloaded = true;
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastErr = ex;
+                    try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { }
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(expectedSha256))
+            if (!downloaded)
             {
-                VerifySha256(tempZip, expectedSha256);
+                throw new InvalidOperationException($"插件下载失败：{lastErr?.Message ?? "网络异常"}", lastErr);
             }
 
             // Preserve existing consent if updating an already-consented plugin; new plugins still require consent
-            return storeService.InstallFromZip(tempZip, enableAfterInstall: false, consentAccepted: false);
+            return storeService.InstallFromZip(tempZip, enableAfterInstall: false, consentAccepted: false, beforeOverwrite: beforeOverwrite);
         }
         finally
         {
             try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { }
         }
+    }
+
+    public static IReadOnlyList<string> BuildDownloadCandidateUrls(string resolvedZipUrl, string? mirrorPrefix)
+    {
+        var list = new List<string>(2);
+        string prefix = (mirrorPrefix ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(prefix) &&
+            IsAllowedHttpsUrl(prefix) &&
+            resolvedZipUrl.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase))
+        {
+            string normalizedPrefix = prefix.EndsWith('/') ? prefix : prefix + "/";
+            string mirrored = normalizedPrefix + resolvedZipUrl;
+            if (IsAllowedHttpsUrl(mirrored))
+            {
+                list.Add(mirrored);
+            }
+        }
+        list.Add(resolvedZipUrl);
+        return list;
     }
 
     public async Task<string> ResolveZipDownloadUrlAsync(string input, CancellationToken ct = default)

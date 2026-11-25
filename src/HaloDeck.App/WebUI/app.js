@@ -264,8 +264,10 @@
     pluginStoreData: null,
     pluginStoreLoading: false,
     pluginStoreSearch: "",
+    pluginStoreCategory: "all",
     pluginCustomSourceDraft: "",
     pluginDirectUrlDraft: "",
+    pluginMirrorDraft: null,
     pluginDownloadProgress: null,
     focusIndex: 0,
     lastInputModality: "pointer",
@@ -3823,15 +3825,24 @@
   // ---------------- Decky-Style Community Plugin Center & Sandbox Host ----------------
 
   const PLUGIN_PERM_META = {
-    "games:read": { label: "读取游戏库", tier: "t1" },
-    "telemetry:read": { label: "读取硬件遥测", tier: "t1" },
-    "events:game": { label: "订阅游戏启停事件", tier: "t1" },
-    "storage": { label: "插件私有存储", tier: "t1" },
-    "shell:openFolder": { label: "打开插件数据目录", tier: "t1" },
-    "ui:theme": { label: "自定义界面皮肤", tier: "t1" },
-    "backend": { label: "独立后端进程", tier: "t2" },
-    "input:sendKey": { label: "向游戏发送功能键", tier: "t3" }
+    "games:read": { label: "读取游戏库", tier: "t1", desc: "读取已扫描游戏列表、安装路径、运行状态及反作弊标识（只读）。" },
+    "telemetry:read": { label: "读取硬件遥测", tier: "t1", desc: "读取实时 FPS、功耗、温度、显存、风扇转速与电量（只读）。" },
+    "events:game": { label: "订阅游戏启停事件", tier: "t1", desc: "接收游戏启动与退出通知，用于计时、备忘联动等。" },
+    "storage": { label: "插件私有存储", tier: "t1", desc: "读写本插件隔离的数据文件，无法访问其他插件或系统设置。" },
+    "shell:openFolder": { label: "打开插件数据目录", tier: "t1", desc: "在系统资源管理器中打开本插件专属数据文件夹。" },
+    "shell:openUrl": { label: "打开安全外部链接", tier: "t1", desc: "在系统默认浏览器中打开安全的 https:// 网页（如攻略或项目主页）。" },
+    "ui:theme": { label: "自定义界面皮肤", tier: "t1", desc: "安全覆写白名单 CSS 主题变量，停用或卸载自动恢复原样。" },
+    "backend": { label: "独立后端进程", tier: "t2", desc: "运行隔离的本地子进程（随主程序退出销毁），具备本地脚本/程序执行能力。" },
+    "input:sendKey": { label: "向游戏发送功能键", tier: "t3", desc: "向前台游戏发送白名单功能键（Insert / Home / End / F1–F12）。" }
   };
+
+  const PLUGIN_CATEGORY_TABS = [
+    { id: "all", label: "全部" },
+    { id: "theme", label: "🎨 主题皮肤" },
+    { id: "utility", label: "🧰 实用工具" },
+    { id: "monitor", label: "📊 监控诊断" },
+    { id: "developer", label: "🛠 开发模板" }
+  ];
 
   function renderPluginTrustBadge(obj) {
     const perms = Array.isArray(obj?.permissions) ? obj.permissions : [];
@@ -3938,6 +3949,7 @@
   }
 
   function renderPluginSandboxShell(plugin, backLabel) {
+    const devMode = !!state.snapshot?.settings?.pluginDeveloperMode;
     return `
       <div class="plugin-frame-shell ${IS_QAM ? "is-qam" : ""}">
         <div class="plugin-frame-bar">
@@ -3947,6 +3959,7 @@
             <span class="hh-card-badge">v${esc(plugin.version)}</span>
           </div>
           <div style="display:flex;align-items:center;gap:6px;">
+            ${plugin.hasBackend && devMode ? `<button id="btnPluginFrameRestartBackend" class="btn btn-sm" data-focusable="true">重启后端</button>` : ""}
             ${plugin.hasBackend ? `<button id="btnPluginFrameLogs" class="btn btn-sm" data-focusable="true">日志</button>` : ""}
             <button id="btnPluginFrameReload" class="btn btn-sm" data-focusable="true">重载</button>
           </div>
@@ -3991,15 +4004,21 @@
 
     const sub = state.pluginsSubTab || "installed";
     const storeData = state.pluginStoreData;
-    const customUrls = state.snapshot?.settings?.pluginStoreUrls || [];
+    const settings = state.snapshot?.settings || {};
+    const customUrls = settings.pluginStoreUrls || [];
+    const devMode = !!settings.pluginDeveloperMode;
+    const mirrorValue = state.pluginMirrorDraft !== null ? state.pluginMirrorDraft : (settings.pluginDownloadMirrorPrefix || "");
     const dlProg = state.pluginDownloadProgress;
 
     if (sub === "store" && !storeData && !state.pluginStoreLoading) {
       setTimeout(() => ensurePluginStoreLoaded(false), 0);
     }
 
+    const updatableCount = (storeData?.items || []).filter((x) => x.hasUpdate && !x.isRevoked).length;
+    const catFilter = state.pluginStoreCategory || "all";
     const q = (state.pluginStoreSearch || "").trim().toLowerCase();
     const storeItems = (storeData?.items || []).filter((item) => {
+      if (catFilter !== "all" && (item.category || "utility").toLowerCase() !== catFilter) return false;
       if (!q) return true;
       return (item.name || "").toLowerCase().includes(q) ||
              (item.id || "").toLowerCase().includes(q) ||
@@ -4014,9 +4033,11 @@
             <div class="hh-card-head">
               <div>
                 <span class="hh-card-title">社区插件中心 · Decky 沙箱模式</span>
-                <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；HaloDeck 本体纯净合规。</div>
+                <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；支持开源 Commit 锁包与 SHA-256 校验。</div>
               </div>
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <button id="btnTogglePluginDevMode" class="btn btn-sm ${devMode ? "btn-primary" : ""}" data-focusable="true" title="开启后显示本地目录直导、重启后端与快捷目录按钮">${devMode ? "🛠 开发者模式：开" : "🛠 开发者模式"}</button>
+                ${devMode ? `<button id="btnInstallPluginFolder" class="btn btn-sm" data-focusable="true">导入本地目录</button>` : ""}
                 <button id="btnInstallPluginZip" class="btn btn-sm btn-primary" data-focusable="true">导入本地 .zip</button>
                 <button id="btnOpenPluginsFolder" class="btn btn-sm" data-focusable="true">插件目录</button>
                 <button id="btnRefreshPlugins" class="btn btn-sm" data-focusable="true">刷新</button>
@@ -4025,8 +4046,8 @@
 
             <div class="plugin-subtabs">
               <button class="pill-btn small ${sub === "installed" ? "active" : ""}" data-plugin-subtab="installed" data-focusable="true">已安装 (${plugins.length})</button>
-              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}</button>
-              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接 / GitHub 直装</button>
+              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}${updatableCount > 0 ? ` · ${updatableCount} 可更新` : ""}</button>
+              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接直装与网络加速</button>
             </div>
 
             <div id="pluginDlProgressBanner" class="plugin-dl-banner ${dlProg ? "" : "hidden"}">
@@ -4065,6 +4086,8 @@
                       </div>
                       <div class="plugin-card-actions">
                         ${p.isValid && p.enabled && !p.revokedByStore && (p.mount || []).includes("console") ? `<button class="btn btn-sm btn-primary" data-plugin-open="${esc(p.id)}" data-focusable="true">打开</button>` : ""}
+                        ${devMode && p.isValid ? `<button class="btn btn-sm" data-plugin-open-dir="${esc(p.id)}" data-focusable="true">目录</button>` : ""}
+                        ${devMode && p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-restart-backend="${esc(p.id)}" data-focusable="true">重启后端</button>` : ""}
                         ${p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-logs="${esc(p.id)}" data-focusable="true">日志</button>` : ""}
                         ${p.isValid && !p.revokedByStore ? renderSwitch(`swPlugin_${p.id}`, !!p.enabled) : ""}
                         <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(p.id)}" data-focusable="true">卸载</button>
@@ -4076,7 +4099,14 @@
             ) : sub === "store" ? `
               <div class="plugin-store-toolbar">
                 <input id="pluginStoreSearchInput" class="plugin-text-input" type="text" placeholder="搜索商店插件名称、作者或简介..." value="${esc(state.pluginStoreSearch)}" />
+                ${updatableCount > 0 ? `<button id="btnUpdateAllPlugins" class="btn btn-sm btn-primary" data-focusable="true">一键更新全部 (${updatableCount})</button>` : ""}
                 <button id="btnRefreshPluginStore" class="btn btn-sm" data-focusable="true">${state.pluginStoreLoading ? "拉取中..." : "刷新商店"}</button>
+              </div>
+
+              <div class="plugin-category-row">
+                ${PLUGIN_CATEGORY_TABS.map((cat) => `
+                  <button class="pill-btn small ${catFilter === cat.id ? "active" : ""}" data-store-category="${esc(cat.id)}" data-focusable="true">${esc(cat.label)}</button>
+                `).join("")}
               </div>
 
               <div class="plugin-sources-box">
@@ -4102,7 +4132,7 @@
                 <div class="plugin-list">
                   ${storeItems.map((item) => `
                     <div class="plugin-card ${item.isInstalled ? "is-enabled" : ""}">
-                      <div class="plugin-card-icon"><span>${item.category === "theme" ? "🎨" : "🔌"}</span></div>
+                      <div class="plugin-card-icon"><span>${item.category === "theme" ? "🎨" : item.category === "developer" ? "🛠" : item.category === "monitor" ? "📊" : "🔌"}</span></div>
                       <div class="plugin-card-main">
                         <div class="plugin-card-head">
                           <strong>${esc(item.name)}</strong>
@@ -4118,6 +4148,7 @@
                         </div>
                       </div>
                       <div class="plugin-card-actions">
+                        <button class="btn btn-sm" data-store-detail="${esc(item.id)}" data-focusable="true">详情</button>
                         ${(() => {
                           const inst = plugins.find((x) => x.id === item.id);
                           if (item.isRevoked) {
@@ -4146,10 +4177,19 @@
                   支持直接粘贴任意社区插件的 <code>https://.../*.zip</code> 下载链接，或 GitHub 仓库名（如 <code>owner/repo</code>，自动解析最新 Release 中的 <code>.zip</code>）。安装后默认处于停用状态，确认权限后才会运行。
                 </div>
                 <div class="plugin-store-add-row" style="margin-top:8px;">
-                  <input id="pluginDirectUrlInput" class="plugin-text-input" type="text" placeholder="例如：daxiwow/halodeck-fling-trainer 或 https://github.com/.../plugin.zip" value="${esc(state.pluginDirectUrlDraft)}" />
+                  <input id="pluginDirectUrlInput" class="plugin-text-input" type="text" placeholder="例如：owner/halodeck-plugin 或 https://github.com/.../plugin.zip" value="${esc(state.pluginDirectUrlDraft)}" />
                   <button id="btnInstallPluginFromUrl" class="btn btn-sm btn-primary" data-focusable="true">下载并安装</button>
                 </div>
-                <div class="cw-row-sub" style="margin-top:6px;">
+                <div class="plugin-sources-box" style="margin-top:12px;">
+                  <div style="font-size:12px;font-weight:700;margin-bottom:4px;">GitHub Release 下载镜像加速（国内网络可选）</div>
+                  <div class="cw-row-sub" style="margin-bottom:8px;">商店目录默认走 jsDelivr CDN；若国内下载插件压缩包超时，可填入 HTTPS 镜像前缀（如 <code>https://gh-proxy.com/</code>）。失败时自动回退直连，且官方商店插件始终强制校验 SHA-256。</div>
+                  <div class="plugin-store-add-row" style="margin-bottom:0;">
+                    <input id="pluginMirrorPrefixInput" class="plugin-text-input" type="text" placeholder="留空表示直连 GitHub；示例：https://gh-proxy.com/" value="${esc(mirrorValue)}" />
+                    <button id="btnSavePluginMirror" class="btn btn-sm btn-primary" data-focusable="true">保存镜像</button>
+                    ${mirrorValue ? `<button id="btnClearPluginMirror" class="btn btn-sm" data-focusable="true">恢复直连</button>` : ""}
+                  </div>
+                </div>
+                <div class="cw-row-sub" style="margin-top:8px;">
                   自定义已订阅的第三方商店源（共 ${customUrls.length} 个）：可在「插件商店」页管理增删。
                 </div>
               </div>
@@ -4367,6 +4407,95 @@
     }
   }
 
+  function openPluginDetailModal(item) {
+    const modal = document.getElementById("modalBackdrop");
+    const title = document.getElementById("modalTitle");
+    const sub = document.getElementById("modalSubtitle");
+    const body = document.getElementById("modalBody");
+    if (!modal || !title || !sub || !body || !item) return;
+
+    const perms = Array.isArray(item.permissions) ? item.permissions : [];
+    const repoUrl = item.sourceRepo || item.homepage || "";
+    const commitSha = item.sourceCommit || "";
+    const commitUrl = repoUrl && commitSha ? `${repoUrl.replace(/\/$/, "")}/commit/${commitSha}` : "";
+
+    title.textContent = `${item.name} · v${item.version}`;
+    sub.textContent = `${item.id} · ${item.isOfficialSource ? "官方纯净商店" : (item.sourceName || "第三方社区源")}`;
+    body.innerHTML = `
+      <div class="plugin-detail-box">
+        <div class="plugin-detail-head">
+          ${renderPluginTrustBadge(item)}
+          <span class="hh-card-badge">作者：${esc(item.author || "社区")}</span>
+          ${item.isInstalled ? `<span class="hh-card-badge live">已安装 v${esc(item.installedVersion || item.version)}</span>` : ""}
+        </div>
+        <p class="plugin-detail-desc">${esc(item.description || "暂无说明")}</p>
+
+        <div class="plugin-detail-meta">
+          <div class="plugin-detail-row">
+            <span>开源仓库</span>
+            ${repoUrl ? `<button class="bento-link-pill" data-open-ext-url="${esc(repoUrl)}" data-focusable="true">${esc(repoUrl)} ↗</button>` : `<span class="cw-row-sub">未提供</span>`}
+          </div>
+          <div class="plugin-detail-row">
+            <span>锁定 Commit</span>
+            ${commitSha ? (commitUrl ? `<button class="bento-link-pill" data-open-ext-url="${esc(commitUrl)}" data-focusable="true"><code>${esc(commitSha.slice(0, 12))}</code> ↗</button>` : `<code>${esc(commitSha)}</code>`) : `<span class="cw-row-sub">未锁定</span>`}
+          </div>
+          <div class="plugin-detail-row">
+            <span>SHA-256 校验</span>
+            ${item.sha256 ? `<code class="plugin-detail-sha">${esc(item.sha256)}</code>` : `<span class="cw-row-sub">未声明（仅 HTTPS 传输）</span>`}
+          </div>
+        </div>
+
+        <div class="plugin-detail-perms">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;">申请权限逐条解读（共 ${perms.length} 项）</div>
+          ${perms.length === 0 ? `<div class="cw-row-sub">无需任何特殊系统权限（纯展示沙箱）。</div>` : perms.map((p) => {
+            const meta = PLUGIN_PERM_META[p] || { label: p, tier: "t2", desc: "插件自定义权限声明。" };
+            return `
+              <div class="plugin-detail-perm-item">
+                <span class="plugin-perm-pill ${meta.tier}">${esc(meta.label)}</span>
+                <span class="cw-row-sub">${esc(meta.desc || "")}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+
+        <div class="modal-actions" style="margin-top:12px;">
+          ${!item.isRevoked && (!item.isInstalled || item.hasUpdate) ? `<button id="btnDetailInstallPlugin" class="btn btn-primary" data-focusable="true">${item.hasUpdate ? `立即更新至 v${esc(item.version)}` : `安装 v${esc(item.version)}`}</button>` : ""}
+          <button id="btnDetailClose" class="btn" data-focusable="true">关闭</button>
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+
+    body.querySelectorAll("[data-open-ext-url]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await rpc("openExternalUrl", { url: btn.dataset.openExtUrl });
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.getElementById("btnDetailInstallPlugin")?.addEventListener("click", async () => {
+      modal.classList.add("hidden");
+      try {
+        const res = await rpc("installPluginFromUrl", {
+          url: item.zipUrl,
+          sha256: item.sha256 || "",
+          name: item.name
+        });
+        showToast(res?.message || "插件安装完成", "success");
+        await ensurePluginStoreLoaded(true);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnDetailClose")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+    });
+  }
+
   function bindPluginViewEvents() {
     const iframe = document.getElementById("activePluginFrame");
     if (iframe) {
@@ -4380,12 +4509,116 @@
         state.pluginReloadNonce++;
         render();
       });
+      document.getElementById("btnPluginFrameRestartBackend")?.addEventListener("click", async () => {
+        const p = (state.snapshot?.plugins || []).find((x) => x.id === state.activePluginId);
+        if (!p) return;
+        try {
+          const res = await rpc("restartPluginBackend", { pluginId: p.id });
+          showToast(res?.message || "已重启插件后端", "info");
+          state.pluginReloadNonce++;
+          render();
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
       document.getElementById("btnPluginFrameLogs")?.addEventListener("click", () => {
         const p = (state.snapshot?.plugins || []).find((x) => x.id === state.activePluginId);
         if (p) openPluginLogsModal(p.id, p.name);
       });
       return;
     }
+
+    document.getElementById("btnTogglePluginDevMode")?.addEventListener("click", async () => {
+      const next = !state.snapshot?.settings?.pluginDeveloperMode;
+      try {
+        await rpc("updatePluginPreferences", { pluginDeveloperMode: next });
+        showToast(next ? "已开启插件开发者模式（显示目录直导、重启后端与源码目录入口）" : "已关闭插件开发者模式", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnInstallPluginFolder")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("installPluginFolder", {});
+        if (res?.cancelled) return;
+        showToast(res?.message || "已从本地目录同步插件", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.querySelectorAll("[data-plugin-open-dir]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await rpc("openPluginDirectory", { pluginId: btn.dataset.pluginOpenDir });
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-plugin-restart-backend]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await rpc("restartPluginBackend", { pluginId: btn.dataset.pluginRestartBackend });
+          showToast(res?.message || "已重启插件后端", "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-store-category]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.pluginStoreCategory = btn.dataset.storeCategory || "all";
+        state.focusIndex = 0;
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-store-detail]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.storeDetail;
+        const item = (state.pluginStoreData?.items || []).find((x) => x.id === id);
+        if (item) openPluginDetailModal(item);
+      });
+    });
+
+    document.getElementById("btnUpdateAllPlugins")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("updateAllPlugins", {});
+        showToast(res?.message || "批量更新完成", res?.ok ? "success" : "warn");
+        await ensurePluginStoreLoaded(true);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("pluginMirrorPrefixInput")?.addEventListener("input", (e) => {
+      state.pluginMirrorDraft = e.target.value || "";
+    });
+
+    document.getElementById("btnSavePluginMirror")?.addEventListener("click", async () => {
+      const prefix = (document.getElementById("pluginMirrorPrefixInput")?.value || "").trim();
+      try {
+        await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: prefix });
+        state.pluginMirrorDraft = null;
+        showToast(prefix ? `已保存 GitHub 镜像加速前缀：${prefix}` : "已切换为 GitHub 直连下载", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnClearPluginMirror")?.addEventListener("click", async () => {
+      try {
+        await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: "" });
+        state.pluginMirrorDraft = null;
+        showToast("已恢复 GitHub 直连下载", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
 
     document.getElementById("btnInstallPluginZip")?.addEventListener("click", async () => {
       try {

@@ -9,7 +9,11 @@
 4. **合规纯净**：官方商店不收录网游外挂、反作弊绕过或敏感修改器类插件（此类社区扩展请由作者自行分发，用户通过「第三方商店源」或「链接直装」按需安装）。
 
 ## 如何提交新插件 / 更新版本
-1. 在本目录下新增或更新 `<你的插件ID>.json`（例如 `author.my-plugin.json`）：
+1. 先在本地运行官方校验与打包脚本自检（与 CI 规则 100% 一致）：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\pack-plugin.ps1 -PluginDir <你的插件目录> -AuditOnly
+   ```
+2. 在本目录下新增或更新 `<你的插件ID>.json`（例如 `author.my-plugin.json`）：
    ```json
    {
      "id": "author.my-plugin",
@@ -19,6 +23,6 @@
      "category": "utility"
    }
    ```
-2. 向 `Lokilankaaa/HaloDeck` 发起 Pull Request：
-   - CI（`verify-plugin-store.yml`）会自动克隆你锁定的 `commit`、校验 `plugin.json`、检查是否存在黑盒二进制或高危混淆脚本、并在干净环境编译生成 `.zip` 与 `sha256`；
-   - 维护者完成代码 diff 审查后合并，即可上架到 `plugins/store.json` 并通过 jsDelivr 同步到全球 HaloDeck 客户端。
+3. 向 `Lokilankaaa/HaloDeck` 发起 Pull Request：
+   - CI（`verify-plugin-store.yml`）会自动克隆你锁定的 `commit`、校验 `plugin.json`、扫描黑盒二进制与高危脚本、在干净环境编译生成 `.zip` 与 `sha256`，并自动在 PR 下发表结构化安全审核报告；
+   - 维护者完成代码 diff 审查并合并至 `main` 后，`publish-plugin-store.yml` 将**全自动**在干净环境重编译、上传至 `plugin-store-builds` Release 并同步写入 `plugins/store.json`，通过 jsDelivr 推送到全球 HaloDeck 客户端。

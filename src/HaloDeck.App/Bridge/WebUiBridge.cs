@@ -717,14 +717,20 @@ public sealed class WebUiBridge : IDisposable
                 "relaunchAsAdmin" => RelaunchAsAdmin(payload),
                 "listPlugins" => ListPluginsWithStatus(),
                 "installPluginZip" => await InstallPluginZipAsync(payload),
+                "installPluginFolder" => await InstallPluginFolderAsync(payload),
                 "setPluginEnabled" => SetPluginEnabled(payload),
                 "uninstallPlugin" => UninstallPlugin(payload),
                 "openPluginsFolder" => OpenPluginsFolder(),
+                "openPluginDirectory" => OpenPluginDirectory(payload),
+                "restartPluginBackend" => RestartPluginBackend(payload),
                 "getPluginLogs" => GetPluginLogs(payload),
                 "fetchPluginStore" => await FetchPluginStoreAsync(),
                 "installPluginFromUrl" => await InstallPluginFromUrlAsync(payload),
+                "updateAllPlugins" => await UpdateAllPluginsAsync(),
                 "addPluginStoreUrl" => AddPluginStoreUrl(payload),
                 "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
+                "updatePluginPreferences" => UpdatePluginPreferences(payload),
+                "openExternalUrl" => OpenExternalUrl(payload),
                 "pluginHostApi" => await DispatchPluginHostApiAsync(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
@@ -2750,11 +2756,117 @@ public sealed class WebUiBridge : IDisposable
             return new { cancelled = true };
         }
 
-        var installed = await Task.Run(() => _pluginStore.InstallFromZip(zipPath, enableAfterInstall: false, consentAccepted: false))
+        var installed = await Task.Run(() => _pluginStore.InstallFromZip(
+            zipPath,
+            enableAfterInstall: false,
+            consentAccepted: false,
+            beforeOverwrite: id => _pluginHost.StopPlugin(id)))
             .ConfigureAwait(false);
         _pluginHost.StopPlugin(installed.Id);
         BroadcastStateSnapshot();
         return new { ok = true, plugin = installed, message = $"已导入社区插件「{installed.Name}」v{installed.Version}，确认权限后即可启用" };
+    }
+
+    private async Task<object> InstallPluginFolderAsync(JsonElement payload)
+    {
+        string? folderPath = payload.TryGetProperty("folderPath", out var fp) && fp.ValueKind == JsonValueKind.String
+            ? fp.GetString()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            folderPath = await _dispatcher.InvokeAsync(() =>
+            {
+                var dlg = new Microsoft.Win32.OpenFolderDialog
+                {
+                    Title = "选择未打包的 HaloDeck 插件目录（需包含 plugin.json）",
+                    Multiselect = false
+                };
+                return dlg.ShowDialog() == true ? dlg.FolderName : null;
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            return new { cancelled = true };
+        }
+
+        var installed = await Task.Run(() => _pluginStore.InstallFromDirectory(
+            folderPath,
+            enableAfterInstall: false,
+            consentAccepted: false,
+            beforeOverwrite: id => _pluginHost.StopPlugin(id)))
+            .ConfigureAwait(false);
+        _pluginHost.StopPlugin(installed.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, plugin = installed, message = $"已从本地目录同步插件「{installed.Name}」v{installed.Version}" };
+    }
+
+    private object OpenPluginDirectory(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        var plugin = _pluginStore.GetPlugin(pluginId)
+                     ?? throw new InvalidOperationException($"未找到插件：{pluginId}");
+        if (!Directory.Exists(plugin.RootDirectory))
+        {
+            throw new DirectoryNotFoundException($"插件目录不存在：{plugin.RootDirectory}");
+        }
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = plugin.RootDirectory,
+            UseShellExecute = true
+        });
+        return new { ok = true, path = plugin.RootDirectory };
+    }
+
+    private object RestartPluginBackend(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        var plugin = _pluginStore.GetPlugin(pluginId)
+                     ?? throw new InvalidOperationException($"未找到插件：{pluginId}");
+        _pluginHost.StopPlugin(plugin.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, message = $"已重启插件「{plugin.Name}」的独立后端进程（下次调用自动拉起）" };
+    }
+
+    private object OpenExternalUrl(JsonElement payload)
+    {
+        string url = (payload.TryGetProperty("url", out var up) ? up.GetString() : null)?.Trim() ?? "";
+        if (!PluginRegistryClient.IsAllowedHttpsUrl(url))
+        {
+            throw new ArgumentException("仅允许在默认浏览器中打开安全的 https:// 链接");
+        }
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
+        return new { ok = true, url };
+    }
+
+    private object UpdatePluginPreferences(JsonElement payload)
+    {
+        if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
+        {
+            string raw = (mp.GetString() ?? "").Trim();
+            if (!string.IsNullOrEmpty(raw) && !PluginRegistryClient.IsAllowedHttpsUrl(raw))
+            {
+                throw new ArgumentException("GitHub 下载镜像前缀必须留空或为合法的 https:// 地址");
+            }
+            _settings.PluginDownloadMirrorPrefix = raw;
+        }
+        if (payload.TryGetProperty("pluginDeveloperMode", out var dm) && (dm.ValueKind == JsonValueKind.True || dm.ValueKind == JsonValueKind.False))
+        {
+            _settings.PluginDeveloperMode = dm.GetBoolean();
+        }
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            pluginDownloadMirrorPrefix = _settings.PluginDownloadMirrorPrefix,
+            pluginDeveloperMode = _settings.PluginDeveloperMode
+        };
     }
 
     private object SetPluginEnabled(JsonElement payload)
@@ -2906,7 +3018,9 @@ public sealed class WebUiBridge : IDisposable
                 _pluginStore,
                 url,
                 sha256,
-                progress).ConfigureAwait(false);
+                progress,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
 
             _pluginHost.StopPlugin(installed.Id);
             BroadcastEvent("pluginDownloadProgress", new { label, percent = 100.0, status = "done" });
@@ -2924,6 +3038,94 @@ public sealed class WebUiBridge : IDisposable
         {
             _pluginInstallGate.Release();
         }
+    }
+
+    private async Task<object> UpdateAllPluginsAsync()
+    {
+        var catalogs = await _pluginRegistry.FetchAllCatalogsAsync(_settings.PluginStoreUrls).ConfigureAwait(false);
+        var officialRevoked = new HashSet<string>(
+            catalogs.Where(c => c.IsOfficial && c.RevokedIds is { Count: > 0 }).SelectMany(c => c.RevokedIds),
+            StringComparer.OrdinalIgnoreCase);
+
+        var installedMap = _pluginStore.ListPlugins()
+            .Where(p => p.IsValid)
+            .ToDictionary(p => p.Id, p => p, StringComparer.OrdinalIgnoreCase);
+
+        var targets = new List<PluginStoreCatalogItem>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cat in catalogs)
+        {
+            foreach (var p in cat.Plugins)
+            {
+                if (!seen.Add(p.Id)) continue;
+                if (officialRevoked.Contains(p.Id)) continue;
+                if (installedMap.TryGetValue(p.Id, out var inst) &&
+                    PluginRegistryClient.IsNewerVersion(p.Version, inst.Version))
+                {
+                    targets.Add(p);
+                }
+            }
+        }
+
+        if (targets.Count == 0)
+        {
+            return new { ok = true, updatedCount = 0, failedCount = 0, escalatedIds = Array.Empty<string>(), message = "所有已安装插件均已是最新版本" };
+        }
+
+        int updatedCount = 0;
+        int failedCount = 0;
+        var escalatedIds = new List<string>();
+        var errors = new List<string>();
+
+        await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            for (int i = 0; i < targets.Count; i++)
+            {
+                var item = targets[i];
+                string label = $"({i + 1}/{targets.Count}) {item.Name}";
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
+                try
+                {
+                    var progress = new Progress<double>(pct =>
+                    {
+                        BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
+                    });
+                    var installed = await _pluginRegistry.DownloadAndInstallAsync(
+                        _pluginStore,
+                        item.ZipUrl,
+                        item.Sha256,
+                        progress,
+                        mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                        beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
+                    _pluginHost.StopPlugin(installed.Id);
+                    updatedCount++;
+                    if (!installed.ConsentAccepted)
+                    {
+                        escalatedIds.Add(installed.Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failedCount++;
+                    errors.Add($"{item.Name}: {ex.Message}");
+                }
+            }
+            BroadcastEvent("pluginDownloadProgress", new { label = "更新完成", percent = 100.0, status = "done" });
+            BroadcastStateSnapshot();
+        }
+        finally
+        {
+            _pluginInstallGate.Release();
+        }
+
+        string msg = failedCount == 0
+            ? (escalatedIds.Count > 0
+                ? $"已更新 {updatedCount} 个插件（其中 {escalatedIds.Count} 个因新增权限已自动暂停，请在「已安装」页重新确认）"
+                : $"已全部更新完成（共 {updatedCount} 个插件）")
+            : $"更新完成：成功 {updatedCount} 个，失败 {failedCount} 个（{string.Join("；", errors.Take(2))}）";
+
+        return new { ok = failedCount == 0, updatedCount, failedCount, escalatedIds, errors, message = msg };
     }
 
     private object AddPluginStoreUrl(JsonElement payload)
@@ -2985,7 +3187,7 @@ public sealed class WebUiBridge : IDisposable
                     permissions = plugin.Permissions,
                     theme = _settings.UiTheme,
                     layout = _settings.UiLayout,
-                    haloDeckVersion = "0.6.0",
+                    haloDeckVersion = typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2",
                     isElevated = Win32Interop.IsCurrentProcessElevated()
                 };
 
@@ -3046,6 +3248,18 @@ public sealed class WebUiBridge : IDisposable
                 string dataDir = _pluginStore.EnsurePluginDataDirectory(plugin.Id);
                 Process.Start(new ProcessStartInfo { FileName = dataDir, UseShellExecute = true });
                 return new { ok = true };
+
+            case "openUrl":
+            {
+                RequirePerm(plugin, "shell:openUrl");
+                string targetUrl = args.TryGetProperty("url", out var urlProp) ? (urlProp.GetString() ?? "").Trim() : "";
+                if (!PluginRegistryClient.IsAllowedHttpsUrl(targetUrl))
+                {
+                    throw new ArgumentException("仅允许打开安全的 https:// 外部链接");
+                }
+                Process.Start(new ProcessStartInfo { FileName = targetUrl, UseShellExecute = true });
+                return new { ok = true, url = targetUrl };
+            }
 
             case "themeApply":
             {

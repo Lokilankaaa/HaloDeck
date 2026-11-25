@@ -201,7 +201,11 @@ public sealed class PluginStoreService
         return ListPlugins().FirstOrDefault(p => string.Equals(p.Id, pluginId, StringComparison.OrdinalIgnoreCase));
     }
 
-    public InstalledPluginInfo InstallFromZip(string zipPath, bool enableAfterInstall = false, bool consentAccepted = false)
+    public InstalledPluginInfo InstallFromZip(
+        string zipPath,
+        bool enableAfterInstall = false,
+        bool consentAccepted = false,
+        Action<string>? beforeOverwrite = null)
     {
         if (string.IsNullOrWhiteSpace(zipPath) || !File.Exists(zipPath))
         {
@@ -214,71 +218,128 @@ public sealed class PluginStoreService
         {
             ExtractZipSafely(zipPath, stageRoot);
             string sourceDir = LocatePluginRootInStage(stageRoot);
-
-            string manifestPath = Path.Combine(sourceDir, "plugin.json");
-            var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath), JsonOpts);
-            var (valid, err) = PluginManifest.Validate(manifest, sourceDir);
-            if (!valid || manifest is null)
-            {
-                throw new InvalidOperationException($"插件校验失败：{err}");
-            }
-
-            lock (_sync)
-            {
-                string destDir = Path.Combine(_pluginsRoot, manifest.Id);
-                string normalizedRoot = Path.GetFullPath(_pluginsRoot)
-                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                string fullDest = Path.GetFullPath(destDir);
-                if (!fullDest.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException("插件安装目标路径越界");
-                }
-
-                if (Directory.Exists(fullDest))
-                {
-                    Directory.Delete(fullDest, recursive: true);
-                }
-
-                CopyDirectoryRecursive(sourceDir, fullDest);
-                Directory.CreateDirectory(Path.Combine(_pluginDataRoot, manifest.Id));
-
-                if (!_stateMap.TryGetValue(manifest.Id, out var state))
-                {
-                    state = new PluginStateEntry { InstalledAtUtc = DateTimeOffset.UtcNow };
-                    _stateMap[manifest.Id] = state;
-                }
-                else if (state.ConsentAccepted && !consentAccepted)
-                {
-                    // Permission-escalation guard: if an updated version requests ANY new permission
-                    // not previously approved by the user, revoke consent and disable until re-approved.
-                    var approvedSet = new HashSet<string>(state.ApprovedPermissions ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
-                    bool escalated = manifest.Permissions.Any(p => !approvedSet.Contains(p));
-                    if (escalated)
-                    {
-                        state.ConsentAccepted = false;
-                        state.Enabled = false;
-                        ClearThemeOverrideIfOwnedLocked(manifest.Id);
-                    }
-                }
-
-                if (consentAccepted)
-                {
-                    state.ConsentAccepted = true;
-                    state.ApprovedPermissions = manifest.Permissions.ToList();
-                }
-                if (enableAfterInstall && state.ConsentAccepted && !state.RevokedByStore)
-                {
-                    state.Enabled = true;
-                }
-                SaveStateLocked();
-            }
-
-            return GetPlugin(manifest.Id)
-                   ?? throw new InvalidOperationException("插件已安装但重新加载失败");
+            return InstallValidatedDirectoryCore(sourceDir, enableAfterInstall, consentAccepted, beforeOverwrite);
         }
         finally
         {
             try { Directory.Delete(stageRoot, recursive: true); } catch { }
+        }
+    }
+
+    public InstalledPluginInfo InstallFromDirectory(
+        string sourcePluginDir,
+        bool enableAfterInstall = false,
+        bool consentAccepted = false,
+        Action<string>? beforeOverwrite = null)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePluginDir) || !Directory.Exists(sourcePluginDir))
+        {
+            throw new DirectoryNotFoundException($"未找到插件源码目录：{sourcePluginDir}");
+        }
+
+        string normalizedSource = Path.GetFullPath(sourcePluginDir);
+        string manifestPath = Path.Combine(normalizedSource, "plugin.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new InvalidOperationException("所选目录根部缺少 plugin.json");
+        }
+
+        return InstallValidatedDirectoryCore(normalizedSource, enableAfterInstall, consentAccepted, beforeOverwrite);
+    }
+
+    private InstalledPluginInfo InstallValidatedDirectoryCore(
+        string sourceDir,
+        bool enableAfterInstall,
+        bool consentAccepted,
+        Action<string>? beforeOverwrite)
+    {
+        string manifestPath = Path.Combine(sourceDir, "plugin.json");
+        var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath), JsonOpts);
+        var (valid, err) = PluginManifest.Validate(manifest, sourceDir);
+        if (!valid || manifest is null)
+        {
+            throw new InvalidOperationException($"插件校验失败：{err}");
+        }
+
+        // Stop any running backend worker BEFORE attempting to overwrite the plugin directory.
+        beforeOverwrite?.Invoke(manifest.Id);
+
+        lock (_sync)
+        {
+            string destDir = Path.Combine(_pluginsRoot, manifest.Id);
+            string normalizedRoot = Path.GetFullPath(_pluginsRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string fullDest = Path.GetFullPath(destDir);
+            if (!fullDest.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("插件安装目标路径越界");
+            }
+
+            string fullSource = Path.GetFullPath(sourceDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fullDestTrim = fullDest.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            if (!string.Equals(fullSource, fullDestTrim, StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directory.Exists(fullDest))
+                {
+                    DeleteDirectoryWithRetry(fullDest);
+                }
+
+                CopyDirectoryRecursive(sourceDir, fullDest);
+            }
+            Directory.CreateDirectory(Path.Combine(_pluginDataRoot, manifest.Id));
+
+            if (!_stateMap.TryGetValue(manifest.Id, out var state))
+            {
+                state = new PluginStateEntry { InstalledAtUtc = DateTimeOffset.UtcNow };
+                _stateMap[manifest.Id] = state;
+            }
+            else if (state.ConsentAccepted && !consentAccepted)
+            {
+                // Permission-escalation guard: if an updated version requests ANY new permission
+                // not previously approved by the user, revoke consent and disable until re-approved.
+                var approvedSet = new HashSet<string>(state.ApprovedPermissions ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+                bool escalated = manifest.Permissions.Any(p => !approvedSet.Contains(p));
+                if (escalated)
+                {
+                    state.ConsentAccepted = false;
+                    state.Enabled = false;
+                    ClearThemeOverrideIfOwnedLocked(manifest.Id);
+                }
+            }
+
+            if (consentAccepted)
+            {
+                state.ConsentAccepted = true;
+                state.ApprovedPermissions = manifest.Permissions.ToList();
+            }
+            if (enableAfterInstall && state.ConsentAccepted && !state.RevokedByStore)
+            {
+                state.Enabled = true;
+            }
+            SaveStateLocked();
+        }
+
+        return GetPlugin(manifest.Id)
+               ?? throw new InvalidOperationException("插件已安装但重新加载失败");
+    }
+
+    private static void DeleteDirectoryWithRetry(string path)
+    {
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                if (!Directory.Exists(path)) return;
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == 7) throw;
+                Thread.Sleep(100);
+            }
         }
     }
 

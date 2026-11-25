@@ -4690,6 +4690,76 @@ body[data-theme="frost"] .plugin-frame-bar {
   margin-bottom: 8px;
 }
 
+.plugin-category-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.plugin-detail-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plugin-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.plugin-detail-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.plugin-detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+}
+
+.plugin-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.plugin-detail-row > span:first-child {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.plugin-detail-sha {
+  font-size: 10.5px;
+  word-break: break-all;
+  color: var(--text-secondary);
+}
+
+.plugin-detail-perms {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-detail-perm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .plugin-text-input {
   flex: 1 1 auto;
   min-width: 180px;

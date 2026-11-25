@@ -1,0 +1,151 @@
+name: Publish Audited Community Plugins to Official Store
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'plugins/submissions/*.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-store:
+    name: Clean-Room Build, Upload Release Asset & Sync store.json
+    runs-on: windows-latest
+    steps:
+      - name: Checkout HaloDeck repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Clean-room build submissions & update plugins/store.json
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $subFiles = Get-ChildItem -Path "plugins/submissions" -Filter "*.json" -ErrorAction SilentlyContinue
+          if (-not $subFiles) {
+            Write-Host "No community submissions in plugins/submissions/*.json. Nothing to publish."
+            exit 0
+          }
+
+          $releaseTag = "plugin-store-builds"
+          $releaseExists = $false
+          try {
+            gh release view $releaseTag | Out-Null
+            if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
+          } catch {}
+
+          if (-not $releaseExists) {
+            gh release create $releaseTag --title "HaloDeck Community Plugin Store Builds (Clean-Room)" --notes "Automated clean-room builds produced by GitHub Actions from audited community plugin submissions pinned to immutable 40-char Git commits." --prerelease=false
+          }
+
+          $storePath = "plugins/store.json"
+          $store = Get-Content $storePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $pluginMap = [ordered]@{}
+          foreach ($existing in $store.plugins) {
+            $pluginMap[$existing.id] = $existing
+          }
+
+          $forbiddenBinaryExts = @('.exe','.dll','.sys','.ocx','.scr','.com','.msi','.pyd','.so','.dylib')
+          $allowedPerms = @(
+            'games:read','telemetry:read','events:game','storage',
+            'shell:openFolder','shell:openUrl','ui:theme','backend','input:sendKey'
+          )
+
+          foreach ($sf in $subFiles) {
+            $sub = Get-Content $sf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (-not ($sub.commit -match '^[a-fA-F0-9]{40}$')) {
+              throw "Submission $($sub.id) missing 40-char commit SHA"
+            }
+
+            $workDir = Join-Path $env:RUNNER_TEMP ("pub_" + $sub.id)
+            if (Test-Path $workDir) { Remove-Item $workDir -Recurse -Force }
+            git clone --filter=blob:none --no-checkout $sub.repo $workDir
+            Push-Location $workDir
+            try {
+              git checkout --detach $sub.commit
+              $subPath = if ($sub.subpath) { $sub.subpath } else { "." }
+              $pluginDir = (Resolve-Path (Join-Path $workDir $subPath)).Path
+
+              $precompiled = Get-ChildItem -Path $pluginDir -Recurse -File |
+                Where-Object { $forbiddenBinaryExts -contains $_.Extension.ToLowerInvariant() }
+              if ($precompiled) { throw "Forbidden precompiled binary detected in $($sub.id)" }
+
+              $manifest = Get-Content (Join-Path $pluginDir "plugin.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+              foreach ($perm in @($manifest.permissions)) {
+                if ($allowedPerms -notcontains $perm) { throw "Unknown permission '$perm' in $($sub.id)" }
+              }
+
+              $csproj = Get-ChildItem -Path $pluginDir -Filter "*.csproj" -Recurse | Select-Object -First 1
+              if ($csproj) {
+                dotnet publish $csproj.FullName -c Release -r win-x64 --self-contained false -o (Join-Path $pluginDir "backend")
+              }
+
+              $stageRoot = Join-Path $env:RUNNER_TEMP ("pub_stage_" + $sub.id)
+              if (Test-Path $stageRoot) { Remove-Item $stageRoot -Recurse -Force }
+              $stageInner = Join-Path $stageRoot $sub.id
+              New-Item -ItemType Directory -Force -Path $stageInner | Out-Null
+              Get-ChildItem -Path $pluginDir -Force | Where-Object { $_.Name -notin @('.git','bin','obj') } | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination (Join-Path $stageInner $_.Name) -Recurse -Force
+              }
+
+              $assetName = "$($sub.id)-$($manifest.version)-$($sub.commit.Substring(0,8)).zip"
+              $zipOut = Join-Path $env:RUNNER_TEMP $assetName
+              Compress-Archive -Path $stageInner -DestinationPath $zipOut -Force
+              $sha = (Get-FileHash $zipOut -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              gh release upload $releaseTag $zipOut --clobber
+              $zipUrl = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$releaseTag/$assetName"
+
+              $entry = [ordered]@{
+                id           = $manifest.id
+                name         = $manifest.name
+                version      = $manifest.version
+                author       = if ($manifest.author) { $manifest.author } else { "community" }
+                category     = if ($sub.category) { $sub.category } else { "utility" }
+                description  = if ($manifest.description) { $manifest.description } else { "" }
+                homepage     = if ($manifest.homepage) { $manifest.homepage } else { $sub.repo }
+                sourceRepo   = $sub.repo
+                sourceCommit = $sub.commit
+                mount        = if ($manifest.mount) { @($manifest.mount) } else { @("console", "qam") }
+                permissions  = @($manifest.permissions)
+                zipUrl       = $zipUrl
+                sha256       = $sha
+              }
+              $pluginMap[$manifest.id] = $entry
+              Write-Host "Published $($manifest.id) v$($manifest.version) -> $zipUrl ($sha)"
+            } finally {
+              Pop-Location
+            }
+          }
+
+          $updatedStore = [ordered]@{
+            storeName   = $store.storeName
+            description = $store.description
+            revokedIds  = @($store.revokedIds)
+            plugins     = @($pluginMap.Values)
+          }
+          $updatedStore | ConvertTo-Json -Depth 10 | Set-Content -Path $storePath -Encoding UTF8
+
+      - name: Commit updated plugins/store.json if changed
+        shell: pwsh
+        run: |
+          $diff = git status --porcelain plugins/store.json
+          if (-not $diff) {
+            Write-Host "plugins/store.json is already up to date."
+            exit 0
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugins/store.json
+          git commit -m "chore(store): auto-publish audited community plugins [skip ci]"
+          git push origin HEAD:main
