@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -246,7 +247,20 @@ public sealed class WebUiBridge : IDisposable
     }
 
     private static string CurrentAppVersion
-        => typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2";
+    {
+        get
+        {
+            string? info = typeof(WebUiBridge).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(info))
+            {
+                int plusIdx = info.IndexOf('+');
+                if (plusIdx > 0) info = info[..plusIdx];
+                return info.Trim();
+            }
+            return typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2";
+        }
+    }
 
     private async Task CheckAppUpdateSilentOnStartupAsync()
     {
