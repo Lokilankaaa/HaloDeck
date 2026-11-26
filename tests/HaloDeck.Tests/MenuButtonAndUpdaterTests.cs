@@ -35,6 +35,103 @@ public sealed class MenuButtonAndUpdaterTests
     }
 
     [Fact]
+    public void GpdVendorHidMenuParser_DetectsWin5A5AndB4RisingEdgeAndIgnoresHoldAndConfigPackets()
+    {
+        var parser = new GpdVendorHidMenuParser();
+
+        // Standard Win 5 vendor HID report: ReportID=0x01, Magic=0xA5, byte[8]=0x68 (F13 Menu)
+        var pressA5 = new byte[64];
+        pressA5[0] = 0x01;
+        pressA5[1] = 0xA5;
+        pressA5[8] = 0x68;
+        Assert.True(parser.ProcessReport(pressA5));
+
+        // Held repeat packet (prevByte[8] was already 0x68) must NOT re-trigger
+        Assert.False(parser.ProcessReport(pressA5));
+
+        // Release clears state, then 0xB4 magic variant triggers on next rising edge
+        var release = new byte[64];
+        release[0] = 0x01;
+        release[1] = 0xA5;
+        release[8] = 0x00;
+        Assert.False(parser.ProcessReport(release));
+
+        var pressB4 = new byte[64];
+        pressB4[0] = 0x01;
+        pressB4[1] = 0xB4;
+        pressB4[8] = 0x68;
+        Assert.True(parser.ProcessReport(pressB4));
+
+        // Config readback / unrelated magic (e.g. 0x41 version or 0x21 init1) must be ignored
+        parser.Reset();
+        var cfgResp = new byte[64];
+        cfgResp[0] = 0x01;
+        cfgResp[1] = 0x41;
+        cfgResp[8] = 0x68;
+        Assert.False(parser.ProcessReport(cfgResp));
+
+        // Short packet (<9 bytes) must be ignored safely
+        Assert.False(parser.ProcessReport(new byte[] { 0x01, 0xA5, 0x00 }));
+    }
+
+    [Fact]
+    public void RawKeyboardMenuMatcher_MatchesF13KeyDownAndScanCode64Only()
+    {
+        Assert.True(RawKeyboardMenuMatcher.IsF13KeyDown(0x7C, 0x64, flags: 0));
+        Assert.True(RawKeyboardMenuMatcher.IsF13KeyDown(0xFF, 0x64, flags: 0)); // unmapped VK with F13 scancode
+        Assert.False(RawKeyboardMenuMatcher.IsF13KeyDown(0x7C, 0x64, flags: RawKeyboardMenuMatcher.RiKeyBreak)); // key-up
+        Assert.False(RawKeyboardMenuMatcher.IsF13KeyDown(0x7D, 0x65, flags: 0)); // F14 must not match
+    }
+
+    [Fact]
+    public void KeyCaptureDiagnosticSession_RecordsMultiChannelSignalsAndFormatsCopyableReport()
+    {
+        var session = new KeyCaptureDiagnosticSession(startTickMs: 10_000);
+        session.Record(10_420, "GpdVendorHid", "magic=0xA5 key[8]=0x68", "01-A5-00-00-00-00-00-00-68", wouldTriggerQam: true);
+        session.Record(10_435, "RawInputKbd", "vk=0x7C make=0x64", "7C-64", wouldTriggerQam: true);
+
+        var env = new KeyCaptureEnvironmentInfo(
+            SelfElevated: false,
+            RegisterHotKeyF13Ok: false,
+            RegisterHotKeyF13Error: 1409,
+            GpdVendorHidConnected: true,
+            GpdVendorHidDevice: "2F24:0137 (UP=0xFF00)",
+            GpdVendorHidError: "",
+            XInputBackend: "xinput1_4.dll (#100 Ex)",
+            ConnectedXInputCount: 1,
+            GpdToolRunning: true,
+            GpdToolElevated: true,
+            GpdToolServiceRunning: false,
+            FirmwareX: "3.06",
+            FirmwareK: "1.08",
+            InterceptPhysicalMenuButton: true,
+            InterceptGuideMenuButton: true);
+
+        var report = session.BuildReport(env, durationMs: 5000);
+        Assert.Equal(2, report.Events.Count);
+        Assert.Equal(420, report.Events[0].OffsetMs);
+        Assert.Contains("GpdVendorHid", report.CopyableReport);
+        Assert.Contains("2F24:0137", report.CopyableReport);
+        Assert.Contains("Win32=1409", report.CopyableReport);
+        Assert.Contains("[可触发侧栏]", report.CopyableReport);
+    }
+
+    [Fact]
+    public void GuideMenuTriggerGuard_DeduplicatesMultiChannelSimultaneousMenuSignals()
+    {
+        var guard = new GuideMenuTriggerGuard(maxShortPressMs: 450, debounceMs: 350);
+
+        // Vendor HID + RawInput + LLHook + AsyncKeyState arrive within 30ms for a single button press
+        Assert.True(guard.TryClaimQamMenuToggle(2000));
+        Assert.False(guard.TryClaimQamMenuToggle(2008));
+        Assert.False(guard.TryClaimQamMenuToggle(2016));
+        Assert.False(guard.TryClaimQamMenuToggle(2030));
+
+        // Next intentional press after debounce window succeeds
+        Assert.True(guard.TryClaimQamMenuToggle(2400));
+    }
+
+    [Fact]
     public void AppUpdateService_CompareVersions_HandlesStablePrereleaseAndPrefixes()
     {
         Assert.True(AppUpdateService.CompareVersions("v0.6.2", "0.6.1") > 0);

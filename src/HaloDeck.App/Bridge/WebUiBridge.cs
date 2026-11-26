@@ -935,6 +935,7 @@ public sealed class WebUiBridge : IDisposable
                 "cancelRecordGamepadCombo" => CancelRecordGamepadCombo(),
                 "beginRecordBackButton" => InvokeBeginRecordBackButton(),
                 "cancelRecordBackButton" => InvokeCancelRecordBackButton(),
+                "runMenuKeyDiagnostic" => await RunMenuKeyDiagnosticAsync(payload),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
                 "toggleLiveFg" => await TriggerFgToggleFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
@@ -3893,5 +3894,17 @@ public sealed class WebUiBridge : IDisposable
                 }
             }
         });
+    }
+
+    private async Task<object> RunMenuKeyDiagnosticAsync(JsonElement payload)
+    {
+        int durationMs = payload.ValueKind == JsonValueKind.Object &&
+                         payload.TryGetProperty("durationMs", out var dp) &&
+                         dp.ValueKind == JsonValueKind.Number
+            ? dp.GetInt32()
+            : 5000;
+
+        var report = await _inputHub.RunMenuKeyDiagnosticAsync(durationMs, _gpdController.CachedConfig).ConfigureAwait(false);
+        return report;
     }
 }

@@ -291,6 +291,9 @@
     gpdLoaded: false,
     gpdFetching: false,
     gpdSaving: false,
+    menuKeyDiagRunning: false,
+    menuKeyDiagSecLeft: 0,
+    menuKeyDiagReport: null,
     lastSyncedGpdSig: "",
     gpdDraft: {
       l4Key: -1,
@@ -2572,8 +2575,8 @@
                 </div>
                 <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">接管机身快捷菜单键 (F13)</span>
-                    <span class="cw-row-sub">短按 GPD Win 5 原 GPD Tool / 切鼠键呼出 HaloDeck 快捷侧栏</span>
+                    <span class="cw-row-title">接管机身快捷菜单键 (Vendor HID / F13)</span>
+                    <span class="cw-row-sub">直连 GPD 0xFF00 HID + F13 + RawInput，兼容全批次 Win 5 固件短按呼出侧栏</span>
                   </div>
                   ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
                 </div>
@@ -2598,7 +2601,63 @@
                   </div>
                   ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
                 </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">实体菜单键信号抓包诊断</span>
+                    <span class="cw-row-sub">5 秒实时抓取 GPD 0xFF00 HID / RawInput / XInputEx / 钩子原始字节，支持一键复制排查</span>
+                  </div>
+                  <button id="btnMenuKeyDiag" class="btn btn-sm ${state.menuKeyDiagRunning ? "btn-primary" : ""}" data-focusable="true" ${state.menuKeyDiagRunning ? "disabled" : ""}>
+                    ${state.menuKeyDiagRunning ? `抓包中 (${state.menuKeyDiagSecLeft || 5}s)... 请按菜单键` : "开始 5 秒抓包"}
+                  </button>
+                </div>
               </div>
+
+              ${(() => {
+                const rep = state.menuKeyDiagReport;
+                if (!rep && !state.menuKeyDiagRunning) return "";
+                if (state.menuKeyDiagRunning && !rep) {
+                  return `
+                    <div class="diag-capture-panel" id="menuKeyDiagPanel">
+                      <div class="diag-capture-head">
+                        <span class="diag-capture-title">正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft || 5}s）...</span>
+                      </div>
+                      <div class="diag-empty-hint">请在 5 秒内短按一次机身快捷菜单键（或 L4/R4），抓包期间已自动暂停侧栏弹出以免遮挡。</div>
+                    </div>
+                  `;
+                }
+                const env = rep.environment || {};
+                const evs = rep.events || [];
+                return `
+                  <div class="diag-capture-panel" id="menuKeyDiagPanel">
+                    <div class="diag-capture-head">
+                      <span class="diag-capture-title">抓包诊断结果 · 捕获 ${evs.length} 条事件 (${rep.durationMs || 5000} ms)</span>
+                      <div style="display:flex;gap:6px;">
+                        <button id="btnCopyMenuKeyDiag" class="btn btn-sm btn-primary" data-focusable="true">复制诊断报告</button>
+                        <button id="btnClearMenuKeyDiag" class="btn btn-sm" data-focusable="true">收起</button>
+                      </div>
+                    </div>
+                    <div class="diag-capture-chips">
+                      <span class="diag-chip ${env.gpdVendorHidConnected ? "ok" : "warn"}">0xFF00 HID: ${env.gpdVendorHidConnected ? esc(env.gpdVendorHidDevice || "已连接") : "未连接"}</span>
+                      <span class="diag-chip ${env.registerHotKeyF13Ok ? "ok" : "warn"}">HotKey(F13): ${env.registerHotKeyF13Ok ? "就绪" : `占用(${env.registerHotKeyF13Error || 0})`}</span>
+                      <span class="diag-chip">XInput: ${esc(env.xInputBackend || "unknown")} (${env.connectedXInputCount ?? 0})</span>
+                      <span class="diag-chip ${env.gpdToolRunning ? "warn" : "ok"}">GPDTool: ${env.gpdToolRunning ? (env.gpdToolElevated ? "运行中(管理员)" : "运行中") : "未运行"}</span>
+                      <span class="diag-chip">${env.selfElevated ? "HaloDeck: 管理员" : "HaloDeck: 普通权限"}</span>
+                    </div>
+                    <div class="diag-capture-log">
+                      ${evs.length === 0
+                        ? `<div class="diag-empty-hint">5 秒内未检测到任何信号；请确认按键时未处于长按/锁键盘状态，并将以上状态与「复制诊断报告」发给开发者排查。</div>`
+                        : evs.slice(0, 60).map((ev) => `
+                            <div class="diag-log-row">
+                              <span class="diag-log-offset">+${ev.offsetMs}ms</span>
+                              <span class="diag-log-chan">${esc(ev.channel)}</span>
+                              <span>${esc(ev.summary)}${ev.rawHex ? ` · RAW=${esc(ev.rawHex)}` : ""}</span>
+                              ${ev.wouldTriggerQam ? `<span class="diag-log-trigger">可触发侧栏</span>` : ""}
+                            </div>
+                          `).join("")}
+                    </div>
+                  </div>
+                `;
+              })()}
 
               <div class="hotkey-list" style="margin-top:8px;">
                 <div class="hotkey-row">
@@ -5822,7 +5881,7 @@
       if (!s) return;
       const next = s.interceptPhysicalMenuButton === false;
       await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
-      showToast(next ? "已开启机身快捷菜单键 (F13) 呼出侧栏" : "已释放机身快捷菜单键 (F13)", "info");
+      showToast(next ? "已开启机身快捷菜单键 (Vendor HID / F13) 呼出侧栏" : "已释放机身快捷菜单键 (Vendor HID / F13)", "info");
     });
     document.getElementById("swInterceptGuideBtn")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
@@ -5830,6 +5889,63 @@
       const next = s.interceptGuideMenuButton === false;
       await rpc("saveSettings", { ...s, interceptGuideMenuButton: next });
       showToast(next ? "已开启手柄菜单 / Guide 键 (0x0400) 单独短按呼出侧栏" : "已关闭手柄 Guide 键 (0x0400) 接管", "info");
+    });
+    document.getElementById("btnMenuKeyDiag")?.addEventListener("click", async () => {
+      if (state.menuKeyDiagRunning) return;
+      state.menuKeyDiagRunning = true;
+      state.menuKeyDiagSecLeft = 5;
+      state.menuKeyDiagReport = null;
+      render();
+      showToast("开始 5 秒抓包：请立即短按一次机身快捷菜单键", "info");
+      const timer = setInterval(() => {
+        if (!state.menuKeyDiagRunning) {
+          clearInterval(timer);
+          return;
+        }
+        state.menuKeyDiagSecLeft = Math.max(1, (state.menuKeyDiagSecLeft || 1) - 1);
+        const btn = document.getElementById("btnMenuKeyDiag");
+        if (btn) btn.textContent = `抓包中 (${state.menuKeyDiagSecLeft}s)... 请按菜单键`;
+        const ttl = document.querySelector("#menuKeyDiagPanel .diag-capture-title");
+        if (ttl) ttl.textContent = `正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft}s）...`;
+      }, 1000);
+      try {
+        const rep = await rpc("runMenuKeyDiagnostic", { durationMs: 5000 });
+        state.menuKeyDiagReport = rep;
+        const cnt = rep?.events?.length ?? 0;
+        showToast(cnt > 0 ? `抓包完成：共捕获 ${cnt} 条硬件信号` : "抓包完成：5 秒内未检测到信号，请查看状态或复制报告", cnt > 0 ? "success" : "warn");
+      } catch (err) {
+        showToast(err.message || "信号抓包诊断失败", "error");
+      } finally {
+        clearInterval(timer);
+        state.menuKeyDiagRunning = false;
+        state.menuKeyDiagSecLeft = 0;
+        render();
+      }
+    });
+    document.getElementById("btnCopyMenuKeyDiag")?.addEventListener("click", async () => {
+      const txt = state.menuKeyDiagReport?.copyableReport;
+      if (!txt) return;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(txt);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = txt;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        showToast("已复制实体按键诊断报告到剪贴板", "success");
+      } catch (err) {
+        showToast(`复制失败: ${err.message || err}`, "error");
+      }
+    });
+    document.getElementById("btnClearMenuKeyDiag")?.addEventListener("click", () => {
+      state.menuKeyDiagReport = null;
+      render();
     });
     document.getElementById("btnTogglePrereleaseCheck")?.addEventListener("click", () => {
       state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;

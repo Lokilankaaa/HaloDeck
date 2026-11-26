@@ -874,4 +874,88 @@ internal static class Win32Interop
             lowCommitHeadroom
         };
     }
+
+    public const int WM_INPUT = 0x00FF;
+    public const uint RIDEV_INPUTSINK = 0x00000100;
+    public const uint RID_INPUT = 0x10000003;
+    public const uint RIDI_DEVICEINFO = 0x2000000B;
+    public const uint RIM_TYPEKEYBOARD = 1;
+    public const uint RIM_TYPEHID = 2;
+    public const ushort RI_KEY_BREAK = 0x0001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUTDEVICE
+    {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public uint dwFlags;
+        public nint hwndTarget;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUTHEADER
+    {
+        public uint dwType;
+        public uint dwSize;
+        public nint hDevice;
+        public nint wParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWKEYBOARD
+    {
+        public ushort MakeCode;
+        public ushort Flags;
+        public ushort Reserved;
+        public ushort VKey;
+        public uint Message;
+        public uint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWHID
+    {
+        public uint dwSizeHid;
+        public uint dwCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RID_DEVICE_INFO_HID
+    {
+        public uint dwVendorId;
+        public uint dwProductId;
+        public uint dwVersionNumber;
+        public ushort usUsagePage;
+        public ushort usUsage;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct RID_DEVICE_INFO
+    {
+        [FieldOffset(0)] public uint cbSize;
+        [FieldOffset(4)] public uint dwType;
+        [FieldOffset(8)] public RID_DEVICE_INFO_HID hid;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterRawInputDevices(
+        [In] RAWINPUTDEVICE[] pRawInputDevices,
+        uint uiNumDevices,
+        uint cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetRawInputData(
+        nint hRawInput,
+        uint uiCommand,
+        nint pData,
+        ref uint pcbSize,
+        uint cbSizeHeader);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetRawInputDeviceInfoW(
+        nint hDevice,
+        uint uiCommand,
+        nint pData,
+        ref uint pcbSize);
 }
