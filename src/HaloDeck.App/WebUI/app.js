@@ -1533,18 +1533,18 @@
 
     const daemonVer = hw.daemonVersion || 0;
     const hwDriverMissing = hw.serviceRunning && !hw.smuReady;
-    const showSvcAlert = !hw.serviceRunning || hwDriverMissing || daemonVer < 4;
+    const showSvcAlert = !hw.serviceRunning || hwDriverMissing || daemonVer < 5;
     const svcAlertText = !hw.serviceRunning
       ? "当前普通用户态运行（开启硬件服务可免 UAC 直控 8–120W 功耗与双风扇）"
       : hwDriverMissing
         ? (hw.lastError || "PawnIO 内核驱动未就绪，请先安装或启动官方 PawnIO 驱动后重试")
-        : "检测到新版 PawnIO 硬件协议 v4，点击右侧可热升级";
+        : "检测到新版 PawnIO 硬件协议 v5（支持休眠唤醒自动锁功耗），点击右侧可热升级";
     const svcAlertHtml = !showSvcAlert ? "" : `
       <div class="bento-svc-strip">
         <span>${esc(svcAlertText)}</span>
         <div style="display:flex;gap:6px;flex-shrink:0;">
           ${hwDriverMissing ? `<button id="btnOpenPawnIo" class="btn btn-sm" data-focusable="true">下载 PawnIO</button>` : ""}
-          <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : (hwDriverMissing ? "重试启动驱动" : "热升级 v4")}</button>
+          <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : (hwDriverMissing ? "重试启动驱动" : "热升级 v5")}</button>
         </div>
       </div>
     `;
@@ -2704,7 +2704,7 @@
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">全局系统与电源偏好</span>
-                <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 4}` : "用户态"}</span>
+                <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 5}` : "用户态"}</span>
               </div>
 
               <div class="cw-group">

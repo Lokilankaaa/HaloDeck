@@ -84,6 +84,9 @@ public sealed class WebUiBridge : IDisposable
     private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
     private readonly SemaphoreSlim _brightFastGate = new(1, 1);
     private readonly SemaphoreSlim _volFastGate = new(1, 1);
+    private readonly TdpLockReconciler _tdpReconciler = new();
+    private bool _wasHardwareServiceReady;
+    private DateTime _lastPollTickUtc = DateTime.MinValue;
     private readonly object _saveLock = new();
     private CancellationTokenSource? _saveCts;
 
@@ -154,6 +157,11 @@ public sealed class WebUiBridge : IDisposable
 
         _pluginHost.PluginBackendEvent += (pluginId, eventName, data) =>
             BroadcastEvent("pluginEvent", new { pluginId, eventName, data });
+
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            SystemEvents.PowerModeChanged += OnSystemPowerModeChanged;
+        }
     }
 
     public AppSettings Settings => _settings;
@@ -199,8 +207,32 @@ public sealed class WebUiBridge : IDisposable
         _xinputIsolator.RestoreAll();
     }
 
+    public void NotifySystemPowerResume(string source)
+    {
+        if (IsVerifyOrCaptureCliRun)
+        {
+            return;
+        }
+
+        _tdpReconciler.NotifyPowerResume(DateTime.UtcNow, source);
+        _systemControl.InvalidatePowerSchemeCache();
+        _lastFanCurvePushUtc = DateTime.MinValue;
+    }
+
+    private void OnSystemPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            NotifySystemPowerResume("SystemEvents.Resume");
+        }
+    }
+
     public void Dispose()
     {
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            SystemEvents.PowerModeChanged -= OnSystemPowerModeChanged;
+        }
         _pluginHost.Dispose();
         _pluginRegistry.Dispose();
         _pluginInstallGate.Dispose();
@@ -410,6 +442,13 @@ public sealed class WebUiBridge : IDisposable
 
     public void PollRunningAndAutoInjectTick(bool runAutoInjectPass, bool uiVisible = true, bool osdVisible = false)
     {
+        DateTime nowUtc = DateTime.UtcNow;
+        if (!IsVerifyOrCaptureCliRun && TdpLockPolicy.IsSleepTimeGap(_lastPollTickUtc, nowUtc))
+        {
+            NotifySystemPowerResume("PollTimeGap");
+        }
+        _lastPollTickUtc = nowUtc;
+
         var updatedRunning = _runningTracker.Poll(_cachedGames, allowBackgroundScan: uiVisible);
         bool changed = !Equals(updatedRunning?.Id, _runningGame?.Id) ||
                        updatedRunning?.IsCurrentlyRunning != _runningGame?.IsCurrentlyRunning ||
@@ -466,6 +505,12 @@ public sealed class WebUiBridge : IDisposable
 
         // Handle per-game performance profile & AC/Battery power linkage transitions
         ApplyDynamicPowerAutomation(sys, updatedRunning);
+
+        // Ensure hardware SMU TDP lock stays active on startup, after sleep/hibernate resume, and on SMU drift
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            ReconcileHardwareTdpLock(sys, updatedRunning, nowUtc);
+        }
 
         // Notify enabled plugins subscribed to game lifecycle events & reap idle plugin backends
         DispatchPluginGameLifecycleTransitions(updatedRunning);
@@ -566,11 +611,20 @@ public sealed class WebUiBridge : IDisposable
                     : _settings.CurrentTdpWatts;
                 if (sys.HardwareService.ServiceRunning)
                 {
-                    int slowFallback = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : fallbackWatts;
-                    int fastFallback = _settings.UnlockThreeStagePower
-                        ? _settings.FastPptWatts
-                        : (_settings.FlatPowerLock ? fallbackWatts : Math.Min(140, fallbackWatts + 2));
-                    _systemControl.HardwareClient.SetTdp(fallbackWatts, slowFallback, fastFallback);
+                    var fallbackTarget = TdpLockPolicy.ComputeStageLimits(
+                        fallbackWatts,
+                        _settings.FlatPowerLock,
+                        _settings.UnlockThreeStagePower,
+                        _settings.SlowPptWatts,
+                        _settings.FastPptWatts);
+                    var (okFallback, _, _) = _systemControl.HardwareClient.SetTdp(
+                        fallbackTarget.StapmWatts,
+                        fallbackTarget.SlowWatts,
+                        fallbackTarget.FastWatts);
+                    if (okFallback)
+                    {
+                        _tdpReconciler.RecordApplied(DateTime.UtcNow, fallbackTarget);
+                    }
                 }
             }
             else if (runningId is not null &&
@@ -590,8 +644,20 @@ public sealed class WebUiBridge : IDisposable
                 }
                 if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 8 and <= 120)
                 {
-                    int fastProf = _settings.FlatPowerLock ? prof.TdpWatts : Math.Min(140, prof.TdpWatts + 2);
-                    _systemControl.HardwareClient.SetTdp(prof.TdpWatts, prof.TdpWatts, fastProf);
+                    var profTarget = TdpLockPolicy.ComputeStageLimits(
+                        prof.TdpWatts,
+                        _settings.FlatPowerLock,
+                        unlockThreeStagePower: false,
+                        prof.TdpWatts,
+                        prof.TdpWatts);
+                    var (okProf, _, _) = _systemControl.HardwareClient.SetTdp(
+                        profTarget.StapmWatts,
+                        profTarget.SlowWatts,
+                        profTarget.FastWatts);
+                    if (okProf)
+                    {
+                        _tdpReconciler.RecordApplied(DateTime.UtcNow, profTarget);
+                    }
                 }
                 string hzTag = prof.RefreshRateHz == -1 ? " · 动态Hz" : (prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "");
                 BroadcastEvent("toast", new
@@ -623,7 +689,20 @@ public sealed class WebUiBridge : IDisposable
                 _settingsStore.Save(_settings);
                 if (sys.HardwareService.ServiceRunning)
                 {
-                    _systemControl.HardwareClient.SetTdp(targetWatts);
+                    var linkTarget = TdpLockPolicy.ComputeStageLimits(
+                        targetWatts,
+                        _settings.FlatPowerLock,
+                        _settings.UnlockThreeStagePower,
+                        _settings.SlowPptWatts,
+                        _settings.FastPptWatts);
+                    var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
+                        linkTarget.StapmWatts,
+                        linkTarget.SlowWatts,
+                        linkTarget.FastWatts);
+                    if (okLink)
+                    {
+                        _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                    }
                 }
                 BroadcastEvent("toast", new
                 {
@@ -634,6 +713,84 @@ public sealed class WebUiBridge : IDisposable
                 });
                 BroadcastStateSnapshot();
             }
+        }
+    }
+
+    private void ReconcileHardwareTdpLock(SystemControlState sys, GameEntry? running, DateTime nowUtc)
+    {
+        if (!(sys.HardwareService.ServiceRunning && sys.HardwareService.SmuReady))
+        {
+            _wasHardwareServiceReady = false;
+            return;
+        }
+
+        if (!_wasHardwareServiceReady)
+        {
+            _wasHardwareServiceReady = true;
+            _tdpReconciler.RequestInitialSync();
+        }
+
+        var target = TdpLockPolicy.ResolveEffectiveTarget(_settings, running, sys.IsAcOnline);
+        bool daemonUnlocked = sys.HardwareService.DaemonVersion >= 5 && !sys.HardwareService.TdpLockActive;
+        var decision = _tdpReconciler.Evaluate(
+            nowUtc,
+            target,
+            sys.HardwareService.HwStapmLimitWatts,
+            sys.HardwareService.HwSlowLimitWatts,
+            sys.HardwareService.HwFastLimitWatts,
+            forceSyncRequired: daemonUnlocked);
+        if (!decision.ShouldApply)
+        {
+            return;
+        }
+
+        if (!_tdpFastGate.Wait(0))
+        {
+            return;
+        }
+
+        try
+        {
+            target = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+            bool hasActiveGameTdp = _runningGame is { IsCurrentlyRunning: true } &&
+                                    _settings.PerGameProfiles.TryGetValue(_runningGame.Id, out var activeProf) &&
+                                    activeProf.Enabled &&
+                                    activeProf.TdpWatts is >= 8 and <= 120;
+            if (_settings.PowerLinkageEnabled && !hasActiveGameTdp && _settings.CurrentTdpWatts != target.StapmWatts)
+            {
+                _settings.CurrentTdpWatts = target.StapmWatts;
+                ScheduleSaveSettings();
+            }
+
+            var (ok, _, nextHw) = _systemControl.HardwareClient.SetTdp(
+                target.StapmWatts,
+                target.SlowWatts,
+                target.FastWatts);
+            if (!ok)
+            {
+                return;
+            }
+
+            _tdpReconciler.RecordApplied(
+                nowUtc,
+                target,
+                decision.Reason,
+                sys.HardwareService.HwStapmLimitWatts,
+                sys.HardwareService.HwSlowLimitWatts,
+                sys.HardwareService.HwFastLimitWatts);
+
+            sys.HardwareService.AppliedTdpWatts = nextHw.AppliedTdpWatts;
+            sys.HardwareService.AppliedSlowWatts = nextHw.AppliedSlowWatts;
+            sys.HardwareService.AppliedFastWatts = nextHw.AppliedFastWatts;
+            sys.HardwareService.TdpLockActive = nextHw.TdpLockActive;
+            sys.HardwareService.HwStapmLimitWatts = nextHw.HwStapmLimitWatts ?? nextHw.AppliedTdpWatts;
+            sys.HardwareService.HwSlowLimitWatts = nextHw.HwSlowLimitWatts ?? nextHw.AppliedSlowWatts;
+            sys.HardwareService.HwFastLimitWatts = nextHw.HwFastLimitWatts ?? nextHw.AppliedFastWatts;
+            OverlayHudUpdated?.Invoke();
+        }
+        finally
+        {
+            _tdpFastGate.Release();
         }
     }
 
@@ -2032,15 +2189,21 @@ public sealed class WebUiBridge : IDisposable
 
             if (hw.ServiceRunning)
             {
-                int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
-                int? fastArg = _settings.UnlockThreeStagePower
-                    ? _settings.FastPptWatts
-                    : (_settings.FlatPowerLock ? watts : Math.Min(140, watts + 2));
-                var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg)).ConfigureAwait(false);
+                var stageTarget = TdpLockPolicy.ComputeStageLimits(
+                    watts,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts)).ConfigureAwait(false);
                 if (!ok)
                 {
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
                 }
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
                 hardwareApplied = true;
                 appliedW = nextHw.AppliedTdpWatts;
                 appliedSlow = nextHw.AppliedSlowWatts;
@@ -2051,12 +2214,13 @@ public sealed class WebUiBridge : IDisposable
                     snap.HardwareService.AppliedTdpWatts = nextHw.AppliedTdpWatts;
                     snap.HardwareService.AppliedSlowWatts = nextHw.AppliedSlowWatts;
                     snap.HardwareService.AppliedFastWatts = nextHw.AppliedFastWatts;
+                    snap.HardwareService.TdpLockActive = nextHw.TdpLockActive;
                     snap.HardwareService.HwStapmLimitWatts = nextHw.HwStapmLimitWatts ?? nextHw.AppliedTdpWatts;
                     snap.HardwareService.HwSlowLimitWatts = nextHw.HwSlowLimitWatts ?? nextHw.AppliedSlowWatts;
                     snap.HardwareService.HwFastLimitWatts = nextHw.HwFastLimitWatts ?? nextHw.AppliedFastWatts;
                 }
 
-                bool v1Clamped = nextHw.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion && (watts < 12 || watts > 85);
+                bool v1Clamped = nextHw.DaemonVersion < 2 && (watts < 12 || watts > 85);
                 note = v1Clamped
                     ? $"旧版硬件服务已钳位应用 {nextHw.AppliedTdpWatts}W（点击「升级重启硬件服务」解锁 8–120W 与三段功耗读回）"
                     : (_settings.UnlockThreeStagePower
@@ -2153,15 +2317,21 @@ public sealed class WebUiBridge : IDisposable
             var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
             if (hw.ServiceRunning)
             {
-                int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-                int fastArg = _settings.UnlockThreeStagePower
-                    ? _settings.FastPptWatts
-                    : (_settings.FlatPowerLock ? _settings.CurrentTdpWatts : Math.Min(140, _settings.CurrentTdpWatts + 2));
-                var (ok, err, _) = _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg);
+                var stageTarget = TdpLockPolicy.ComputeStageLimits(
+                    _settings.CurrentTdpWatts,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (ok, err, _) = _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts);
                 if (!ok)
                 {
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU 三段功耗失败" : err);
                 }
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
             }
         }
 
@@ -2188,7 +2358,20 @@ public sealed class WebUiBridge : IDisposable
             _settings.CurrentTdpWatts = target;
             if (curSys.HardwareService.ServiceRunning)
             {
-                _systemControl.HardwareClient.SetTdp(target);
+                var linkTarget = TdpLockPolicy.ComputeStageLimits(
+                    target,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
+                    linkTarget.StapmWatts,
+                    linkTarget.SlowWatts,
+                    linkTarget.FastWatts);
+                if (okLink)
+                {
+                    _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                }
             }
         }
 
@@ -2331,9 +2514,19 @@ public sealed class WebUiBridge : IDisposable
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
-            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
-            try { _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg); } catch { }
+            var stageTarget = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+            try
+            {
+                var (okReload, _, _) = _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts);
+                if (okReload)
+                {
+                    _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
+                }
+            }
+            catch { }
 
             var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
             try { _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points); } catch { }
@@ -2476,9 +2669,15 @@ public sealed class WebUiBridge : IDisposable
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
-            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
-            _systemControl.HardwareClient.SetTdp(Math.Clamp(_settings.CurrentTdpWatts, 8, 120), slowArg, fastArg);
+            var stageTarget = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+            var (okInstall, _, _) = _systemControl.HardwareClient.SetTdp(
+                stageTarget.StapmWatts,
+                stageTarget.SlowWatts,
+                stageTarget.FastWatts);
+            if (okInstall)
+            {
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
+            }
             var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
             _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points);
             sys = _systemControl.GetState(includeHardwareRefresh: true);
