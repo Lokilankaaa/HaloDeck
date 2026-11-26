@@ -46,6 +46,7 @@ public sealed class GpdVendorHidMenuListener : IDisposable
     private void RunLoop(CancellationToken ct)
     {
         nint readBuf = Marshal.AllocHGlobal(64);
+        nint ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<OVERLAPPED>());
         try
         {
             while (!ct.IsCancellationRequested)
@@ -95,7 +96,7 @@ public sealed class GpdVendorHidMenuListener : IDisposable
                     ConnectedDeviceLabel = $"{vid:X4}:{pid:X4} (UP=0xFF00)";
                     LastOpenError = string.Empty;
                     _parser.Reset();
-                    ReadLoopForDevice(handle, hEvent, readBuf, ct);
+                    ReadLoopForDevice(handle, hEvent, readBuf, ovPtr, ct);
                 }
                 finally
                 {
@@ -108,18 +109,20 @@ public sealed class GpdVendorHidMenuListener : IDisposable
         }
         finally
         {
+            Marshal.FreeHGlobal(ovPtr);
             Marshal.FreeHGlobal(readBuf);
         }
     }
 
-    private void ReadLoopForDevice(SafeFileHandle handle, nint hEvent, nint readBuf, CancellationToken ct)
+    private void ReadLoopForDevice(SafeFileHandle handle, nint hEvent, nint readBuf, nint ovPtr, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             ResetEvent(hEvent);
             var ov = new OVERLAPPED { hEvent = hEvent };
+            Marshal.StructureToPtr(ov, ovPtr, false);
 
-            bool immediate = ReadFile(handle, readBuf, 64, out uint bytesRead, ref ov);
+            bool immediate = ReadFile(handle, readBuf, 64, out uint bytesRead, ovPtr);
             if (!immediate)
             {
                 int err = Marshal.GetLastWin32Error();
@@ -129,29 +132,31 @@ public sealed class GpdVendorHidMenuListener : IDisposable
                     return;
                 }
 
+                bool completed = false;
                 while (!ct.IsCancellationRequested)
                 {
                     uint wait = WaitForSingleObject(hEvent, 300);
                     if (wait == WaitObject0)
                     {
-                        if (!GetOverlappedResult(handle, ref ov, out bytesRead, false))
+                        if (!GetOverlappedResult(handle, ovPtr, out bytesRead, false))
                         {
                             LastOpenError = $"GetOverlappedResult 失败 (Win32={Marshal.GetLastWin32Error()})";
                             return;
                         }
+                        completed = true;
                         break;
                     }
                     if (wait != WaitTimeout)
                     {
                         LastOpenError = $"WaitForSingleObject 异常 (0x{wait:X8})";
-                        return;
+                        break;
                     }
                 }
 
-                if (ct.IsCancellationRequested)
+                if (!completed)
                 {
                     CancelIo(handle);
-                    GetOverlappedResult(handle, ref ov, out _, true);
+                    GetOverlappedResult(handle, ovPtr, out _, true);
                     return;
                 }
             }
@@ -216,13 +221,13 @@ public sealed class GpdVendorHidMenuListener : IDisposable
         nint lpBuffer,
         uint nNumberOfBytesToRead,
         out uint lpNumberOfBytesRead,
-        ref OVERLAPPED lpOverlapped);
+        nint lpOverlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetOverlappedResult(
         SafeFileHandle hFile,
-        ref OVERLAPPED lpOverlapped,
+        nint lpOverlapped,
         out uint lpNumberOfBytesTransferred,
         [MarshalAs(UnmanagedType.Bool)] bool bWait);
 

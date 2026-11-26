@@ -929,7 +929,7 @@ internal static class Win32Interop
         public ushort usUsage;
     }
 
-    [StructLayout(LayoutKind.Explicit)]
+    [StructLayout(LayoutKind.Explicit, Size = 32)]
     public struct RID_DEVICE_INFO
     {
         [FieldOffset(0)] public uint cbSize;
