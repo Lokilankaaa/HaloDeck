@@ -340,6 +340,8 @@ public sealed class MenuButtonAndUpdaterTests
 
             string scriptPath = AppUpdateService.WritePortableUpdaterScript(staged, tempRoot, currentPid: 999999);
             Assert.True(File.Exists(scriptPath));
+            byte[] scriptBytes = await File.ReadAllBytesAsync(scriptPath);
+            Assert.True(scriptBytes.Length >= 3 && scriptBytes[0] == 0xEF && scriptBytes[1] == 0xBB && scriptBytes[2] == 0xBF);
             string scriptText = await File.ReadAllTextAsync(scriptPath);
             Assert.Contains("HaloDeck.exe", scriptText);
             Assert.Contains("999999", scriptText);
@@ -350,6 +352,132 @@ public sealed class MenuButtonAndUpdaterTests
             {
                 try { Directory.Delete(staged.StageRoot, true); } catch { }
             }
+            try { Directory.Delete(tempRoot, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task AppUpdateService_UpdaterScript_ReplacesLockedExeInChineseBracketPathSafely()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), $"HaloDeck_测试_[v0.6.2]_{Guid.NewGuid():N}");
+        string targetDir = Path.Combine(tempRoot, "HaloDeck [安装目录]");
+        string stageRoot = Path.Combine(tempRoot, "stage");
+        string payloadDir = Path.Combine(stageRoot, "payload");
+        Directory.CreateDirectory(targetDir);
+        Directory.CreateDirectory(Path.Combine(payloadDir, "WebUI"));
+
+        string targetExe = Path.Combine(targetDir, "HaloDeck.exe");
+        string targetDll = Path.Combine(targetDir, "HaloDeck.dll");
+        await File.WriteAllTextAsync(targetExe, "OLD-EXE-LOCKED-BINARY");
+        await File.WriteAllTextAsync(targetDll, "OLD-DLL");
+
+        await File.WriteAllTextAsync(Path.Combine(payloadDir, "HaloDeck.exe"), "NEW-EXE-V063-BINARY");
+        await File.WriteAllTextAsync(Path.Combine(payloadDir, "HaloDeck.dll"), "NEW-DLL-V063");
+        await File.WriteAllTextAsync(Path.Combine(payloadDir, "WebUI", "index.html"), "<html>v0.6.3</html>");
+
+        var staged = new StagedAppUpdate
+        {
+            StageRoot = stageRoot,
+            PayloadDir = payloadDir,
+            Version = "0.6.3"
+        };
+
+        string scriptPath = AppUpdateService.WritePortableUpdaterScript(
+            staged,
+            targetDir,
+            currentPid: 999999,
+            launchAfterApply: false);
+
+        // Hold an active lock allowing rename (matching how Windows locks a running HaloDeck.exe / HaloDeckHardwareSvc)
+        FileStream? lockStream = new(
+            targetExe,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read | FileShare.Delete);
+
+        try
+        {
+            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            })!;
+            await proc.WaitForExitAsync();
+            Assert.Equal(0, proc.ExitCode);
+
+            // Critical invariant: HaloDeck.exe MUST exist at root with NEW payload bytes
+            Assert.True(File.Exists(targetExe));
+            Assert.Equal("NEW-EXE-V063-BINARY", await File.ReadAllTextAsync(targetExe));
+            Assert.Equal("NEW-DLL-V063", await File.ReadAllTextAsync(targetDll));
+            Assert.Equal("<html>v0.6.3</html>", await File.ReadAllTextAsync(Path.Combine(targetDir, "WebUI", "index.html")));
+
+            // Old locked executable was parked into .old_locked_* and no stray *.hd_upd_tmp files remain
+            var lockedBackups = Directory.GetDirectories(targetDir, ".old_locked_*");
+            Assert.Single(lockedBackups);
+            Assert.True(File.Exists(Path.Combine(lockedBackups[0], "HaloDeck.exe")));
+            Assert.Empty(Directory.GetFiles(targetDir, "*.hd_upd_tmp", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            lockStream?.Dispose();
+            try { Directory.Delete(tempRoot, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task AppUpdateService_UpdaterScript_AbortsAndPreservesExistingExeWhenStagedExeVanishes()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), $"HaloDeck_AvTest_{Guid.NewGuid():N}");
+        string targetDir = Path.Combine(tempRoot, "app");
+        string stageRoot = Path.Combine(tempRoot, "stage");
+        string payloadDir = Path.Combine(stageRoot, "payload");
+        Directory.CreateDirectory(targetDir);
+        Directory.CreateDirectory(payloadDir);
+
+        string targetExe = Path.Combine(targetDir, "HaloDeck.exe");
+        await File.WriteAllTextAsync(targetExe, "ORIGINAL-WORKING-EXE");
+        await File.WriteAllTextAsync(Path.Combine(payloadDir, "HaloDeck.dll"), "NEW-DLL-SHOULD-NOT-APPLY");
+
+        // Note: payload HaloDeck.exe is missing (simulating AV quarantine before apply-update.ps1 runs)
+        var staged = new StagedAppUpdate
+        {
+            StageRoot = stageRoot,
+            PayloadDir = payloadDir,
+            Version = "0.6.3"
+        };
+
+        string scriptPath = AppUpdateService.WritePortableUpdaterScript(
+            staged,
+            targetDir,
+            currentPid: 999999,
+            launchAfterApply: false);
+
+        try
+        {
+            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            })!;
+            await proc.WaitForExitAsync();
+            Assert.NotEqual(0, proc.ExitCode);
+
+            // Original executable MUST remain untouched at root
+            Assert.True(File.Exists(targetExe));
+            Assert.Equal("ORIGINAL-WORKING-EXE", await File.ReadAllTextAsync(targetExe));
+            Assert.Empty(Directory.GetDirectories(targetDir, ".old_locked_*"));
+            Assert.False(File.Exists(Path.Combine(targetDir, "HaloDeck.dll")));
+        }
+        finally
+        {
             try { Directory.Delete(tempRoot, true); } catch { }
         }
     }
