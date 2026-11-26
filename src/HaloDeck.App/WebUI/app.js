@@ -26,7 +26,7 @@
     enableFakenvapi: true,
     enableCustomDlls: true,
     spoofDxgi: true,
-    dxgiVramGb: 10,
+    dxgiVramGb: 0,
     spoofedVendorId: "auto",
     spoofedDeviceId: "auto",
     spoofedGpuName: "",
@@ -35,7 +35,10 @@
     enableFsr4Int8Hint: true,
     fsr4Watermark: false,
     framerateLimit: 0,
-    vsyncMode: "on"
+    vsyncMode: "on",
+    xeFgMultiplier: 2,
+    xeFgDynamicMfg: false,
+    xeFgDynamicTargetFps: 0
   };
 
   const GPD_BACK_GAMEPAD_OPTIONS = [
@@ -264,9 +267,14 @@
     pluginStoreData: null,
     pluginStoreLoading: false,
     pluginStoreSearch: "",
+    pluginStoreCategory: "all",
     pluginCustomSourceDraft: "",
     pluginDirectUrlDraft: "",
+    pluginMirrorDraft: null,
     pluginDownloadProgress: null,
+    appUpdateChecking: false,
+    appUpdateProgress: null,
+    appUpdateIncludePrerelease: false,
     focusIndex: 0,
     lastInputModality: "pointer",
     isDraggingRange: false,
@@ -283,6 +291,9 @@
     gpdLoaded: false,
     gpdFetching: false,
     gpdSaving: false,
+    menuKeyDiagRunning: false,
+    menuKeyDiagSecLeft: 0,
+    menuKeyDiagReport: null,
     lastSyncedGpdSig: "",
     gpdDraft: {
       l4Key: -1,
@@ -430,6 +441,26 @@
           bar.classList.remove("hidden");
           bar.textContent = `正在下载：${data.label || "插件"} · ${Math.round(data.percent || 0)}%`;
         }
+      }
+    } else if (name === "appUpdateProgress" && data) {
+      state.appUpdateProgress = data.status === "idle" ? null : { version: data.version || "", percent: data.percent || 0, status: data.status || "downloading" };
+      const btn = document.getElementById("btnApplyAppUpdate");
+      const modalBtn = document.getElementById("btnModalApplyAppUpdate");
+      const modalProg = document.getElementById("appUpdateModalProg");
+      const text = data.status === "applying"
+        ? "校验通过，正在重启更新..."
+        : `下载中 ${Math.round(data.percent || 0)}%`;
+      if (btn) {
+        btn.textContent = text;
+        btn.disabled = true;
+      }
+      if (modalBtn) {
+        modalBtn.textContent = text;
+        modalBtn.disabled = true;
+      }
+      if (modalProg) {
+        modalProg.classList.remove("hidden");
+        modalProg.textContent = text;
       }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
@@ -1044,7 +1075,19 @@
       : { fsr4_int8: "FSR 4.1.2", fsr4_int8_lite: "FSR 4.1.2 Lite", xess: "XeSS 2.0", fsr31: "FSR 3.1" };
     const fgLabels = { xefg: "XeFG", optifg: "OptiFG", nukems: "Nukem", nofg: "无插帧" };
     const sr = srLabels[cfg.srMode] || cfg.srMode || "FSR";
-    const fg = fgLabels[cfg.fgType] || cfg.fgType || "XeFG";
+    let fg = fgLabels[cfg.fgType] || cfg.fgType || "XeFG";
+    if ((cfg.fgType || "xefg") === "xefg") {
+      const mult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+      const dmfg = !!cfg.xeFgDynamicMfg;
+      const dmfgTarget = dmfg && (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+      if (compact) {
+        if (dmfg) fg = `XeFG ${mult}X·DMFG`;
+        else if (mult > 2) fg = `XeFG ${mult}X`;
+      } else {
+        if (dmfg) fg = dmfgTarget >= 10 ? `XeFG ${mult}X · DMFG ${dmfgTarget}帧` : `XeFG ${mult}X · DMFG`;
+        else if (mult > 2) fg = `XeFG ${mult}X`;
+      }
+    }
     if (compact) {
       const cap = cfg.framerateLimit > 0 ? `·${cfg.framerateLimit}` : "";
       return `${sr}+${fg}${cap}`;
@@ -1235,7 +1278,8 @@
     patchLiveTelemetryDom(snap?.systemControl);
     if (snap?.hardwareProfile?.deviceName) {
       const el = document.getElementById("deviceTag");
-      if (el) el.textContent = "GPD WIN 5 · 8060S";
+      const curVer = snap?.appVersion || "0.6.2";
+      if (el) el.textContent = `GPD WIN 5 · v${curVer}`;
     }
     if (state.isDraggingRange || Date.now() < state.dragCooldownUntil) {
       state.pendingSnapshot = snap;
@@ -1303,6 +1347,11 @@
     const slot = state.snapshot?.settings?.activeOptiScalerSlot || "OptiScalerNightly";
     const comps = state.snapshot?.components || [];
     return comps.find((c) => c.slot === slot) || { slot, displayName: slot, installedVersion: "" };
+  }
+
+  function isMfgUnlockerInstalled() {
+    const comps = state.snapshot?.components || [];
+    return comps.some((c) => c.slot === "MfgUnlocker" && c.isInstalled);
   }
 
   function syncSrModeConfig(srMode) {
@@ -1487,18 +1536,18 @@
 
     const daemonVer = hw.daemonVersion || 0;
     const hwDriverMissing = hw.serviceRunning && !hw.smuReady;
-    const showSvcAlert = !hw.serviceRunning || hwDriverMissing || daemonVer < 4;
+    const showSvcAlert = !hw.serviceRunning || hwDriverMissing || daemonVer < 5;
     const svcAlertText = !hw.serviceRunning
       ? "当前普通用户态运行（开启硬件服务可免 UAC 直控 8–120W 功耗与双风扇）"
       : hwDriverMissing
         ? (hw.lastError || "PawnIO 内核驱动未就绪，请先安装或启动官方 PawnIO 驱动后重试")
-        : "检测到新版 PawnIO 硬件协议 v4，点击右侧可热升级";
+        : "检测到新版 PawnIO 硬件协议 v5（支持休眠唤醒自动锁功耗），点击右侧可热升级";
     const svcAlertHtml = !showSvcAlert ? "" : `
       <div class="bento-svc-strip">
         <span>${esc(svcAlertText)}</span>
         <div style="display:flex;gap:6px;flex-shrink:0;">
           ${hwDriverMissing ? `<button id="btnOpenPawnIo" class="btn btn-sm" data-focusable="true">下载 PawnIO</button>` : ""}
-          <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : (hwDriverMissing ? "重试启动驱动" : "热升级 v4")}</button>
+          <button id="btnInstallHwSvc" class="btn btn-sm btn-primary" data-focusable="true">${!hw.serviceRunning ? "一键启用直控" : (hwDriverMissing ? "重试启动驱动" : "热升级 v5")}</button>
         </div>
       </div>
     `;
@@ -2436,6 +2485,7 @@
     const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
     const interceptOsk = settings.interceptPhysicalOskButton !== false;
     const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
+    const interceptGuideBtn = settings.interceptGuideMenuButton !== false;
     const dirtyGpd = hasPendingGpdChanges(gpd, draft);
 
     const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
@@ -2455,7 +2505,7 @@
               <div class="hh-card-head">
                 <span class="hh-card-title">手柄背键与震动 (L4 / R4)</span>
                 <div style="display:flex;align-items:center;gap:6px;">
-                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}` : "未检测到手柄"}</span>
+                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测到手柄"}</span>
                   <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 映射并恢复原厂震动与死区">恢复原厂</button>
                   <button id="btnReadGpd" class="btn btn-sm" data-focusable="true" ${state.gpdSaving ? "disabled" : ""}>刷新</button>
                 </div>
@@ -2525,10 +2575,17 @@
                 </div>
                 <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">接管机身快捷菜单键 (F13)</span>
-                    <span class="cw-row-sub">短按 GPD Win 5 原 GPD Tool / 切鼠键呼出 HaloDeck 快捷侧栏</span>
+                    <span class="cw-row-title">接管机身快捷菜单键 (Vendor HID / F13)</span>
+                    <span class="cw-row-sub">直连 GPD 0xFF00 HID + F13 + RawInput，兼容全批次 Win 5 固件短按呼出侧栏</span>
                   </div>
                   ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
+                </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">接管手柄菜单 / Guide 键 (0x0400)</span>
+                    <span class="cw-row-sub">兼容原厂 GPDTool 双通道，单独短按呼出侧栏（不拦截 Steam 组合键与长按）</span>
+                  </div>
+                  ${renderSwitch("swInterceptGuideBtn", interceptGuideBtn)}
                 </div>
                 <div class="cw-row" style="min-height:42px;padding:8px 12px;">
                   <div class="cw-row-copy">
@@ -2544,7 +2601,63 @@
                   </div>
                   ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
                 </div>
+                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">实体菜单键信号抓包诊断</span>
+                    <span class="cw-row-sub">5 秒实时抓取 GPD 0xFF00 HID / RawInput / XInputEx / 钩子原始字节，支持一键复制排查</span>
+                  </div>
+                  <button id="btnMenuKeyDiag" class="btn btn-sm ${state.menuKeyDiagRunning ? "btn-primary" : ""}" data-focusable="true" ${state.menuKeyDiagRunning ? "disabled" : ""}>
+                    ${state.menuKeyDiagRunning ? `抓包中 (${state.menuKeyDiagSecLeft || 5}s)... 请按菜单键` : "开始 5 秒抓包"}
+                  </button>
+                </div>
               </div>
+
+              ${(() => {
+                const rep = state.menuKeyDiagReport;
+                if (!rep && !state.menuKeyDiagRunning) return "";
+                if (state.menuKeyDiagRunning && !rep) {
+                  return `
+                    <div class="diag-capture-panel" id="menuKeyDiagPanel">
+                      <div class="diag-capture-head">
+                        <span class="diag-capture-title">正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft || 5}s）...</span>
+                      </div>
+                      <div class="diag-empty-hint">请在 5 秒内短按一次机身快捷菜单键（或 L4/R4），抓包期间已自动暂停侧栏弹出以免遮挡。</div>
+                    </div>
+                  `;
+                }
+                const env = rep.environment || {};
+                const evs = rep.events || [];
+                return `
+                  <div class="diag-capture-panel" id="menuKeyDiagPanel">
+                    <div class="diag-capture-head">
+                      <span class="diag-capture-title">抓包诊断结果 · 捕获 ${evs.length} 条事件 (${rep.durationMs || 5000} ms)</span>
+                      <div style="display:flex;gap:6px;">
+                        <button id="btnCopyMenuKeyDiag" class="btn btn-sm btn-primary" data-focusable="true">复制诊断报告</button>
+                        <button id="btnClearMenuKeyDiag" class="btn btn-sm" data-focusable="true">收起</button>
+                      </div>
+                    </div>
+                    <div class="diag-capture-chips">
+                      <span class="diag-chip ${env.gpdVendorHidConnected ? "ok" : "warn"}">0xFF00 HID: ${env.gpdVendorHidConnected ? esc(env.gpdVendorHidDevice || "已连接") : "未连接"}</span>
+                      <span class="diag-chip ${env.registerHotKeyF13Ok ? "ok" : "warn"}">HotKey(F13): ${env.registerHotKeyF13Ok ? "就绪" : `占用(${env.registerHotKeyF13Error || 0})`}</span>
+                      <span class="diag-chip">XInput: ${esc(env.xInputBackend || "unknown")} (${env.connectedXInputCount ?? 0})</span>
+                      <span class="diag-chip ${env.gpdToolRunning ? "warn" : "ok"}">GPDTool: ${env.gpdToolRunning ? (env.gpdToolElevated ? "运行中(管理员)" : "运行中") : "未运行"}</span>
+                      <span class="diag-chip">${env.selfElevated ? "HaloDeck: 管理员" : "HaloDeck: 普通权限"}</span>
+                    </div>
+                    <div class="diag-capture-log">
+                      ${evs.length === 0
+                        ? `<div class="diag-empty-hint">5 秒内未检测到任何信号；请确认按键时未处于长按/锁键盘状态，并将以上状态与「复制诊断报告」发给开发者排查。</div>`
+                        : evs.slice(0, 60).map((ev) => `
+                            <div class="diag-log-row">
+                              <span class="diag-log-offset">+${ev.offsetMs}ms</span>
+                              <span class="diag-log-chan">${esc(ev.channel)}</span>
+                              <span>${esc(ev.summary)}${ev.rawHex ? ` · RAW=${esc(ev.rawHex)}` : ""}</span>
+                              ${ev.wouldTriggerQam ? `<span class="diag-log-trigger">可触发侧栏</span>` : ""}
+                            </div>
+                          `).join("")}
+                    </div>
+                  </div>
+                `;
+              })()}
 
               <div class="hotkey-list" style="margin-top:8px;">
                 <div class="hotkey-row">
@@ -2650,7 +2763,7 @@
             <div class="hh-card">
               <div class="hh-card-head">
                 <span class="hh-card-title">全局系统与电源偏好</span>
-                <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 4}` : "用户态"}</span>
+                <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 5}` : "用户态"}</span>
               </div>
 
               <div class="cw-group">
@@ -2706,6 +2819,30 @@
                   </div>
                 </div>
 
+                ${(() => {
+                  const curVer = snap.appVersion || "0.6.2";
+                  const upd = snap.latestUpdate;
+                  const hasUpd = !!(upd && upd.hasUpdate);
+                  const prog = state.appUpdateProgress;
+                  const badgeHtml = hasUpd
+                    ? `<span class="hh-card-badge live" style="margin-left:4px;">可更新至 v${esc(upd.latestVersion)}${upd.isPrerelease ? " RC" : ""}</span>`
+                    : (upd ? `<span class="hh-card-badge" style="margin-left:4px;">已是最新</span>` : "");
+                  return `
+                    <div class="cw-row" style="min-height:46px;padding:8px 12px;">
+                      <div class="cw-row-copy">
+                        <span class="cw-row-title">HaloDeck 版本与在线更新 <span class="hh-card-badge" style="margin-left:4px;">v${esc(curVer)}</span>${badgeHtml}</span>
+                        <span class="cw-row-sub">${hasUpd ? `发现新版 v${esc(upd.latestVersion)}（下载自动校验 SHA-256，保留全部本地配置与游戏档案）` : "支持从 GitHub Releases 检查正式版或测试版并一键原地更新"}</span>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                        <button id="btnTogglePrereleaseCheck" class="pill-btn small ${state.appUpdateIncludePrerelease ? "active" : ""}" data-focusable="true" title="开启后也会检查 -rc / -beta 预发布测试版">${state.appUpdateIncludePrerelease ? "含测试版" : "仅正式版"}</button>
+                        <button id="btnCheckAppUpdate" class="btn btn-sm" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "检查更新"}</button>
+                        ${hasUpd && upd.downloadUrl ? `<button id="btnApplyAppUpdate" class="btn btn-sm btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? (prog.status === "applying" ? "正在更新..." : `下载中 ${Math.round(prog.percent || 0)}%`) : `更新 v${esc(upd.latestVersion)}`}</button>` : ""}
+                        ${hasUpd && upd.htmlUrl ? `<button id="btnOpenUpdateNotes" class="btn btn-sm" data-focusable="true">更新日志</button>` : ""}
+                      </div>
+                    </div>
+                  `;
+                })()}
+
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <span class="cw-row-title">系统服务与配置文件</span>
                   <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -2752,6 +2889,14 @@
 
     const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
     const kernelShort = kernel.slot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4";
+    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg.xeFgDynamicMfg;
+    const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
+    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
+    const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
 
     return `
       <div class="tune-layout">
@@ -2902,6 +3047,66 @@
                   { value: "nofg", label: "关闭插帧" }
                 ], cfg.fgType)}
               </div>
+
+              ${cfg.fgType === "xefg" ? `
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">XeFG 插帧倍率 (MFG)</span>
+                    <span class="cw-row-sub">2X 甜点 · 3X 推荐多帧 · 4X 算力开销更高（改固定倍率需「注入并重开」）</span>
+                  </div>
+                  ${renderSegmented("data-xefg-mult", [
+                    { value: "2", label: "2X" },
+                    { value: "3", label: "3X" },
+                    { value: "4", label: "4X" }
+                  ], String(xeFgMult), "compact")}
+                </div>
+
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">动态多帧 (DMFG)</span>
+                    <span class="cw-row-sub">游戏内按目标帧率在 1X–${xeFgMult}X 间自动实时升降</span>
+                  </div>
+                  ${renderSwitch("swXeFgDmfg", xeFgDmfg)}
+                </div>
+
+                ${xeFgDmfg ? `
+                  <div class="cw-row">
+                    <div class="cw-row-copy">
+                      <span class="cw-row-title">DMFG 目标帧率</span>
+                      <span class="cw-row-sub">${xeFgDmfgTarget > 0 && ![60, 90, 120].includes(xeFgDmfgTarget) ? `当前自定义 ${xeFgDmfgTarget} FPS · ` : ""}自动贴合屏幕刷新率或帧率上限（如 120Hz → 116 FPS）</span>
+                    </div>
+                    ${renderSegmented("data-xefg-dmfg-fps", [
+                      { value: "0", label: "自动贴合" },
+                      { value: "60", label: "60" },
+                      { value: "90", label: "90" },
+                      { value: "120", label: "120" }
+                    ], String(xeFgDmfgTarget), "compact")}
+                  </div>
+                ` : ""}
+
+                ${showMissingMfgUnlockerHint ? `
+                  <div class="xefg-mfg-hint xefg-mfg-hint-row">
+                    <span>AMD 8060S 原版 <code>libxess_fg.dll</code> 最高仅支持 2X，解锁 3X/4X 与 DMFG 需安装 <strong>MFG Unlocker (by dashdogy)</strong>（单机专用）。</span>
+                    <button id="btnGoMfgUnlockerComp" class="btn btn-sm btn-primary" data-focusable="true">前往组件中心下载</button>
+                  </div>
+                ` : ""}
+
+                ${showXeFgStableHint ? `
+                  <div class="xefg-mfg-hint">
+                    当前内核为 Stable v0.9.4，3X/4X 多帧与 DMFG 需切换至 <strong>Nightly v10+</strong> 内核与 XeSS 3 (<code>libxess_fg.dll</code>)
+                  </div>
+                ` : ""}
+              ` : ""}
+
+              ${canLiveToggleFg ? `
+                <div class="cw-row">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">游戏内实时插帧开关 (免菜单 / 免重启)</span>
+                    <span class="cw-row-sub">直接触发 OptiScaler 原生热键 (End / FGShortcutKey) 实时开关 FG</span>
+                  </div>
+                  <button id="btnToggleLiveFg" class="btn btn-sm xefg-live-fg-btn" data-focusable="true">实时开关 FG</button>
+                </div>
+              ` : ""}
 
               <div class="cw-row">
                 <div class="cw-row-copy">
@@ -3138,6 +3343,7 @@
                     <span class="cw-row-sub">
                       本地版本：${esc(c.installedVersion || "未安装")} · 在线版本：${esc(c.latestVersion || "待查询")}
                     </span>
+                    ${c.description ? `<span class="comp-desc">${esc(c.description)}</span>` : ""}
                   </div>
                   <div class="comp-actions">
                     ${typeof pct === "number" && pct > 0 && pct < 100
@@ -3503,7 +3709,7 @@
           <div class="qam-section">
             <div class="qam-section-title">
               <span>手柄背键 (L4 / R4)</span>
-              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}` : "未检测手柄"}</span>
+              <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测手柄"}</span>
             </div>
             <div class="backkey-slot-list compact" style="margin-bottom:8px;">
               <button id="btnPickL4" class="backkey-slot-row btn-like" data-focusable="true">
@@ -3605,6 +3811,15 @@
     const inj = active?.injection;
     const cfg = state.config;
     const presets = snap.presets || [];
+    const kernel = getActiveKernelInfo();
+    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg.xeFgDynamicMfg;
+    const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
+    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
+    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
+    const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
       : "当前目标原生未注入";
@@ -3646,6 +3861,24 @@
               { value: "optifg", label: "OptiFG" },
               { value: "nofg", label: "关闭插帧" }
             ], cfg.fgType, "compact")}
+            ${cfg.fgType === "xefg" ? `
+              <div class="qam-xefg-mfg-row">
+                ${renderSegmented("data-xefg-mult", [
+                  { value: "2", label: "2X" },
+                  { value: "3", label: "3X" },
+                  { value: "4", label: "4X" }
+                ], String(xeFgMult), "compact")}
+                <button id="swXeFgDmfg" class="pill-btn small qam-dmfg-btn ${xeFgDmfg ? "active" : ""}" role="switch" aria-checked="${xeFgDmfg}" data-focusable="true">DMFG ${xeFgDmfg ? "开" : "关"}</button>
+              </div>
+              ${xeFgDmfg ? renderSegmented("data-xefg-dmfg-fps", [
+                { value: "0", label: "DMFG 自动" },
+                { value: "60", label: "60" },
+                { value: "90", label: "90" },
+                { value: "120", label: "120" }
+              ], String(xeFgDmfgTarget), "compact") : ""}
+              ${showXeFgStableHint ? `<div class="xefg-mfg-hint is-qam">需 Nightly v10+ 内核与 XeSS 3 (libxess_fg.dll)</div>` : ""}
+              ${showMissingMfgUnlockerHint ? `<div class="xefg-mfg-hint is-qam">AMD &gt;2X 需在主控台「组件中心」安装 MFG Unlocker (by dashdogy)</div>` : ""}
+            ` : ""}
             ${renderSegmented("data-fps-limit", [
               { value: "0", label: "不限帧" },
               { value: "60", label: "60帧" },
@@ -3665,6 +3898,13 @@
             ${svgIcon("bolt")}
             <span>${inj?.isInjected ? "应用参数并重新注入" : "一键注入推荐配置"}</span>
           </button>
+          ${canLiveToggleFg ? `
+            <div class="qam-live-fg-row ${active?.isCurrentlyRunning ? "has-restart" : ""}">
+              <button id="btnToggleLiveFg" class="btn btn-sm xefg-live-fg-btn" data-focusable="true">${svgIcon("bolt")}<span>实时开关 FG (免菜单)</span></button>
+              ${active?.isCurrentlyRunning ? `<button id="btnInjectRestart" class="btn btn-sm" data-focusable="true" ${state.busy ? "disabled" : ""}>应用并重开</button>` : ""}
+            </div>
+            <div class="xefg-mfg-note">开关 FG 游戏内即时生效；改固定倍率需重开，开 DMFG 自动实时变倍</div>
+          ` : ""}
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
             <button id="btnLaunchGame" class="btn btn-sm" data-focusable="true" ${!active ? "disabled" : ""}>启动</button>
             <button id="btnSendInsert" class="btn btn-sm" data-focusable="true">游戏内菜单</button>
@@ -3746,6 +3986,24 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
+      const topVerBtn = document.getElementById("btnTopAppVersion");
+      const topVerLabel = document.getElementById("topAppUpdateLabel");
+      if (topVerBtn) {
+        const curVer = state.snapshot?.appVersion || "0.6.2";
+        const upd = state.snapshot?.latestUpdate;
+        const hasUpd = !!(upd && upd.hasUpdate);
+        topVerBtn.classList.toggle("has-update", hasUpd);
+        topVerBtn.title = hasUpd
+          ? `发现新版本 v${upd.latestVersion}，点击查看更新日志并一键更新`
+          : `当前版本 v${curVer}，点击检查在线更新`;
+        const labelText = state.appUpdateChecking
+          ? "检查中..."
+          : (hasUpd ? `更新 v${upd.latestVersion}` : "检查更新");
+        if (topVerLabel) topVerLabel.textContent = labelText;
+        else topVerBtn.textContent = labelText;
+        const devTag = document.getElementById("deviceTag");
+        if (devTag) devTag.textContent = `GPD WIN 5 · v${curVer}`;
+      }
     }
 
     const mainView = document.getElementById("mainView");
@@ -3823,15 +4081,24 @@
   // ---------------- Decky-Style Community Plugin Center & Sandbox Host ----------------
 
   const PLUGIN_PERM_META = {
-    "games:read": { label: "读取游戏库", tier: "t1" },
-    "telemetry:read": { label: "读取硬件遥测", tier: "t1" },
-    "events:game": { label: "订阅游戏启停事件", tier: "t1" },
-    "storage": { label: "插件私有存储", tier: "t1" },
-    "shell:openFolder": { label: "打开插件数据目录", tier: "t1" },
-    "ui:theme": { label: "自定义界面皮肤", tier: "t1" },
-    "backend": { label: "独立后端进程", tier: "t2" },
-    "input:sendKey": { label: "向游戏发送功能键", tier: "t3" }
+    "games:read": { label: "读取游戏库", tier: "t1", desc: "读取已扫描游戏列表、安装路径、运行状态及反作弊标识（只读）。" },
+    "telemetry:read": { label: "读取硬件遥测", tier: "t1", desc: "读取实时 FPS、功耗、温度、显存、风扇转速与电量（只读）。" },
+    "events:game": { label: "订阅游戏启停事件", tier: "t1", desc: "接收游戏启动与退出通知，用于计时、备忘联动等。" },
+    "storage": { label: "插件私有存储", tier: "t1", desc: "读写本插件隔离的数据文件，无法访问其他插件或系统设置。" },
+    "shell:openFolder": { label: "打开插件数据目录", tier: "t1", desc: "在系统资源管理器中打开本插件专属数据文件夹。" },
+    "shell:openUrl": { label: "打开安全外部链接", tier: "t1", desc: "在系统默认浏览器中打开安全的 https:// 网页（如攻略或项目主页）。" },
+    "ui:theme": { label: "自定义界面皮肤", tier: "t1", desc: "安全覆写白名单 CSS 主题变量，停用或卸载自动恢复原样。" },
+    "backend": { label: "独立后端进程", tier: "t2", desc: "运行隔离的本地子进程（随主程序退出销毁），具备本地脚本/程序执行能力。" },
+    "input:sendKey": { label: "向游戏发送功能键", tier: "t3", desc: "向前台游戏发送白名单功能键（Insert / Home / End / F1–F12）。" }
   };
+
+  const PLUGIN_CATEGORY_TABS = [
+    { id: "all", label: "全部" },
+    { id: "theme", label: "🎨 主题皮肤" },
+    { id: "utility", label: "🧰 实用工具" },
+    { id: "monitor", label: "📊 监控诊断" },
+    { id: "developer", label: "🛠 开发模板" }
+  ];
 
   function renderPluginTrustBadge(obj) {
     const perms = Array.isArray(obj?.permissions) ? obj.permissions : [];
@@ -3938,6 +4205,7 @@
   }
 
   function renderPluginSandboxShell(plugin, backLabel) {
+    const devMode = !!state.snapshot?.settings?.pluginDeveloperMode;
     return `
       <div class="plugin-frame-shell ${IS_QAM ? "is-qam" : ""}">
         <div class="plugin-frame-bar">
@@ -3947,6 +4215,7 @@
             <span class="hh-card-badge">v${esc(plugin.version)}</span>
           </div>
           <div style="display:flex;align-items:center;gap:6px;">
+            ${plugin.hasBackend && devMode ? `<button id="btnPluginFrameRestartBackend" class="btn btn-sm" data-focusable="true">重启后端</button>` : ""}
             ${plugin.hasBackend ? `<button id="btnPluginFrameLogs" class="btn btn-sm" data-focusable="true">日志</button>` : ""}
             <button id="btnPluginFrameReload" class="btn btn-sm" data-focusable="true">重载</button>
           </div>
@@ -3991,15 +4260,21 @@
 
     const sub = state.pluginsSubTab || "installed";
     const storeData = state.pluginStoreData;
-    const customUrls = state.snapshot?.settings?.pluginStoreUrls || [];
+    const settings = state.snapshot?.settings || {};
+    const customUrls = settings.pluginStoreUrls || [];
+    const devMode = !!settings.pluginDeveloperMode;
+    const mirrorValue = state.pluginMirrorDraft !== null ? state.pluginMirrorDraft : (settings.pluginDownloadMirrorPrefix || "");
     const dlProg = state.pluginDownloadProgress;
 
     if (sub === "store" && !storeData && !state.pluginStoreLoading) {
       setTimeout(() => ensurePluginStoreLoaded(false), 0);
     }
 
+    const updatableCount = (storeData?.items || []).filter((x) => x.hasUpdate && !x.isRevoked).length;
+    const catFilter = state.pluginStoreCategory || "all";
     const q = (state.pluginStoreSearch || "").trim().toLowerCase();
     const storeItems = (storeData?.items || []).filter((item) => {
+      if (catFilter !== "all" && (item.category || "utility").toLowerCase() !== catFilter) return false;
       if (!q) return true;
       return (item.name || "").toLowerCase().includes(q) ||
              (item.id || "").toLowerCase().includes(q) ||
@@ -4014,9 +4289,11 @@
             <div class="hh-card-head">
               <div>
                 <span class="hh-card-title">社区插件中心 · Decky 沙箱模式</span>
-                <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；HaloDeck 本体纯净合规。</div>
+                <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；支持开源 Commit 锁包与 SHA-256 校验。</div>
               </div>
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <button id="btnTogglePluginDevMode" class="btn btn-sm ${devMode ? "btn-primary" : ""}" data-focusable="true" title="开启后显示本地目录直导、重启后端与快捷目录按钮">${devMode ? "🛠 开发者模式：开" : "🛠 开发者模式"}</button>
+                ${devMode ? `<button id="btnInstallPluginFolder" class="btn btn-sm" data-focusable="true">导入本地目录</button>` : ""}
                 <button id="btnInstallPluginZip" class="btn btn-sm btn-primary" data-focusable="true">导入本地 .zip</button>
                 <button id="btnOpenPluginsFolder" class="btn btn-sm" data-focusable="true">插件目录</button>
                 <button id="btnRefreshPlugins" class="btn btn-sm" data-focusable="true">刷新</button>
@@ -4025,8 +4302,8 @@
 
             <div class="plugin-subtabs">
               <button class="pill-btn small ${sub === "installed" ? "active" : ""}" data-plugin-subtab="installed" data-focusable="true">已安装 (${plugins.length})</button>
-              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}</button>
-              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接 / GitHub 直装</button>
+              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}${updatableCount > 0 ? ` · ${updatableCount} 可更新` : ""}</button>
+              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接直装与网络加速</button>
             </div>
 
             <div id="pluginDlProgressBanner" class="plugin-dl-banner ${dlProg ? "" : "hidden"}">
@@ -4065,6 +4342,8 @@
                       </div>
                       <div class="plugin-card-actions">
                         ${p.isValid && p.enabled && !p.revokedByStore && (p.mount || []).includes("console") ? `<button class="btn btn-sm btn-primary" data-plugin-open="${esc(p.id)}" data-focusable="true">打开</button>` : ""}
+                        ${devMode && p.isValid ? `<button class="btn btn-sm" data-plugin-open-dir="${esc(p.id)}" data-focusable="true">目录</button>` : ""}
+                        ${devMode && p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-restart-backend="${esc(p.id)}" data-focusable="true">重启后端</button>` : ""}
                         ${p.isValid && p.hasBackend ? `<button class="btn btn-sm" data-plugin-logs="${esc(p.id)}" data-focusable="true">日志</button>` : ""}
                         ${p.isValid && !p.revokedByStore ? renderSwitch(`swPlugin_${p.id}`, !!p.enabled) : ""}
                         <button class="btn btn-sm btn-danger-soft" data-plugin-uninstall="${esc(p.id)}" data-focusable="true">卸载</button>
@@ -4076,7 +4355,14 @@
             ) : sub === "store" ? `
               <div class="plugin-store-toolbar">
                 <input id="pluginStoreSearchInput" class="plugin-text-input" type="text" placeholder="搜索商店插件名称、作者或简介..." value="${esc(state.pluginStoreSearch)}" />
+                ${updatableCount > 0 ? `<button id="btnUpdateAllPlugins" class="btn btn-sm btn-primary" data-focusable="true">一键更新全部 (${updatableCount})</button>` : ""}
                 <button id="btnRefreshPluginStore" class="btn btn-sm" data-focusable="true">${state.pluginStoreLoading ? "拉取中..." : "刷新商店"}</button>
+              </div>
+
+              <div class="plugin-category-row">
+                ${PLUGIN_CATEGORY_TABS.map((cat) => `
+                  <button class="pill-btn small ${catFilter === cat.id ? "active" : ""}" data-store-category="${esc(cat.id)}" data-focusable="true">${esc(cat.label)}</button>
+                `).join("")}
               </div>
 
               <div class="plugin-sources-box">
@@ -4102,7 +4388,7 @@
                 <div class="plugin-list">
                   ${storeItems.map((item) => `
                     <div class="plugin-card ${item.isInstalled ? "is-enabled" : ""}">
-                      <div class="plugin-card-icon"><span>${item.category === "theme" ? "🎨" : "🔌"}</span></div>
+                      <div class="plugin-card-icon"><span>${item.category === "theme" ? "🎨" : item.category === "developer" ? "🛠" : item.category === "monitor" ? "📊" : "🔌"}</span></div>
                       <div class="plugin-card-main">
                         <div class="plugin-card-head">
                           <strong>${esc(item.name)}</strong>
@@ -4118,6 +4404,7 @@
                         </div>
                       </div>
                       <div class="plugin-card-actions">
+                        <button class="btn btn-sm" data-store-detail="${esc(item.id)}" data-focusable="true">详情</button>
                         ${(() => {
                           const inst = plugins.find((x) => x.id === item.id);
                           if (item.isRevoked) {
@@ -4146,10 +4433,19 @@
                   支持直接粘贴任意社区插件的 <code>https://.../*.zip</code> 下载链接，或 GitHub 仓库名（如 <code>owner/repo</code>，自动解析最新 Release 中的 <code>.zip</code>）。安装后默认处于停用状态，确认权限后才会运行。
                 </div>
                 <div class="plugin-store-add-row" style="margin-top:8px;">
-                  <input id="pluginDirectUrlInput" class="plugin-text-input" type="text" placeholder="例如：daxiwow/halodeck-fling-trainer 或 https://github.com/.../plugin.zip" value="${esc(state.pluginDirectUrlDraft)}" />
+                  <input id="pluginDirectUrlInput" class="plugin-text-input" type="text" placeholder="例如：owner/halodeck-plugin 或 https://github.com/.../plugin.zip" value="${esc(state.pluginDirectUrlDraft)}" />
                   <button id="btnInstallPluginFromUrl" class="btn btn-sm btn-primary" data-focusable="true">下载并安装</button>
                 </div>
-                <div class="cw-row-sub" style="margin-top:6px;">
+                <div class="plugin-sources-box" style="margin-top:12px;">
+                  <div style="font-size:12px;font-weight:700;margin-bottom:4px;">GitHub Release 下载镜像加速（国内网络可选）</div>
+                  <div class="cw-row-sub" style="margin-bottom:8px;">商店目录默认走 jsDelivr CDN；若国内下载插件压缩包超时，可填入 HTTPS 镜像前缀（如 <code>https://gh-proxy.com/</code>）。失败时自动回退直连，且官方商店插件始终强制校验 SHA-256。</div>
+                  <div class="plugin-store-add-row" style="margin-bottom:0;">
+                    <input id="pluginMirrorPrefixInput" class="plugin-text-input" type="text" placeholder="留空表示直连 GitHub；示例：https://gh-proxy.com/" value="${esc(mirrorValue)}" />
+                    <button id="btnSavePluginMirror" class="btn btn-sm btn-primary" data-focusable="true">保存镜像</button>
+                    ${mirrorValue ? `<button id="btnClearPluginMirror" class="btn btn-sm" data-focusable="true">恢复直连</button>` : ""}
+                  </div>
+                </div>
+                <div class="cw-row-sub" style="margin-top:8px;">
                   自定义已订阅的第三方商店源（共 ${customUrls.length} 个）：可在「插件商店」页管理增删。
                 </div>
               </div>
@@ -4367,6 +4663,95 @@
     }
   }
 
+  function openPluginDetailModal(item) {
+    const modal = document.getElementById("modalBackdrop");
+    const title = document.getElementById("modalTitle");
+    const sub = document.getElementById("modalSubtitle");
+    const body = document.getElementById("modalBody");
+    if (!modal || !title || !sub || !body || !item) return;
+
+    const perms = Array.isArray(item.permissions) ? item.permissions : [];
+    const repoUrl = item.sourceRepo || item.homepage || "";
+    const commitSha = item.sourceCommit || "";
+    const commitUrl = repoUrl && commitSha ? `${repoUrl.replace(/\/$/, "")}/commit/${commitSha}` : "";
+
+    title.textContent = `${item.name} · v${item.version}`;
+    sub.textContent = `${item.id} · ${item.isOfficialSource ? "官方纯净商店" : (item.sourceName || "第三方社区源")}`;
+    body.innerHTML = `
+      <div class="plugin-detail-box">
+        <div class="plugin-detail-head">
+          ${renderPluginTrustBadge(item)}
+          <span class="hh-card-badge">作者：${esc(item.author || "社区")}</span>
+          ${item.isInstalled ? `<span class="hh-card-badge live">已安装 v${esc(item.installedVersion || item.version)}</span>` : ""}
+        </div>
+        <p class="plugin-detail-desc">${esc(item.description || "暂无说明")}</p>
+
+        <div class="plugin-detail-meta">
+          <div class="plugin-detail-row">
+            <span>开源仓库</span>
+            ${repoUrl ? `<button class="bento-link-pill" data-open-ext-url="${esc(repoUrl)}" data-focusable="true">${esc(repoUrl)} ↗</button>` : `<span class="cw-row-sub">未提供</span>`}
+          </div>
+          <div class="plugin-detail-row">
+            <span>锁定 Commit</span>
+            ${commitSha ? (commitUrl ? `<button class="bento-link-pill" data-open-ext-url="${esc(commitUrl)}" data-focusable="true"><code>${esc(commitSha.slice(0, 12))}</code> ↗</button>` : `<code>${esc(commitSha)}</code>`) : `<span class="cw-row-sub">未锁定</span>`}
+          </div>
+          <div class="plugin-detail-row">
+            <span>SHA-256 校验</span>
+            ${item.sha256 ? `<code class="plugin-detail-sha">${esc(item.sha256)}</code>` : `<span class="cw-row-sub">未声明（仅 HTTPS 传输）</span>`}
+          </div>
+        </div>
+
+        <div class="plugin-detail-perms">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;">申请权限逐条解读（共 ${perms.length} 项）</div>
+          ${perms.length === 0 ? `<div class="cw-row-sub">无需任何特殊系统权限（纯展示沙箱）。</div>` : perms.map((p) => {
+            const meta = PLUGIN_PERM_META[p] || { label: p, tier: "t2", desc: "插件自定义权限声明。" };
+            return `
+              <div class="plugin-detail-perm-item">
+                <span class="plugin-perm-pill ${meta.tier}">${esc(meta.label)}</span>
+                <span class="cw-row-sub">${esc(meta.desc || "")}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+
+        <div class="modal-actions" style="margin-top:12px;">
+          ${!item.isRevoked && (!item.isInstalled || item.hasUpdate) ? `<button id="btnDetailInstallPlugin" class="btn btn-primary" data-focusable="true">${item.hasUpdate ? `立即更新至 v${esc(item.version)}` : `安装 v${esc(item.version)}`}</button>` : ""}
+          <button id="btnDetailClose" class="btn" data-focusable="true">关闭</button>
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+
+    body.querySelectorAll("[data-open-ext-url]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await rpc("openExternalUrl", { url: btn.dataset.openExtUrl });
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.getElementById("btnDetailInstallPlugin")?.addEventListener("click", async () => {
+      modal.classList.add("hidden");
+      try {
+        const res = await rpc("installPluginFromUrl", {
+          url: item.zipUrl,
+          sha256: item.sha256 || "",
+          name: item.name
+        });
+        showToast(res?.message || "插件安装完成", "success");
+        await ensurePluginStoreLoaded(true);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnDetailClose")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+    });
+  }
+
   function bindPluginViewEvents() {
     const iframe = document.getElementById("activePluginFrame");
     if (iframe) {
@@ -4380,12 +4765,116 @@
         state.pluginReloadNonce++;
         render();
       });
+      document.getElementById("btnPluginFrameRestartBackend")?.addEventListener("click", async () => {
+        const p = (state.snapshot?.plugins || []).find((x) => x.id === state.activePluginId);
+        if (!p) return;
+        try {
+          const res = await rpc("restartPluginBackend", { pluginId: p.id });
+          showToast(res?.message || "已重启插件后端", "info");
+          state.pluginReloadNonce++;
+          render();
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
       document.getElementById("btnPluginFrameLogs")?.addEventListener("click", () => {
         const p = (state.snapshot?.plugins || []).find((x) => x.id === state.activePluginId);
         if (p) openPluginLogsModal(p.id, p.name);
       });
       return;
     }
+
+    document.getElementById("btnTogglePluginDevMode")?.addEventListener("click", async () => {
+      const next = !state.snapshot?.settings?.pluginDeveloperMode;
+      try {
+        await rpc("updatePluginPreferences", { pluginDeveloperMode: next });
+        showToast(next ? "已开启插件开发者模式（显示目录直导、重启后端与源码目录入口）" : "已关闭插件开发者模式", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnInstallPluginFolder")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("installPluginFolder", {});
+        if (res?.cancelled) return;
+        showToast(res?.message || "已从本地目录同步插件", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.querySelectorAll("[data-plugin-open-dir]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await rpc("openPluginDirectory", { pluginId: btn.dataset.pluginOpenDir });
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-plugin-restart-backend]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await rpc("restartPluginBackend", { pluginId: btn.dataset.pluginRestartBackend });
+          showToast(res?.message || "已重启插件后端", "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-store-category]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.pluginStoreCategory = btn.dataset.storeCategory || "all";
+        state.focusIndex = 0;
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-store-detail]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.storeDetail;
+        const item = (state.pluginStoreData?.items || []).find((x) => x.id === id);
+        if (item) openPluginDetailModal(item);
+      });
+    });
+
+    document.getElementById("btnUpdateAllPlugins")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("updateAllPlugins", {});
+        showToast(res?.message || "批量更新完成", res?.ok ? "success" : "warn");
+        await ensurePluginStoreLoaded(true);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("pluginMirrorPrefixInput")?.addEventListener("input", (e) => {
+      state.pluginMirrorDraft = e.target.value || "";
+    });
+
+    document.getElementById("btnSavePluginMirror")?.addEventListener("click", async () => {
+      const prefix = (document.getElementById("pluginMirrorPrefixInput")?.value || "").trim();
+      try {
+        await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: prefix });
+        state.pluginMirrorDraft = null;
+        showToast(prefix ? `已保存 GitHub 镜像加速前缀：${prefix}` : "已切换为 GitHub 直连下载", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+
+    document.getElementById("btnClearPluginMirror")?.addEventListener("click", async () => {
+      try {
+        await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: "" });
+        state.pluginMirrorDraft = null;
+        showToast("已恢复 GitHub 直连下载", "info");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
 
     document.getElementById("btnInstallPluginZip")?.addEventListener("click", async () => {
       try {
@@ -5392,7 +5881,108 @@
       if (!s) return;
       const next = s.interceptPhysicalMenuButton === false;
       await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
-      showToast(next ? "已开启机身快捷菜单键 (F13) 呼出侧栏" : "已释放机身快捷菜单键 (F13)", "info");
+      showToast(next ? "已开启机身快捷菜单键 (Vendor HID / F13) 呼出侧栏" : "已释放机身快捷菜单键 (Vendor HID / F13)", "info");
+    });
+    document.getElementById("swInterceptGuideBtn")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = s.interceptGuideMenuButton === false;
+      await rpc("saveSettings", { ...s, interceptGuideMenuButton: next });
+      showToast(next ? "已开启手柄菜单 / Guide 键 (0x0400) 单独短按呼出侧栏" : "已关闭手柄 Guide 键 (0x0400) 接管", "info");
+    });
+    document.getElementById("btnMenuKeyDiag")?.addEventListener("click", async () => {
+      if (state.menuKeyDiagRunning) return;
+      state.menuKeyDiagRunning = true;
+      state.menuKeyDiagSecLeft = 5;
+      state.menuKeyDiagReport = null;
+      render();
+      showToast("开始 5 秒抓包：请立即短按一次机身快捷菜单键", "info");
+      const timer = setInterval(() => {
+        if (!state.menuKeyDiagRunning) {
+          clearInterval(timer);
+          return;
+        }
+        state.menuKeyDiagSecLeft = Math.max(1, (state.menuKeyDiagSecLeft || 1) - 1);
+        const btn = document.getElementById("btnMenuKeyDiag");
+        if (btn) btn.textContent = `抓包中 (${state.menuKeyDiagSecLeft}s)... 请按菜单键`;
+        const ttl = document.querySelector("#menuKeyDiagPanel .diag-capture-title");
+        if (ttl) ttl.textContent = `正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft}s）...`;
+      }, 1000);
+      try {
+        const rep = await rpc("runMenuKeyDiagnostic", { durationMs: 5000 });
+        state.menuKeyDiagReport = rep;
+        const cnt = rep?.events?.length ?? 0;
+        showToast(cnt > 0 ? `抓包完成：共捕获 ${cnt} 条硬件信号` : "抓包完成：5 秒内未检测到信号，请查看状态或复制报告", cnt > 0 ? "success" : "warn");
+      } catch (err) {
+        showToast(err.message || "信号抓包诊断失败", "error");
+      } finally {
+        clearInterval(timer);
+        state.menuKeyDiagRunning = false;
+        state.menuKeyDiagSecLeft = 0;
+        render();
+      }
+    });
+    document.getElementById("btnCopyMenuKeyDiag")?.addEventListener("click", async () => {
+      const txt = state.menuKeyDiagReport?.copyableReport;
+      if (!txt) return;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(txt);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = txt;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        showToast("已复制实体按键诊断报告到剪贴板", "success");
+      } catch (err) {
+        showToast(`复制失败: ${err.message || err}`, "error");
+      }
+    });
+    document.getElementById("btnClearMenuKeyDiag")?.addEventListener("click", () => {
+      state.menuKeyDiagReport = null;
+      render();
+    });
+    document.getElementById("btnTogglePrereleaseCheck")?.addEventListener("click", () => {
+      state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
+      render();
+    });
+    document.getElementById("btnCheckAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateChecking) return;
+      state.appUpdateChecking = true;
+      render();
+      try {
+        const res = await rpc("checkAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "检查更新完成", res?.update?.hasUpdate ? "success" : "info");
+      } catch (err) {
+        showToast(err.message || "检查更新失败", "error");
+      } finally {
+        state.appUpdateChecking = false;
+        render();
+      }
+    });
+    document.getElementById("btnApplyAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateProgress) return;
+      try {
+        const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
+      } catch (err) {
+        state.appUpdateProgress = null;
+        showToast(err.message || "下载或应用更新失败", "error");
+        render();
+      }
+    });
+    document.getElementById("btnOpenUpdateNotes")?.addEventListener("click", async () => {
+      const url = state.snapshot?.latestUpdate?.htmlUrl || "https://github.com/Lokilankaaa/HaloDeck/releases";
+      try {
+        await rpc("openExternalUrl", { url });
+      } catch (err) {
+        showToast(err.message, "error");
+      }
     });
     document.getElementById("swBackButtonHotkeys")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
@@ -5699,6 +6289,35 @@
         render();
       });
     });
+    document.querySelectorAll("[data-xefg-mult]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        state.config.xeFgMultiplier = Math.min(4, Math.max(2, parseInt(el.dataset.xefgMult, 10) || 2));
+        render();
+      });
+    });
+    document.getElementById("swXeFgDmfg")?.addEventListener("click", () => {
+      state.selectedPresetId = "custom";
+      state._userModifiedConfig = true;
+      state.config.xeFgDynamicMfg = !state.config.xeFgDynamicMfg;
+      render();
+    });
+    document.querySelectorAll("[data-xefg-dmfg-fps]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedPresetId = "custom";
+        state._userModifiedConfig = true;
+        const val = parseInt(el.dataset.xefgDmfgFps, 10) || 0;
+        state.config.xeFgDynamicTargetFps = val >= 10 ? val : 0;
+        render();
+      });
+    });
+    document.getElementById("btnGoMfgUnlockerComp")?.addEventListener("click", () => {
+      state.tab = "opti";
+      state.optiSubTab = "components";
+      state.focusIndex = 0;
+      render();
+    });
     document.querySelectorAll("[data-fps-limit]").forEach((el) => {
       el.addEventListener("click", () => {
         state.selectedPresetId = "custom";
@@ -5839,6 +6458,7 @@
     document.getElementById("btnInjectRestart")?.addEventListener("click", () => executeInject(true));
     document.getElementById("btnRestore")?.addEventListener("click", () => executeRestore());
     document.getElementById("btnSendInsert")?.addEventListener("click", () => rpc("sendInsertKey"));
+    document.getElementById("btnToggleLiveFg")?.addEventListener("click", () => rpc("toggleLiveFg"));
 
     document.getElementById("btnLaunchGame")?.addEventListener("click", async () => {
       const g = getActiveGame();
@@ -6588,6 +7208,108 @@
     showToast(`已切换界面皮肤：${next.label}`, "info");
   });
 
+  function renderAppUpdateModalBody() {
+    const modal = document.getElementById("modalBackdrop");
+    const title = document.getElementById("modalTitle");
+    const sub = document.getElementById("modalSubtitle");
+    const body = document.getElementById("modalBody");
+    if (!modal || !title || !sub || !body) return;
+
+    const curVer = state.snapshot?.appVersion || "0.6.2";
+    const upd = state.snapshot?.latestUpdate;
+    const hasUpd = !!(upd && upd.hasUpdate);
+    const prog = state.appUpdateProgress;
+    const includePre = !!state.appUpdateIncludePrerelease;
+
+    title.textContent = "HaloDeck 在线检查与自我更新";
+    sub.textContent = `当前版本 v${curVer} · 走零限流 GitHub Releases 通道（支持镜像前缀与 SHA-256 校验）`;
+
+    body.innerHTML = `
+      <div class="update-modal-layout">
+        <div class="plugin-detail-head">
+          <span class="hh-card-badge">当前版本：v${esc(curVer)}</span>
+          ${upd ? `<span class="hh-card-badge ${hasUpd ? "live" : ""}">${hasUpd ? `发现新版：v${esc(upd.latestVersion)}${upd.isPrerelease ? " (测试版)" : ""}` : `最新版本：v${esc(upd.latestVersion)}（已是最新）`}</span>` : `<span class="hh-card-badge">尚未检查</span>`}
+          <button id="btnModalTogglePre" class="pill-btn small ${includePre ? "active" : ""}" data-focusable="true">${includePre ? "通道：含测试版 (-rc)" : "通道：仅正式版"}</button>
+        </div>
+
+        <div id="appUpdateModalProg" class="plugin-dl-banner ${prog ? "" : "hidden"}">
+          ${prog ? (prog.status === "applying" ? "SHA-256 校验通过，正在重启原地更新..." : `正在下载 v${esc(prog.version)} · ${Math.round(prog.percent || 0)}%`) : ""}
+        </div>
+
+        ${upd?.releaseNotes ? `
+          <div class="update-notes-card">
+            <div class="update-notes-title">${esc(upd.title || `v${upd.latestVersion}`)} 更新说明</div>
+            <pre class="update-notes-pre">${esc(upd.releaseNotes)}</pre>
+          </div>
+        ` : `
+          <div class="update-notes-card">
+            <div class="cw-row-sub">点击下方「立即检查更新」即可获取最新版本信息；如国内下载较慢，可在「插件扩展 → 链接直装与网络加速」中配置 GitHub 镜像前缀。</div>
+          </div>
+        `}
+
+        <div class="update-modal-footer">
+          <button id="btnModalCheckAppUpdate" class="btn" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "立即检查更新"}</button>
+          ${hasUpd && upd.downloadUrl ? `<button id="btnModalApplyAppUpdate" class="btn btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? "更新中..." : `一键下载并更新 v${esc(upd.latestVersion)}`}</button>` : ""}
+          <button id="btnModalOpenReleases" class="btn" data-focusable="true">前往 Release 页面 ↗</button>
+        </div>
+      </div>
+    `;
+    body.scrollTop = 0;
+
+    document.getElementById("btnModalTogglePre")?.addEventListener("click", async () => {
+      state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
+      renderAppUpdateModalBody();
+      await runAppUpdateCheck(true);
+    });
+    document.getElementById("btnModalCheckAppUpdate")?.addEventListener("click", () => runAppUpdateCheck(true));
+    document.getElementById("btnModalApplyAppUpdate")?.addEventListener("click", async () => {
+      if (state.appUpdateProgress) return;
+      try {
+        const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
+      } catch (err) {
+        state.appUpdateProgress = null;
+        showToast(err.message || "下载或应用更新失败", "error");
+        renderAppUpdateModalBody();
+      }
+    });
+    document.getElementById("btnModalOpenReleases")?.addEventListener("click", async () => {
+      const url = state.snapshot?.latestUpdate?.htmlUrl || "https://github.com/Lokilankaaa/HaloDeck/releases";
+      try { await rpc("openExternalUrl", { url }); } catch (err) { showToast(err.message, "error"); }
+    });
+  }
+
+  async function runAppUpdateCheck(refreshModal = false) {
+    if (state.appUpdateChecking) return;
+    state.appUpdateChecking = true;
+    if (refreshModal) renderAppUpdateModalBody();
+    else render();
+    try {
+      const res = await rpc("checkAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+      if (res?.update && state.snapshot) {
+        state.snapshot.latestUpdate = res.update;
+      }
+      showToast(res?.message || "检查更新完成", res?.update?.hasUpdate ? "success" : "info");
+    } catch (err) {
+      showToast(err.message || "检查更新失败", "error");
+    } finally {
+      state.appUpdateChecking = false;
+      render();
+      if (refreshModal) renderAppUpdateModalBody();
+    }
+  }
+
+  function openAppUpdateModal() {
+    const modal = document.getElementById("modalBackdrop");
+    if (!modal) return;
+    renderAppUpdateModalBody();
+    modal.classList.remove("hidden");
+    if (!state.snapshot?.latestUpdate) {
+      runAppUpdateCheck(true);
+    }
+  }
+
+  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => openAppUpdateModal());
   document.getElementById("btnOpenQam")?.addEventListener("click", () => rpc("toggleQam"));
   document.getElementById("btnMinimize")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));

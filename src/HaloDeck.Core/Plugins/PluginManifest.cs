@@ -37,6 +37,7 @@ public sealed class PluginManifest
         "events:game",
         "storage",
         "shell:openFolder",
+        "shell:openUrl",
         "ui:theme",
         "backend",
         "input:sendKey"

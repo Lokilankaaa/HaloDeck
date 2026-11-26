@@ -43,6 +43,9 @@ public partial class App : System.Windows.Application
     private double _savedMainTop;
     private WindowState _savedMainState = WindowState.Normal;
     private uint _lastElevatedQamHintPid;
+    private nint _suspendResumeNotifyHandle;
+    private nint _displayPowerNotifyHandle;
+    private int _lastConsoleDisplayState = -1;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -169,6 +172,26 @@ public partial class App : System.Windows.Application
         _hiddenHotkeyHost = new HwndSource(hostParams);
         _inputHub.AttachHotkeyWindow(_hiddenHotkeyHost.Handle);
         HandheldToolboxService.AttachInputPaneWatcher(_hiddenHotkeyHost.Handle);
+        if (!isVerifyMode)
+        {
+            _hiddenHotkeyHost.AddHook(PowerBroadcastWndProc);
+            try
+            {
+                _suspendResumeNotifyHandle = Win32Interop.RegisterSuspendResumeNotification(
+                    _hiddenHotkeyHost.Handle,
+                    Win32Interop.DEVICE_NOTIFY_WINDOW_HANDLE);
+            }
+            catch { }
+            try
+            {
+                var displayGuid = Win32Interop.GUID_CONSOLE_DISPLAY_STATE;
+                _displayPowerNotifyHandle = Win32Interop.RegisterPowerSettingNotification(
+                    _hiddenHotkeyHost.Handle,
+                    ref displayGuid,
+                    Win32Interop.DEVICE_NOTIFY_WINDOW_HANDLE);
+            }
+            catch { }
+        }
 
         if (verifyStartup)
         {
@@ -434,6 +457,14 @@ public partial class App : System.Windows.Application
                 UpdateUiActiveFlag();
                 ScheduleOverlayTopmostBurst(forceReband: true);
             });
+        };
+
+        _bridge.RequestHideQamAsync += async () =>
+        {
+            _inputHub?.SuppressUntilGamepadRelease();
+            await _qamWindow.HideAndRestoreGameFocusAsync();
+            UpdateUiActiveFlag();
+            ScheduleOverlayTopmostBurst(forceReband: true);
         };
 
         _bridge.RequestToggleQam += () =>
@@ -990,6 +1021,17 @@ public partial class App : System.Windows.Application
         _winEventProc = null;
         HandheldToolboxService.DetachInputPaneWatcher();
         _inputHub?.Dispose();
+        if (_suspendResumeNotifyHandle != 0)
+        {
+            try { Win32Interop.UnregisterSuspendResumeNotification(_suspendResumeNotifyHandle); } catch { }
+            _suspendResumeNotifyHandle = 0;
+        }
+        if (_displayPowerNotifyHandle != 0)
+        {
+            try { Win32Interop.UnregisterPowerSettingNotification(_displayPowerNotifyHandle); } catch { }
+            _displayPowerNotifyHandle = 0;
+        }
+        _hiddenHotkeyHost?.RemoveHook(PowerBroadcastWndProc);
         _hiddenHotkeyHost?.Dispose();
         _overlayHudWindow?.Close();
         _bridge?.Dispose();
@@ -1005,6 +1047,44 @@ public partial class App : System.Windows.Application
         _qamWindow?.Close();
         _singleInstanceMutex?.Dispose();
         Shutdown(exitCode);
+    }
+
+    private nint PowerBroadcastWndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
+    {
+        if (msg != Win32Interop.WM_POWERBROADCAST)
+        {
+            return 0;
+        }
+
+        uint wp = unchecked((uint)wParam.ToInt64());
+        if (wp is Win32Interop.PBT_APMRESUMESUSPEND
+            or Win32Interop.PBT_APMRESUMEAUTOMATIC
+            or Win32Interop.PBT_APMRESUMECRITICAL)
+        {
+            _bridge?.NotifySystemPowerResume($"WM_POWERBROADCAST:0x{wp:X}");
+        }
+        else if (wp == Win32Interop.PBT_POWERSETTINGCHANGE && lParam != 0)
+        {
+            try
+            {
+                var setting = System.Runtime.InteropServices.Marshal.PtrToStructure<Win32Interop.POWERBROADCAST_SETTING>(lParam);
+                if (setting.PowerSetting == Win32Interop.GUID_CONSOLE_DISPLAY_STATE && setting.DataLength >= 1)
+                {
+                    int state = setting.Data;
+                    if (TdpLockPolicy.IsDisplayWakeTransition(_lastConsoleDisplayState, state))
+                    {
+                        _bridge?.NotifySystemPowerResume("DisplayWake");
+                    }
+                    _lastConsoleDisplayState = state;
+                }
+            }
+            catch
+            {
+                // Ignore malformed power setting payloads
+            }
+        }
+
+        return 0;
     }
 
     private static async Task<bool> WaitUntilAsync(CoreWebView2 core, string boolExpr, int timeoutMs = 8000)

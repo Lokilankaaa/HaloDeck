@@ -256,7 +256,14 @@
     shell: {
       openDataFolder() {
         return callHost("openDataFolder", {});
+      },
+      openUrl(url) {
+        return callHost("openUrl", { url: String(url || "") });
       }
+    },
+
+    openUrl(url) {
+      return callHost("openUrl", { url: String(url || "") });
     },
 
     ui: {

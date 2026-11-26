@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   audit-plugin-store:
@@ -37,7 +38,7 @@ jobs:
 
           $seenIds = @{}
           foreach ($p in $store.plugins) {
-            if (-not ($p.id -match '^[a-z0-9][a-z0-9.-]{2,63}$')) {
+            if (-not ($p.id -match '^[a-z0-9][a-z0-9._-]{2,63}$') -or $p.id.Contains('..')) {
               throw "Invalid plugin id: $($p.id)"
             }
             if ($seenIds.ContainsKey($p.id)) {
@@ -51,11 +52,11 @@ jobs:
             if ($p.zipUrl -match '/releases/latest/') {
               throw "Plugin $($p.id) zipUrl must NOT use mutable /releases/latest/; pin an immutable versioned release + sha256."
             }
+            if (-not ($p.sha256 -match '^[a-fA-F0-9]{64}$')) {
+              throw "Plugin $($p.id) MUST pin an exact 64-hex sha256 in store.json."
+            }
             $isOfficialRepo = $p.zipUrl -match '^https://github\.com/Lokilankaaa/HaloDeck/releases/download/'
             if (-not $isOfficialRepo) {
-              if (-not ($p.sha256 -match '^[a-fA-F0-9]{64}$')) {
-                throw "Third-party plugin $($p.id) MUST pin an exact 64-hex sha256 in store.json."
-              }
               if (-not ($p.sourceRepo -match '^https://github\.com/[^/]+/[^/]+') -or -not ($p.sourceCommit -match '^[a-fA-F0-9]{40}$')) {
                 throw "Third-party plugin $($p.id) MUST pin sourceRepo and full 40-char sourceCommit SHA (Decky policy)."
               }
@@ -63,19 +64,27 @@ jobs:
           }
           Write-Host "Validated $($store.plugins.Count) store.json entries."
 
-      - name: Clean-room clone, static scan, and build community submissions
+      - name: Clean-room clone, static scan, build & generate audit report
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "dist/audited-plugins" | Out-Null
+
+          $reportLines = New-Object System.Collections.Generic.List[string]
+          $reportLines.Add("### 🛡️ HaloDeck Decky 风格插件安全审核报告")
+          $reportLines.Add("")
+
           $subFiles = Get-ChildItem -Path "plugins/submissions" -Filter "*.json" -ErrorAction SilentlyContinue
           if (-not $subFiles) {
-            Write-Host "No community submission manifests in plugins/submissions/*.json."
+            $reportLines.Add("本次提交未包含新的 `plugins/submissions/*.json` 社区投稿清单；`plugins/store.json` 规范与 SHA-256 校验已全部通过 ✅。")
+            $reportLines -join "`n" | Set-Content -Path "dist/audit-report.md" -Encoding UTF8
+            $reportLines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
             exit 0
           }
 
           $allowedPerms = @(
             'games:read','telemetry:read','events:game','storage',
-            'shell:openFolder','ui:theme','backend','input:sendKey'
+            'shell:openFolder','shell:openUrl','ui:theme','backend','input:sendKey'
           )
           $forbiddenBinaryExts = @('.exe','.dll','.sys','.ocx','.scr','.com','.msi','.pyd','.so','.dylib')
           $suspiciousPatterns = @(
@@ -89,13 +98,14 @@ jobs:
             '(?i)HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
           )
 
-          New-Item -ItemType Directory -Force -Path "dist/audited-plugins" | Out-Null
+          $reportLines.Add("| 插件 ID | 版本 | 锁定 Commit | 后端类型 | 申请权限 | Clean-Room SHA-256 |")
+          $reportLines.Add("| :--- | :--- | :--- | :--- | :--- | :--- |")
 
           foreach ($sf in $subFiles) {
             Write-Host "=== Auditing submission: $($sf.Name) ==="
             $sub = Get-Content $sf.FullName -Raw | ConvertFrom-Json
 
-            if (-not ($sub.id -match '^[a-z0-9][a-z0-9.-]{2,63}$')) {
+            if (-not ($sub.id -match '^[a-z0-9][a-z0-9._-]{2,63}$') -or $sub.id.Contains('..')) {
               throw "Invalid submission id: $($sub.id)"
             }
             if (-not ($sub.repo -match '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$')) {
@@ -118,9 +128,9 @@ jobs:
               }
 
               $subPath = if ($sub.subpath) { $sub.subpath } else { "." }
-              $pluginDir = Resolve-Path (Join-Path $workDir $subPath)
+              $pluginDir = (Resolve-Path (Join-Path $workDir $subPath)).Path
 
-              # 1. Reject pre-compiled opaque binaries committed in source tree (Decky zero-binary rule)
+              # 1. Reject pre-compiled opaque binaries committed in source tree
               $precompiled = Get-ChildItem -Path $pluginDir -Recurse -File |
                 Where-Object { $forbiddenBinaryExts -contains $_.Extension.ToLowerInvariant() }
               if ($precompiled) {
@@ -137,7 +147,8 @@ jobs:
               if ($manifest.id -ne $sub.id) {
                 throw "Submission id ($($sub.id)) != plugin.json id ($($manifest.id))"
               }
-              foreach ($perm in ($manifest.permissions ?? @())) {
+              $perms = @($manifest.permissions)
+              foreach ($perm in $perms) {
                 if ($allowedPerms -notcontains $perm) {
                   throw "Unknown permission '$perm' in $($sub.id)"
                 }
@@ -157,21 +168,76 @@ jobs:
               }
 
               # 4. Clean-room source build if a .csproj backend is declared
+              $backendType = "纯前端沙箱"
               $csproj = Get-ChildItem -Path $pluginDir -Filter "*.csproj" -Recurse | Select-Object -First 1
               if ($csproj) {
+                $backendType = "C# 源码编译"
                 Write-Host "Building backend from source: $($csproj.FullName)"
                 dotnet publish $csproj.FullName -c Release -r win-x64 --self-contained false -o (Join-Path $pluginDir "backend")
+              } elseif ($manifest.backend -and $manifest.backend.executable) {
+                $backendType = "脚本后端 ($($manifest.backend.executable))"
               }
 
-              # 5. Package clean-room zip & print SHA-256 for store.json pinning
+              # 5. Package clean-room zip & print SHA-256
+              $stageDir = Join-Path $env:RUNNER_TEMP ("plugin_zip_stage_" + $sub.id)
+              if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
+              $stageInner = Join-Path $stageDir $sub.id
+              New-Item -ItemType Directory -Force -Path $stageInner | Out-Null
+              Get-ChildItem -Path $pluginDir -Force | Where-Object { $_.Name -notin @('.git','bin','obj') } | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination (Join-Path $stageInner $_.Name) -Recurse -Force
+              }
+
               $zipOut = Join-Path $env:GITHUB_WORKSPACE ("dist/audited-plugins/$($sub.id)-$($manifest.version).zip")
-              Compress-Archive -Path (Join-Path $pluginDir "*") -DestinationPath $zipOut -Force
+              Compress-Archive -Path $stageInner -DestinationPath $zipOut -Force
               $sha = (Get-FileHash $zipOut -Algorithm SHA256).Hash.ToLowerInvariant()
+              $shortSha = $sub.commit.Substring(0, 10)
+              $permStr = if ($perms.Count -gt 0) { ($perms | ForEach-Object { '`' + $_ + '`' }) -join ', ' } else { "无" }
+              $commitLink = "[$shortSha]($($sub.repo.TrimEnd('/'))/commit/$($sub.commit))"
+              $reportLines.Add("| ``$($sub.id)`` | v$($manifest.version) | $commitLink | $backendType | $permStr | ``$sha`` |")
               Write-Host "AUDITED OK: $($sub.id) v$($manifest.version) | commit=$($sub.commit) | sha256=$sha"
             } finally {
               Pop-Location
             }
           }
+
+          $reportLines.Add("")
+          $reportLines.Add("> ✅ 零黑盒二进制检查与静态高危扫描全部通过。合并至 `main` 后，`publish-plugin-store.yml` 将自动从锁定 Commit 干净重编译、发布至 `plugin-store-builds` Release 并同步更新 `plugins/store.json`。")
+          $reportText = $reportLines -join "`n"
+          $reportText | Set-Content -Path "dist/audit-report.md" -Encoding UTF8
+          $reportText | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+
+      - name: Post or update PR audit summary comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('dist/audit-report.md')) return;
+            const body = fs.readFileSync('dist/audit-report.md', 'utf8');
+            const marker = '<!-- halodeck-plugin-audit -->';
+            const fullBody = `${marker}\n${body}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+            }
 
       - name: Upload clean-room built plugin zips as workflow artifact
         if: always()

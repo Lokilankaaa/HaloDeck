@@ -76,6 +76,7 @@ HaloDeck 从 **v0.6.0** 起提供类似 **Steam Deck Decky Loader** 的社区插
 | `events:game` | 接收 `gameStarted` / `gameStopped` 游戏生命周期事件 | Tier 1 |
 | `storage` | 读写本插件隔离 KV 存储（`plugin_data/<id>/kv.json`） | Tier 1 |
 | `shell:openFolder` | 在资源管理器中打开本插件专属数据目录 | Tier 1 |
+| `shell:openUrl` | 在系统默认浏览器中打开安全的 `https://` 外部网页（如攻略或项目主页） | Tier 1 |
 | `ui:theme` | 安全覆写 HaloDeck 白名单主题 CSS 变量（实现 Decky CSS Loader 风格皮肤插件，停用/卸载自动还原） | Tier 1 |
 | `backend` | 启动并调用插件自带的独立 `stdio JSON-RPC` 后端子进程 | Tier 2 |
 | `input:sendKey` | 向当前前台游戏发送白名单功能键（`Insert` `0x2D`、`Home` `0x24`、`End` `0x23`、`F1–F12` `0x70–0x7B`） | Tier 3 |
@@ -116,6 +117,9 @@ const res = await HaloDeckPlugin.backend.call("ping", { hello: "world" });
 
 // 弹出 HaloDeck 原生 Toast
 HaloDeckPlugin.toast("操作完成", "success");
+
+// 在默认浏览器打开安全 https:// 链接（需 shell:openUrl）
+await HaloDeckPlugin.shell.openUrl("https://www.pcgamingwiki.com/");
 
 // 应用/重置皮肤变量（需 ui:theme，仅限白名单 CSS 变量）
 await HaloDeckPlugin.theme.applyVariables({ "--accent": "#ec4899", "--bg-app": "#090714" });
@@ -173,7 +177,13 @@ HaloDeck 启动后端子进程时会注入以下环境变量：
 2. **`examples/plugins/halodeck.game-notes`** — 掌机游玩计时与游戏备忘（纯前端零后端，自动追踪每款游戏的累计游玩时长、启动次数与最近游玩时间，支持自定义下拉选择游戏、快捷备忘模板与双主题自适应）。
 3. **`examples/plugins/halodeck.backend-demo`** — 硬件曲线与一键诊断报告（带 `stdio JSON-RPC 2.0` PowerShell 独立后端，实时绘制 APU 功耗/温度 SVG 曲线并一键导出硬件与游戏库诊断报告，同时演示后端 RPC 调用、`stderr` 调试日志与游戏生命周期事件）。
 
-打包方法：将单个插件目录（或目录内全部文件）压缩为 `.zip`，确保压缩包根目录或唯一一层子目录包含 `plugin.json`，在 HaloDeck 顶部点击 🔌 → **「导入 .zip 插件」** 即可体验。
+打包方法：推荐使用仓库自带的合规校验与打包脚本（与官方 Decky CI 审核规则一致）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\pack-plugin.ps1 -PluginDir .\examples\plugins\halodeck.skin-studio
+```
+
+调试技巧：在 HaloDeck **「插件扩展」** 顶部开启 **「🛠 开发者模式」**，即可直接 **「导入本地目录」**（无需反复打 `.zip`）、一键 **「重启后端」** 与 **「重载」** 前端界面。
 
 > 💡 **掌机手柄与双主题提示**：`plugin-sdk.js` 已内置掌机手柄自动空间导航（方向键、`A` 确认、`B` 返回、左右调节 `<input type="range">` 滑块）以及深/浅双主题 CSS 变量自动同步；建议下拉框/颜色选择器使用纯 DOM 组件以确保在 QAM 无焦点侧栏窗口下稳定交互。
 

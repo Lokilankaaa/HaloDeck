@@ -1,13 +1,18 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using HaloDeck.Core.Config;
 using HaloDeck.Core.Models;
+using HaloDeck.Core.Plugins;
 
 namespace HaloDeck.Core.Components;
 
 public sealed class ComponentManager
 {
+    private static readonly Regex TagInUrlRegex = new(@"/releases/tag/(?<tag>[^/?#]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex AssetHrefRegex = new(@"href\s*=\s*[""'](?<href>/[^""']+/releases/download/[^""']+)[""']", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -97,7 +102,29 @@ public sealed class ComponentManager
         return ArchiveExtractor.ResolvePayloadRoot(info.InstalledDirectory);
     }
 
-    public async Task<IReadOnlyList<ComponentInfo>> RefreshCatalogAsync(CancellationToken ct = default)
+    public string? ResolveMfgUnlockerBinaryPath()
+    {
+        var info = _components[ComponentSlot.MfgUnlocker];
+        if (!info.IsInstalled || string.IsNullOrWhiteSpace(info.InstalledDirectory) || !Directory.Exists(info.InstalledDirectory))
+        {
+            return null;
+        }
+
+        return Directory.EnumerateFiles(info.InstalledDirectory, "*", SearchOption.AllDirectories)
+            .Where(f =>
+            {
+                var ext = Path.GetExtension(f).ToLowerInvariant();
+                return ext is ".asi" or ".dll";
+            })
+            .OrderByDescending(f => Path.GetFileName(f).Contains("MFGUnlocker", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(f => Path.GetExtension(f).Equals(".asi", StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault();
+    }
+
+    public Task<IReadOnlyList<ComponentInfo>> RefreshCatalogAsync(CancellationToken ct = default)
+        => RefreshCatalogAsync(mirrorPrefix: null, ct);
+
+    public async Task<IReadOnlyList<ComponentInfo>> RefreshCatalogAsync(string? mirrorPrefix, CancellationToken ct = default)
     {
         TryAttachOptionalGitHubToken();
 
@@ -105,7 +132,7 @@ public sealed class ComponentManager
         {
             try
             {
-                await FetchLatestReleaseAsync(info, ct).ConfigureAwait(false);
+                await FetchLatestReleaseAsync(info, mirrorPrefix, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -117,16 +144,23 @@ public sealed class ComponentManager
         return GetComponents();
     }
 
-    public async Task<ComponentInfo> InstallOrUpdateAsync(
+    public Task<ComponentInfo> InstallOrUpdateAsync(
         ComponentSlot slot,
         IProgress<double>? progress = null,
+        CancellationToken ct = default)
+        => InstallOrUpdateAsync(slot, progress, mirrorPrefix: null, ct);
+
+    public async Task<ComponentInfo> InstallOrUpdateAsync(
+        ComponentSlot slot,
+        IProgress<double>? progress,
+        string? mirrorPrefix,
         CancellationToken ct = default)
     {
         var info = _components[slot];
         if (info.LatestAsset is null)
         {
             TryAttachOptionalGitHubToken();
-            await FetchLatestReleaseAsync(info, ct).ConfigureAwait(false);
+            await FetchLatestReleaseAsync(info, mirrorPrefix, ct).ConfigureAwait(false);
         }
 
         if (info.LatestAsset is null || string.IsNullOrWhiteSpace(info.LatestAsset.DownloadUrl))
@@ -138,26 +172,49 @@ public sealed class ComponentManager
         Directory.CreateDirectory(downloadsDir);
         var downloadPath = Path.Combine(downloadsDir, info.LatestAsset.Name);
 
-        using (var response = await _http.GetAsync(info.LatestAsset.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
+        var candidateUrls = PluginRegistryClient.BuildDownloadCandidateUrls(info.LatestAsset.DownloadUrl, mirrorPrefix);
+        Exception? lastErr = null;
+        bool downloaded = false;
+
+        foreach (var url in candidateUrls)
         {
-            response.EnsureSuccessStatusCode();
-            var totalBytes = response.Content.Headers.ContentLength ?? info.LatestAsset.SizeBytes;
-
-            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using var fileStream = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
-
-            var buffer = new byte[81920];
-            long totalRead = 0;
-            int read;
-            while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            try
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                totalRead += read;
-                if (totalBytes > 0)
+                using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                var totalBytes = response.Content.Headers.ContentLength ?? info.LatestAsset.SizeBytes;
+
+                await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                await using var fileStream = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
+
+                var buffer = new byte[81920];
+                long totalRead = 0;
+                int read;
+                while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
                 {
-                    progress?.Report(Math.Clamp((double)totalRead / totalBytes * 85.0, 0, 85));
+                    await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                    totalRead += read;
+                    if (totalBytes > 0)
+                    {
+                        progress?.Report(Math.Clamp((double)totalRead / totalBytes * 85.0, 0, 85));
+                    }
                 }
+
+                downloaded = true;
+                break;
             }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                lastErr = ex;
+            }
+        }
+
+        if (!downloaded)
+        {
+            throw new InvalidOperationException(
+                $"下载 {info.DisplayName} 失败，请检查网络、配置 GitHub 镜像或使用「导入离线包」：{lastErr?.Message}",
+                lastErr);
         }
 
         progress?.Report(90);
@@ -269,10 +326,10 @@ public sealed class ComponentManager
         return targetDir;
     }
 
-    private async Task FetchLatestReleaseAsync(ComponentInfo info, CancellationToken ct)
+    private async Task FetchLatestReleaseAsync(ComponentInfo info, string? mirrorPrefix, CancellationToken ct)
     {
-        // Try /releases/latest first; for nightly or pre-release-only repos (e.g. OptiScaler-nightly / OptiPatcher),
-        // fallback to /releases?per_page=5 and select the newest release containing a usable asset.
+        // Try GitHub REST API first (/releases/latest then /releases?per_page=5).
+        // If rate-limited (HTTP 403) or unavailable, fall back to zero-rate-limit Atom + expanded_assets discovery.
         JsonElement? selectedRelease = null;
 
         try
@@ -284,6 +341,7 @@ public sealed class ComponentManager
                 selectedRelease = doc.RootElement.Clone();
             }
         }
+        catch (OperationCanceledException) { throw; }
         catch
         {
             // Fallback below
@@ -291,28 +349,204 @@ public sealed class ComponentManager
 
         if (selectedRelease is null)
         {
-            using var listResp = await _http.GetAsync($"https://api.github.com/repos/{info.RepoSlug}/releases?per_page=5", ct).ConfigureAwait(false);
-            listResp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
-            if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
+            try
             {
-                selectedRelease = doc.RootElement[0].Clone();
+                using var listResp = await _http.GetAsync($"https://api.github.com/repos/{info.RepoSlug}/releases?per_page=5", ct).ConfigureAwait(false);
+                if (listResp.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
+                    {
+                        selectedRelease = doc.RootElement[0].Clone();
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                // Fallback below
             }
         }
 
-        if (selectedRelease is not JsonElement release)
+        if (selectedRelease is JsonElement release)
+        {
+            info.LatestVersion = release.TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
+            info.ReleaseUrl = release.TryGetProperty("html_url", out var htmlUrl) ? htmlUrl.GetString() : null;
+            info.ReleaseNotes = release.TryGetProperty("body", out var body) ? Truncate(body.GetString(), 600) : null;
+
+            if (release.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+            {
+                info.LatestAsset = SelectBestAsset(info.Slot, assets);
+            }
+
+            if (info.LatestAsset is not null)
+            {
+                return;
+            }
+        }
+
+        await FetchLatestReleaseZeroRateLimitAsync(info, mirrorPrefix, ct).ConfigureAwait(false);
+    }
+
+    private async Task FetchLatestReleaseZeroRateLimitAsync(ComponentInfo info, string? mirrorPrefix, CancellationToken ct)
+    {
+        string? tag = info.LatestVersion;
+
+        // 1. Atom feed (zero API rate limit)
+        var atomUrl = $"https://github.com/{info.RepoSlug}/releases.atom";
+        foreach (var candidate in PluginRegistryClient.BuildDownloadCandidateUrls(atomUrl, mirrorPrefix))
+        {
+            try
+            {
+                var xml = await _http.GetStringAsync(candidate, ct).ConfigureAwait(false);
+                var parsedTag = ParseAtomLatestTag(xml);
+                if (!string.IsNullOrWhiteSpace(parsedTag))
+                {
+                    tag = parsedTag;
+                    break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                // Try next candidate
+            }
+        }
+
+        // 2. Fallback: /releases/latest HTTP redirect
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            var latestWebUrl = $"https://github.com/{info.RepoSlug}/releases/latest";
+            foreach (var candidate in PluginRegistryClient.BuildDownloadCandidateUrls(latestWebUrl, mirrorPrefix))
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, candidate);
+                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                    var finalUrl = resp.RequestMessage?.RequestUri?.AbsoluteUri ?? string.Empty;
+                    var m = TagInUrlRegex.Match(finalUrl);
+                    if (resp.IsSuccessStatusCode && m.Success)
+                    {
+                        tag = Uri.UnescapeDataString(m.Groups["tag"].Value);
+                        break;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // Try next candidate
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(tag))
         {
             return;
         }
 
-        info.LatestVersion = release.TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
-        info.ReleaseUrl = release.TryGetProperty("html_url", out var htmlUrl) ? htmlUrl.GetString() : null;
-        info.ReleaseNotes = release.TryGetProperty("body", out var body) ? Truncate(body.GetString(), 600) : null;
+        info.LatestVersion = tag;
+        info.ReleaseUrl = $"https://github.com/{info.RepoSlug}/releases/tag/{Uri.EscapeDataString(tag)}";
 
-        if (release.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+        // 3. Discover assets via GitHub expanded_assets fragment (zero API rate limit)
+        var expandedUrl = $"https://github.com/{info.RepoSlug}/releases/expanded_assets/{Uri.EscapeDataString(tag)}";
+        foreach (var candidate in PluginRegistryClient.BuildDownloadCandidateUrls(expandedUrl, mirrorPrefix))
         {
-            info.LatestAsset = SelectBestAsset(info.Slot, assets);
+            try
+            {
+                var html = await _http.GetStringAsync(candidate, ct).ConfigureAwait(false);
+                var assets = ParseExpandedAssetsHtml(html, info.RepoSlug);
+                var best = SelectBestAssetList(info.Slot, assets);
+                if (best is not null)
+                {
+                    info.LatestAsset = best;
+                    return;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                // Try next candidate
+            }
         }
+
+        // 4. Deterministic fallback for MfgUnlocker naming convention: MFGUnlocker-{tag}.zip
+        if (info.Slot == ComponentSlot.MfgUnlocker)
+        {
+            var fileName = $"MFGUnlocker-{tag}.zip";
+            info.LatestAsset = new ComponentReleaseAsset
+            {
+                Name = fileName,
+                DownloadUrl = $"https://github.com/{info.RepoSlug}/releases/download/{Uri.EscapeDataString(tag)}/{fileName}",
+                SizeBytes = 0
+            };
+        }
+    }
+
+    public static string? ParseAtomLatestTag(string atomXml)
+    {
+        if (string.IsNullOrWhiteSpace(atomXml))
+        {
+            return null;
+        }
+
+        var doc = XDocument.Parse(atomXml);
+        XNamespace ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+        foreach (var entry in doc.Descendants(ns + "entry"))
+        {
+            var linkHref = entry.Elements(ns + "link")
+                .Select(l => (string?)l.Attribute("href") ?? string.Empty)
+                .FirstOrDefault(h => h.Contains("/releases/tag/", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+
+            var m = TagInUrlRegex.Match(linkHref);
+            if (m.Success)
+            {
+                return Uri.UnescapeDataString(m.Groups["tag"].Value);
+            }
+        }
+
+        return null;
+    }
+
+    public static List<ComponentReleaseAsset> ParseExpandedAssetsHtml(string html, string repoSlug)
+    {
+        var list = new List<ComponentReleaseAsset>();
+        if (string.IsNullOrWhiteSpace(html) || string.IsNullOrWhiteSpace(repoSlug))
+        {
+            return list;
+        }
+
+        var expectedPrefix = $"/{repoSlug.Trim('/')}/releases/download/";
+        foreach (Match match in AssetHrefRegex.Matches(html))
+        {
+            var href = match.Groups["href"].Value;
+            if (!href.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var fileName = Uri.UnescapeDataString(Path.GetFileName(href.Split('?')[0]));
+            if (string.IsNullOrWhiteSpace(fileName) ||
+                fileName.Contains("source", StringComparison.OrdinalIgnoreCase) ||
+                fileName.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase) ||
+                fileName.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase) ||
+                fileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var url = $"https://github.com{href}";
+            if (list.All(a => !string.Equals(a.DownloadUrl, url, StringComparison.OrdinalIgnoreCase)))
+            {
+                list.Add(new ComponentReleaseAsset
+                {
+                    Name = fileName,
+                    DownloadUrl = url,
+                    SizeBytes = 0
+                });
+            }
+        }
+
+        return list;
     }
 
     private static ComponentReleaseAsset? SelectBestAsset(ComponentSlot slot, JsonElement assets)
@@ -330,7 +564,8 @@ public sealed class ComponentManager
             }
             if (name.Contains("source", StringComparison.OrdinalIgnoreCase) ||
                 name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase) ||
-                name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase))
+                name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase) ||
+                name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -338,6 +573,11 @@ public sealed class ComponentManager
             list.Add(new ComponentReleaseAsset { Name = name, DownloadUrl = url, SizeBytes = size });
         }
 
+        return SelectBestAssetList(slot, list);
+    }
+
+    private static ComponentReleaseAsset? SelectBestAssetList(ComponentSlot slot, List<ComponentReleaseAsset> list)
+    {
         if (list.Count == 0)
         {
             return null;
@@ -348,6 +588,15 @@ public sealed class ComponentManager
             return list.FirstOrDefault(a => a.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase))
                 ?? list.FirstOrDefault(a => a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 ?? list.FirstOrDefault(a => a.Name.EndsWith(".asi", StringComparison.OrdinalIgnoreCase))
+                ?? list[0];
+        }
+
+        if (slot == ComponentSlot.MfgUnlocker)
+        {
+            return list.FirstOrDefault(a => a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && !a.Name.Contains("debug", StringComparison.OrdinalIgnoreCase))
+                ?? list.FirstOrDefault(a => a.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) && !a.Name.Contains("debug", StringComparison.OrdinalIgnoreCase))
+                ?? list.FirstOrDefault(a => a.Name.EndsWith(".asi", StringComparison.OrdinalIgnoreCase))
+                ?? list.FirstOrDefault(a => a.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                 ?? list[0];
         }
 
@@ -504,6 +753,13 @@ public sealed class ComponentManager
             DisplayName = "Fakenvapi (Anti-Lag 2 桥接)",
             RepoSlug = "optiscaler/fakenvapi",
             Description = "在 AMD 8060S/8050S 等非 N 卡上将 NVIDIA Reflex 转换为 AMD Anti-Lag 2，并辅助开启 DLSS-G 桥接。"
+        },
+        [ComponentSlot.MfgUnlocker] = new ComponentInfo
+        {
+            Slot = ComponentSlot.MfgUnlocker,
+            DisplayName = "MFG Unlocker (XeMFG 多帧解锁 · by dashdogy)",
+            RepoSlug = "dashdogy/MFG-Unlocker",
+            Description = "MIT 开源插件（github.com/dashdogy/MFG-Unlocker），解除 AMD/NVIDIA 上 Intel XeFG 2X 限制以解锁 3X/4X 多帧生成与 DMFG（单机游戏专用，按需自动部署为 .asi 插件）。"
         }
     };
 

@@ -119,7 +119,7 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("auto", doc.Get("FrameGen", "Enabled"));
         Assert.Equal("dlssg", doc.Get("FrameGen", "FGInput"));
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
-        Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
+        Assert.Equal("auto", doc.Get("Spoofing", "DxgiVRAM"));
         Assert.Equal("true", doc.Get("Log", "LogToFile"));
         Assert.Equal("2", doc.Get("Log", "LogLevel"));
         Assert.Equal("true", doc.Get("V-Sync", "OverrideVsync"));
@@ -137,7 +137,17 @@ public sealed class IniDocumentAndPresetTests
         Assert.Equal("xefg", doc.Get("FrameGen", "FGOutput"));
         Assert.Equal("true", doc.Get("OptiFG", "HUDFix"));
         Assert.Equal("84", doc.Get("Framerate", "FramerateLimit"));
-        Assert.Equal("10", doc.Get("Spoofing", "DxgiVRAM"));
+        Assert.Equal("auto", doc.Get("Spoofing", "DxgiVRAM"));
+
+        var explicitVram = lite.Config.Clone();
+        explicitVram.DxgiVramGb = 8;
+        PresetCatalog.ApplyToIni(doc, explicitVram, gameHasNativeDlssG: false);
+        Assert.Equal("8", doc.Get("Spoofing", "DxgiVRAM"));
+
+        explicitVram.DxgiVramGb = 0;
+        PresetCatalog.ApplyToIni(doc, explicitVram, gameHasNativeDlssG: false);
+        Assert.Equal("auto", doc.Get("Spoofing", "DxgiVRAM"));
+        Assert.Equal(0, PresetCatalog.ReadConfigFromIni(doc).DxgiVramGb);
 
         // Switching to OptiFG on a game with native DLSS-G must follow live toggle (Enabled=auto) and NOT force HUDFix=true (prevents DX12 hook crashes e.g. Nioh 3)
         var optiDlssg = lite.Config.Clone();

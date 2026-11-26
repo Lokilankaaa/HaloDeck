@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -51,6 +52,9 @@ public sealed class WebUiBridge : IDisposable
     private readonly PluginProcessHost _pluginHost = new();
     private readonly PluginRegistryClient _pluginRegistry = new();
     private readonly SemaphoreSlim _pluginInstallGate = new(1, 1);
+    private readonly AppUpdateService _appUpdater = new();
+    private readonly SemaphoreSlim _appUpdateGate = new(1, 1);
+    private AppUpdateInfo? _latestUpdateInfo;
     private readonly PowerPeripheralOptimizer _powerOptimizer;
     private string? _lastPluginRunningGameId;
     private GameEntry? _lastPluginRunningGame;
@@ -66,6 +70,8 @@ public sealed class WebUiBridge : IDisposable
     private string? _selectedInspectGameId;
 
     private bool? _lastObservedAcOnline;
+    private bool? _pendingAcOnline;
+    private int _pendingAcConfirmCount;
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
     private bool? _preProfileDynamicRefreshRate;
@@ -80,10 +86,14 @@ public sealed class WebUiBridge : IDisposable
     private readonly SemaphoreSlim _tdpFastGate = new(1, 1);
     private readonly SemaphoreSlim _brightFastGate = new(1, 1);
     private readonly SemaphoreSlim _volFastGate = new(1, 1);
+    private readonly TdpLockReconciler _tdpReconciler = new();
+    private bool _wasHardwareServiceReady;
+    private DateTime _lastPollTickUtc = DateTime.MinValue;
     private readonly object _saveLock = new();
     private CancellationTokenSource? _saveCts;
 
     public event Action? RequestHideQam;
+    public event Func<Task>? RequestHideQamAsync;
     public event Action? RequestToggleQam;
     public event Action? RequestShowConsole;
     public event Action? RequestToggleFullscreen;
@@ -149,6 +159,11 @@ public sealed class WebUiBridge : IDisposable
 
         _pluginHost.PluginBackendEvent += (pluginId, eventName, data) =>
             BroadcastEvent("pluginEvent", new { pluginId, eventName, data });
+
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            SystemEvents.PowerModeChanged += OnSystemPowerModeChanged;
+        }
     }
 
     public AppSettings Settings => _settings;
@@ -194,11 +209,37 @@ public sealed class WebUiBridge : IDisposable
         _xinputIsolator.RestoreAll();
     }
 
+    public void NotifySystemPowerResume(string source)
+    {
+        if (IsVerifyOrCaptureCliRun)
+        {
+            return;
+        }
+
+        _tdpReconciler.NotifyPowerResume(DateTime.UtcNow, source);
+        _systemControl.InvalidatePowerSchemeCache();
+        _lastFanCurvePushUtc = DateTime.MinValue;
+    }
+
+    private void OnSystemPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            NotifySystemPowerResume("SystemEvents.Resume");
+        }
+    }
+
     public void Dispose()
     {
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            SystemEvents.PowerModeChanged -= OnSystemPowerModeChanged;
+        }
         _pluginHost.Dispose();
         _pluginRegistry.Dispose();
         _pluginInstallGate.Dispose();
+        _appUpdater.Dispose();
+        _appUpdateGate.Dispose();
         _rtssClient.Dispose();
         _xinputIsolator.Dispose();
         FlushPendingSettingsSave();
@@ -237,6 +278,45 @@ public sealed class WebUiBridge : IDisposable
         }
         _ = RefreshComponentsCatalogSilentAsync();
         _ = SyncBackButtonHardwareSilentAsync();
+        _ = CheckAppUpdateSilentOnStartupAsync();
+    }
+
+    private static string CurrentAppVersion
+    {
+        get
+        {
+            string? info = typeof(WebUiBridge).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(info))
+            {
+                int plusIdx = info.IndexOf('+');
+                if (plusIdx > 0) info = info[..plusIdx];
+                return info.Trim();
+            }
+            return typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2";
+        }
+    }
+
+    private async Task CheckAppUpdateSilentOnStartupAsync()
+    {
+        if (!_settings.AutoCheckUpdatesOnStartup || IsVerifyOrCaptureCliRun) return;
+        try
+        {
+            await Task.Delay(5000).ConfigureAwait(false);
+            var info = await _appUpdater.CheckForUpdateAsync(
+                CurrentAppVersion,
+                includePrerelease: false,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
+            _latestUpdateInfo = info;
+            if (info.HasUpdate)
+            {
+                BroadcastStateSnapshot();
+            }
+        }
+        catch
+        {
+            // Quiet background check; never disturb user on offline boot
+        }
     }
 
     private async Task SyncBackButtonHardwareSilentAsync()
@@ -364,6 +444,13 @@ public sealed class WebUiBridge : IDisposable
 
     public void PollRunningAndAutoInjectTick(bool runAutoInjectPass, bool uiVisible = true, bool osdVisible = false)
     {
+        DateTime nowUtc = DateTime.UtcNow;
+        if (!IsVerifyOrCaptureCliRun && TdpLockPolicy.IsSleepTimeGap(_lastPollTickUtc, nowUtc))
+        {
+            NotifySystemPowerResume("PollTimeGap");
+        }
+        _lastPollTickUtc = nowUtc;
+
         var updatedRunning = _runningTracker.Poll(_cachedGames, allowBackgroundScan: uiVisible);
         bool changed = !Equals(updatedRunning?.Id, _runningGame?.Id) ||
                        updatedRunning?.IsCurrentlyRunning != _runningGame?.IsCurrentlyRunning ||
@@ -420,6 +507,12 @@ public sealed class WebUiBridge : IDisposable
 
         // Handle per-game performance profile & AC/Battery power linkage transitions
         ApplyDynamicPowerAutomation(sys, updatedRunning);
+
+        // Ensure hardware SMU TDP lock stays active on startup, after sleep/hibernate resume, and on SMU drift
+        if (!IsVerifyOrCaptureCliRun)
+        {
+            ReconcileHardwareTdpLock(sys, updatedRunning, nowUtc);
+        }
 
         // Notify enabled plugins subscribed to game lifecycle events & reap idle plugin backends
         DispatchPluginGameLifecycleTransitions(updatedRunning);
@@ -520,11 +613,20 @@ public sealed class WebUiBridge : IDisposable
                     : _settings.CurrentTdpWatts;
                 if (sys.HardwareService.ServiceRunning)
                 {
-                    int slowFallback = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : fallbackWatts;
-                    int fastFallback = _settings.UnlockThreeStagePower
-                        ? _settings.FastPptWatts
-                        : (_settings.FlatPowerLock ? fallbackWatts : Math.Min(140, fallbackWatts + 2));
-                    _systemControl.HardwareClient.SetTdp(fallbackWatts, slowFallback, fastFallback);
+                    var fallbackTarget = TdpLockPolicy.ComputeStageLimits(
+                        fallbackWatts,
+                        _settings.FlatPowerLock,
+                        _settings.UnlockThreeStagePower,
+                        _settings.SlowPptWatts,
+                        _settings.FastPptWatts);
+                    var (okFallback, _, _) = _systemControl.HardwareClient.SetTdp(
+                        fallbackTarget.StapmWatts,
+                        fallbackTarget.SlowWatts,
+                        fallbackTarget.FastWatts);
+                    if (okFallback)
+                    {
+                        _tdpReconciler.RecordApplied(DateTime.UtcNow, fallbackTarget);
+                    }
                 }
             }
             else if (runningId is not null &&
@@ -544,8 +646,20 @@ public sealed class WebUiBridge : IDisposable
                 }
                 if (sys.HardwareService.ServiceRunning && prof.TdpWatts is >= 8 and <= 120)
                 {
-                    int fastProf = _settings.FlatPowerLock ? prof.TdpWatts : Math.Min(140, prof.TdpWatts + 2);
-                    _systemControl.HardwareClient.SetTdp(prof.TdpWatts, prof.TdpWatts, fastProf);
+                    var profTarget = TdpLockPolicy.ComputeStageLimits(
+                        prof.TdpWatts,
+                        _settings.FlatPowerLock,
+                        unlockThreeStagePower: false,
+                        prof.TdpWatts,
+                        prof.TdpWatts);
+                    var (okProf, _, _) = _systemControl.HardwareClient.SetTdp(
+                        profTarget.StapmWatts,
+                        profTarget.SlowWatts,
+                        profTarget.FastWatts);
+                    if (okProf)
+                    {
+                        _tdpReconciler.RecordApplied(DateTime.UtcNow, profTarget);
+                    }
                 }
                 string hzTag = prof.RefreshRateHz == -1 ? " · 动态Hz" : (prof.RefreshRateHz > 0 ? $" · {prof.RefreshRateHz}Hz" : "");
                 BroadcastEvent("toast", new
@@ -560,34 +674,143 @@ public sealed class WebUiBridge : IDisposable
             }
         }
 
-        // 2. AC/Battery Power Linkage when not overridden by an active per-game TDP profile
-        if (_lastObservedAcOnline != sys.IsAcOnline)
+        // 2. AC/Battery Power Linkage when not overridden by an active per-game TDP profile.
+        // Require 2 consecutive polls (~1.6s) on an AC/Battery flip so transient USB-C PD renegotiation
+        // blips during Modern Standby wake never spuriously overwrite the user's manual TDP.
+        if (_lastObservedAcOnline is null)
         {
-            bool isInitial = _lastObservedAcOnline is null;
             _lastObservedAcOnline = sys.IsAcOnline;
-
-            bool hasActiveGameTdp = _appliedProfileGameId is not null &&
-                                    _settings.PerGameProfiles.TryGetValue(_appliedProfileGameId, out var gp) &&
-                                    gp.Enabled;
-
-            if (!isInitial && _settings.PowerLinkageEnabled && !hasActiveGameTdp)
+            _pendingAcOnline = null;
+            _pendingAcConfirmCount = 0;
+        }
+        else if (_lastObservedAcOnline == sys.IsAcOnline)
+        {
+            _pendingAcOnline = null;
+            _pendingAcConfirmCount = 0;
+        }
+        else
+        {
+            if (_pendingAcOnline == sys.IsAcOnline)
             {
-                int targetWatts = sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts;
-                _settings.CurrentTdpWatts = targetWatts;
-                _settingsStore.Save(_settings);
-                if (sys.HardwareService.ServiceRunning)
-                {
-                    _systemControl.HardwareClient.SetTdp(targetWatts);
-                }
-                BroadcastEvent("toast", new
-                {
-                    kind = "info",
-                    message = sys.IsAcOnline
-                        ? $"已切换至外接电源模式 · TDP 自动调至 {targetWatts}W"
-                        : $"已切换至电池续航模式 · TDP 自动调至 {targetWatts}W"
-                });
-                BroadcastStateSnapshot();
+                _pendingAcConfirmCount++;
             }
+            else
+            {
+                _pendingAcOnline = sys.IsAcOnline;
+                _pendingAcConfirmCount = 1;
+            }
+
+            if (_pendingAcConfirmCount >= 2)
+            {
+                _lastObservedAcOnline = sys.IsAcOnline;
+                _pendingAcOnline = null;
+                _pendingAcConfirmCount = 0;
+
+                bool hasActiveGameTdp = _appliedProfileGameId is not null &&
+                                        _settings.PerGameProfiles.TryGetValue(_appliedProfileGameId, out var gp) &&
+                                        gp.Enabled;
+
+                if (_settings.PowerLinkageEnabled && !hasActiveGameTdp)
+                {
+                    int targetWatts = sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts;
+                    _settings.CurrentTdpWatts = targetWatts;
+                    _settingsStore.Save(_settings);
+                    if (sys.HardwareService.ServiceRunning)
+                    {
+                        var linkTarget = TdpLockPolicy.ComputeStageLimits(
+                            targetWatts,
+                            _settings.FlatPowerLock,
+                            _settings.UnlockThreeStagePower,
+                            _settings.SlowPptWatts,
+                            _settings.FastPptWatts);
+                        var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
+                            linkTarget.StapmWatts,
+                            linkTarget.SlowWatts,
+                            linkTarget.FastWatts);
+                        if (okLink)
+                        {
+                            _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                        }
+                    }
+                    BroadcastEvent("toast", new
+                    {
+                        kind = "info",
+                        message = sys.IsAcOnline
+                            ? $"已切换至外接电源模式 · TDP 自动调至 {targetWatts}W"
+                            : $"已切换至电池续航模式 · TDP 自动调至 {targetWatts}W"
+                    });
+                    BroadcastStateSnapshot();
+                }
+            }
+        }
+    }
+
+    private void ReconcileHardwareTdpLock(SystemControlState sys, GameEntry? running, DateTime nowUtc)
+    {
+        if (!(sys.HardwareService.ServiceRunning && sys.HardwareService.SmuReady))
+        {
+            _wasHardwareServiceReady = false;
+            return;
+        }
+
+        if (!_wasHardwareServiceReady)
+        {
+            _wasHardwareServiceReady = true;
+            _tdpReconciler.RequestInitialSync();
+        }
+
+        var target = TdpLockPolicy.ResolveEffectiveTarget(_settings, running, sys.IsAcOnline);
+        bool daemonUnlocked = sys.HardwareService.DaemonVersion >= 5 && !sys.HardwareService.TdpLockActive;
+        var decision = _tdpReconciler.Evaluate(
+            nowUtc,
+            target,
+            sys.HardwareService.HwStapmLimitWatts,
+            sys.HardwareService.HwSlowLimitWatts,
+            sys.HardwareService.HwFastLimitWatts,
+            forceSyncRequired: daemonUnlocked);
+        if (!decision.ShouldApply)
+        {
+            return;
+        }
+
+        if (!_tdpFastGate.Wait(0))
+        {
+            return;
+        }
+
+        try
+        {
+            target = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+
+            var (ok, _, nextHw) = _systemControl.HardwareClient.SetTdp(
+                target.StapmWatts,
+                target.SlowWatts,
+                target.FastWatts);
+            if (!ok)
+            {
+                return;
+            }
+
+            _tdpReconciler.RecordApplied(
+                nowUtc,
+                target,
+                decision.Reason,
+                sys.HardwareService.HwStapmLimitWatts,
+                sys.HardwareService.HwSlowLimitWatts,
+                sys.HardwareService.HwFastLimitWatts);
+
+            sys.HardwareService.AppliedTdpWatts = nextHw.AppliedTdpWatts;
+            sys.HardwareService.AppliedSlowWatts = nextHw.AppliedSlowWatts;
+            sys.HardwareService.AppliedFastWatts = nextHw.AppliedFastWatts;
+            sys.HardwareService.TdpLockActive = nextHw.TdpLockActive;
+            sys.HardwareService.HwStapmLimitWatts = nextHw.HwStapmLimitWatts ?? nextHw.AppliedTdpWatts;
+            sys.HardwareService.HwSlowLimitWatts = nextHw.HwSlowLimitWatts ?? nextHw.AppliedSlowWatts;
+            sys.HardwareService.HwFastLimitWatts = nextHw.HwFastLimitWatts ?? nextHw.AppliedFastWatts;
+            OverlayHudUpdated?.Invoke();
+        }
+        finally
+        {
+            _tdpFastGate.Release();
         }
     }
 
@@ -635,6 +858,62 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
+    public async Task<bool> SendFgToggleKeyToGameAsync()
+    {
+        ushort vk = 0x23; // VK_END (OptiScaler default FGShortcutKey)
+        var running = _runningGame;
+        if (running is not null && !string.IsNullOrWhiteSpace(running.TargetRenderDirectory))
+        {
+            var iniPath = Path.Combine(running.TargetRenderDirectory, "OptiScaler.ini");
+            if (File.Exists(iniPath))
+            {
+                var ini = IniDocument.Load(iniPath);
+                var shortcut = ini.Get("Menu", "FGShortcutKey")?.Trim();
+                if (!string.IsNullOrWhiteSpace(shortcut) &&
+                    !string.Equals(shortcut, "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (shortcut == "-1")
+                    {
+                        BroadcastEvent("toast", new { kind = "warn", message = "当前游戏 OptiScaler.ini 已将 FGShortcutKey 设为 -1（禁用），请改为 auto 或 0x23" });
+                        return false;
+                    }
+
+                    if (shortcut.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ushort.TryParse(shortcut[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var parsedHex) && parsedHex > 0)
+                        {
+                            vk = parsedHex;
+                        }
+                    }
+                    else if (ushort.TryParse(shortcut, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDec) && parsedDec > 0)
+                    {
+                        vk = parsedDec;
+                    }
+                }
+            }
+        }
+
+        bool selfElevated = Win32Interop.IsCurrentProcessElevated();
+        nint fgHwnd = Win32Interop.GetForegroundWindow();
+        bool fgBlockedByUipi = !selfElevated && Win32Interop.IsWindowProcessElevated(fgHwnd);
+
+        await Win32Interop.SendKeyHoldAsync(vk, _settings.InsertHoldDurationMs).ConfigureAwait(false);
+        if (fgBlockedByUipi)
+        {
+            BroadcastEvent("toast", new
+            {
+                kind = "warn",
+                message = $"前台游戏以管理员权限运行，Windows 安全隔离会拦截插帧快捷键 (0x{vk:X2})；请在「手柄与设置」开启「以管理员权限运行」后重试"
+            });
+        }
+        else
+        {
+            BroadcastEvent("toast", new { kind = "info", message = $"已实时切换游戏内帧生成状态 (0x{vk:X2})" });
+        }
+
+        return true;
+    }
+
     private async Task HandleWebMessageAsync(WebView2 sender, string json)
     {
         string? requestId = null;
@@ -665,7 +944,7 @@ public sealed class WebUiBridge : IDisposable
                 "addCustomGamePath" => AddCustomGamePath(payload),
                 "removeCustomGame" => RemoveCustomGame(payload),
                 "readGameConfigAndLog" => ReadGameConfigAndLog(payload),
-                "refreshComponents" => await _componentManager.RefreshCatalogAsync(),
+                "refreshComponents" => await _componentManager.RefreshCatalogAsync(_settings.PluginDownloadMirrorPrefix),
                 "installComponent" => await InstallComponentAsync(payload),
                 "importComponentFile" => await ImportComponentFileAsync(payload),
                 "importCustomExtension" => await ImportCustomExtensionAsync(),
@@ -676,7 +955,9 @@ public sealed class WebUiBridge : IDisposable
                 "cancelRecordGamepadCombo" => CancelRecordGamepadCombo(),
                 "beginRecordBackButton" => InvokeBeginRecordBackButton(),
                 "cancelRecordBackButton" => InvokeCancelRecordBackButton(),
+                "runMenuKeyDiagnostic" => await RunMenuKeyDiagnosticAsync(payload),
                 "sendInsertKey" => await TriggerInsertFromUiAsync(),
+                "toggleLiveFg" => await TriggerFgToggleFromUiAsync(),
                 "hideQam" => InvokeUiAction(() => RequestHideQam?.Invoke()),
                 "toggleQam" => InvokeUiAction(() => RequestToggleQam?.Invoke()),
                 "showConsole" => ShowConsoleAndNavigate(payload),
@@ -717,14 +998,22 @@ public sealed class WebUiBridge : IDisposable
                 "relaunchAsAdmin" => RelaunchAsAdmin(payload),
                 "listPlugins" => ListPluginsWithStatus(),
                 "installPluginZip" => await InstallPluginZipAsync(payload),
+                "installPluginFolder" => await InstallPluginFolderAsync(payload),
                 "setPluginEnabled" => SetPluginEnabled(payload),
                 "uninstallPlugin" => UninstallPlugin(payload),
                 "openPluginsFolder" => OpenPluginsFolder(),
+                "openPluginDirectory" => OpenPluginDirectory(payload),
+                "restartPluginBackend" => RestartPluginBackend(payload),
                 "getPluginLogs" => GetPluginLogs(payload),
                 "fetchPluginStore" => await FetchPluginStoreAsync(),
                 "installPluginFromUrl" => await InstallPluginFromUrlAsync(payload),
+                "updateAllPlugins" => await UpdateAllPluginsAsync(),
                 "addPluginStoreUrl" => AddPluginStoreUrl(payload),
                 "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
+                "updatePluginPreferences" => UpdatePluginPreferences(payload),
+                "openExternalUrl" => OpenExternalUrl(payload),
+                "checkAppUpdate" => await CheckAppUpdateAsync(payload),
+                "downloadAndApplyAppUpdate" => await DownloadAndApplyAppUpdateAsync(payload),
                 "pluginHostApi" => await DispatchPluginHostApiAsync(payload),
                 _ => throw new InvalidOperationException($"未知命令: {method}")
             };
@@ -761,6 +1050,8 @@ public sealed class WebUiBridge : IDisposable
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             isElevated = Win32Interop.IsCurrentProcessElevated(),
+            appVersion = CurrentAppVersion,
+            latestUpdate = _latestUpdateInfo,
             memoryHealth = Win32Interop.GetSystemMemoryHealth(),
             vrrWindowedEnabled = IsWindowedVrrEnabled(),
             systemControl = sysState,
@@ -1084,7 +1375,7 @@ public sealed class WebUiBridge : IDisposable
             BroadcastEvent("componentProgress", new { slot = slot.ToString(), percent = Math.Round(pct, 1) });
         });
 
-        var info = await _componentManager.InstallOrUpdateAsync(slot, progress).ConfigureAwait(false);
+        var info = await _componentManager.InstallOrUpdateAsync(slot, progress, _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
         BroadcastStateSnapshot();
         return info;
     }
@@ -1341,12 +1632,51 @@ public sealed class WebUiBridge : IDisposable
         }
     }
 
+    private async Task HideQamAndWaitForGameFocusAsync()
+    {
+        if (RequestHideQamAsync is { } hideAsync)
+        {
+            await _dispatcher.InvokeAsync(hideAsync).Task.Unwrap().ConfigureAwait(false);
+        }
+        else
+        {
+            await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
+            await Task.Delay(120).ConfigureAwait(false);
+        }
+
+        // Wait until foreground window actually returns from HaloDeck to the game window,
+        // then let Win32 focus/key-release messages settle so OptiInput doesn't double-toggle on poll + WM_KEYUP.
+        uint selfPid = (uint)Environment.ProcessId;
+        var deadline = DateTime.UtcNow.AddMilliseconds(350);
+        while (DateTime.UtcNow < deadline)
+        {
+            nint fg = Win32Interop.GetForegroundWindow();
+            if (fg != 0)
+            {
+                Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
+                if (fgPid != 0 && fgPid != selfPid)
+                {
+                    break;
+                }
+            }
+            await Task.Delay(15).ConfigureAwait(false);
+        }
+
+        await Task.Delay(80).ConfigureAwait(false);
+    }
+
     private async Task<object> TriggerInsertFromUiAsync()
     {
-        await _dispatcher.InvokeAsync(() => RequestHideQam?.Invoke());
-        await Task.Delay(120).ConfigureAwait(false);
+        await HideQamAndWaitForGameFocusAsync().ConfigureAwait(false);
         await SendInsertKeyToGameAsync().ConfigureAwait(false);
         return new { sent = true };
+    }
+
+    private async Task<object> TriggerFgToggleFromUiAsync()
+    {
+        await HideQamAndWaitForGameFocusAsync().ConfigureAwait(false);
+        var sent = await SendFgToggleKeyToGameAsync().ConfigureAwait(false);
+        return new { sent };
     }
 
     private async Task<object> RunBackgroundAutoInjectAsync()
@@ -1367,7 +1697,7 @@ public sealed class WebUiBridge : IDisposable
     {
         try
         {
-            await _componentManager.RefreshCatalogAsync().ConfigureAwait(false);
+            await _componentManager.RefreshCatalogAsync(_settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
             BroadcastStateSnapshot();
         }
         catch
@@ -1880,15 +2210,21 @@ public sealed class WebUiBridge : IDisposable
 
             if (hw.ServiceRunning)
             {
-                int? slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : watts;
-                int? fastArg = _settings.UnlockThreeStagePower
-                    ? _settings.FastPptWatts
-                    : (_settings.FlatPowerLock ? watts : Math.Min(140, watts + 2));
-                var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(watts, slowArg, fastArg)).ConfigureAwait(false);
+                var stageTarget = TdpLockPolicy.ComputeStageLimits(
+                    watts,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (ok, err, nextHw) = await Task.Run(() => _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts)).ConfigureAwait(false);
                 if (!ok)
                 {
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU TDP 失败" : err);
                 }
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
                 hardwareApplied = true;
                 appliedW = nextHw.AppliedTdpWatts;
                 appliedSlow = nextHw.AppliedSlowWatts;
@@ -1899,12 +2235,13 @@ public sealed class WebUiBridge : IDisposable
                     snap.HardwareService.AppliedTdpWatts = nextHw.AppliedTdpWatts;
                     snap.HardwareService.AppliedSlowWatts = nextHw.AppliedSlowWatts;
                     snap.HardwareService.AppliedFastWatts = nextHw.AppliedFastWatts;
+                    snap.HardwareService.TdpLockActive = nextHw.TdpLockActive;
                     snap.HardwareService.HwStapmLimitWatts = nextHw.HwStapmLimitWatts ?? nextHw.AppliedTdpWatts;
                     snap.HardwareService.HwSlowLimitWatts = nextHw.HwSlowLimitWatts ?? nextHw.AppliedSlowWatts;
                     snap.HardwareService.HwFastLimitWatts = nextHw.HwFastLimitWatts ?? nextHw.AppliedFastWatts;
                 }
 
-                bool v1Clamped = nextHw.DaemonVersion < PawnIoHardwareDaemon.CurrentDaemonVersion && (watts < 12 || watts > 85);
+                bool v1Clamped = nextHw.DaemonVersion < 2 && (watts < 12 || watts > 85);
                 note = v1Clamped
                     ? $"旧版硬件服务已钳位应用 {nextHw.AppliedTdpWatts}W（点击「升级重启硬件服务」解锁 8–120W 与三段功耗读回）"
                     : (_settings.UnlockThreeStagePower
@@ -2001,15 +2338,21 @@ public sealed class WebUiBridge : IDisposable
             var hw = _systemControl.HardwareClient.GetStatus(forceRefresh: true);
             if (hw.ServiceRunning)
             {
-                int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-                int fastArg = _settings.UnlockThreeStagePower
-                    ? _settings.FastPptWatts
-                    : (_settings.FlatPowerLock ? _settings.CurrentTdpWatts : Math.Min(140, _settings.CurrentTdpWatts + 2));
-                var (ok, err, _) = _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg);
+                var stageTarget = TdpLockPolicy.ComputeStageLimits(
+                    _settings.CurrentTdpWatts,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (ok, err, _) = _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts);
                 if (!ok)
                 {
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(err) ? "下发 SMU 三段功耗失败" : err);
                 }
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
             }
         }
 
@@ -2036,7 +2379,20 @@ public sealed class WebUiBridge : IDisposable
             _settings.CurrentTdpWatts = target;
             if (curSys.HardwareService.ServiceRunning)
             {
-                _systemControl.HardwareClient.SetTdp(target);
+                var linkTarget = TdpLockPolicy.ComputeStageLimits(
+                    target,
+                    _settings.FlatPowerLock,
+                    _settings.UnlockThreeStagePower,
+                    _settings.SlowPptWatts,
+                    _settings.FastPptWatts);
+                var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
+                    linkTarget.StapmWatts,
+                    linkTarget.SlowWatts,
+                    linkTarget.FastWatts);
+                if (okLink)
+                {
+                    _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                }
             }
         }
 
@@ -2179,9 +2535,19 @@ public sealed class WebUiBridge : IDisposable
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
-            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
-            try { _systemControl.HardwareClient.SetTdp(_settings.CurrentTdpWatts, slowArg, fastArg); } catch { }
+            var stageTarget = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+            try
+            {
+                var (okReload, _, _) = _systemControl.HardwareClient.SetTdp(
+                    stageTarget.StapmWatts,
+                    stageTarget.SlowWatts,
+                    stageTarget.FastWatts);
+                if (okReload)
+                {
+                    _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
+                }
+            }
+            catch { }
 
             var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
             try { _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points); } catch { }
@@ -2324,9 +2690,15 @@ public sealed class WebUiBridge : IDisposable
         var sys = _systemControl.GetState(includeHardwareRefresh: true);
         if (sys.HardwareService.ServiceRunning)
         {
-            int slowArg = _settings.UnlockThreeStagePower ? _settings.SlowPptWatts : _settings.CurrentTdpWatts;
-            int fastArg = _settings.UnlockThreeStagePower ? _settings.FastPptWatts : Math.Min(140, _settings.CurrentTdpWatts + 2);
-            _systemControl.HardwareClient.SetTdp(Math.Clamp(_settings.CurrentTdpWatts, 8, 120), slowArg, fastArg);
+            var stageTarget = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
+            var (okInstall, _, _) = _systemControl.HardwareClient.SetTdp(
+                stageTarget.StapmWatts,
+                stageTarget.SlowWatts,
+                stageTarget.FastWatts);
+            if (okInstall)
+            {
+                _tdpReconciler.RecordApplied(DateTime.UtcNow, stageTarget);
+            }
             var activeCurve = FanCurveEvaluator.ResolveActiveCurve(_settings.FanCurves, _settings.ActiveFanCurveId);
             _systemControl.HardwareClient.SetFan(_settings.FanMode, _settings.ManualFanPercent, Math.Max(sys.GpuTempC, sys.CpuTempC), activeCurve.Points);
             sys = _systemControl.GetState(includeHardwareRefresh: true);
@@ -2750,11 +3122,220 @@ public sealed class WebUiBridge : IDisposable
             return new { cancelled = true };
         }
 
-        var installed = await Task.Run(() => _pluginStore.InstallFromZip(zipPath, enableAfterInstall: false, consentAccepted: false))
+        var installed = await Task.Run(() => _pluginStore.InstallFromZip(
+            zipPath,
+            enableAfterInstall: false,
+            consentAccepted: false,
+            beforeOverwrite: id => _pluginHost.StopPlugin(id)))
             .ConfigureAwait(false);
         _pluginHost.StopPlugin(installed.Id);
         BroadcastStateSnapshot();
         return new { ok = true, plugin = installed, message = $"已导入社区插件「{installed.Name}」v{installed.Version}，确认权限后即可启用" };
+    }
+
+    private async Task<object> InstallPluginFolderAsync(JsonElement payload)
+    {
+        string? folderPath = payload.TryGetProperty("folderPath", out var fp) && fp.ValueKind == JsonValueKind.String
+            ? fp.GetString()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            folderPath = await _dispatcher.InvokeAsync(() =>
+            {
+                var dlg = new Microsoft.Win32.OpenFolderDialog
+                {
+                    Title = "选择未打包的 HaloDeck 插件目录（需包含 plugin.json）",
+                    Multiselect = false
+                };
+                return dlg.ShowDialog() == true ? dlg.FolderName : null;
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            return new { cancelled = true };
+        }
+
+        var installed = await Task.Run(() => _pluginStore.InstallFromDirectory(
+            folderPath,
+            enableAfterInstall: false,
+            consentAccepted: false,
+            beforeOverwrite: id => _pluginHost.StopPlugin(id)))
+            .ConfigureAwait(false);
+        _pluginHost.StopPlugin(installed.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, plugin = installed, message = $"已从本地目录同步插件「{installed.Name}」v{installed.Version}" };
+    }
+
+    private object OpenPluginDirectory(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        var plugin = _pluginStore.GetPlugin(pluginId)
+                     ?? throw new InvalidOperationException($"未找到插件：{pluginId}");
+        if (!Directory.Exists(plugin.RootDirectory))
+        {
+            throw new DirectoryNotFoundException($"插件目录不存在：{plugin.RootDirectory}");
+        }
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = plugin.RootDirectory,
+            UseShellExecute = true
+        });
+        return new { ok = true, path = plugin.RootDirectory };
+    }
+
+    private object RestartPluginBackend(JsonElement payload)
+    {
+        string pluginId = payload.GetProperty("pluginId").GetString() ?? "";
+        var plugin = _pluginStore.GetPlugin(pluginId)
+                     ?? throw new InvalidOperationException($"未找到插件：{pluginId}");
+        _pluginHost.StopPlugin(plugin.Id);
+        BroadcastStateSnapshot();
+        return new { ok = true, message = $"已重启插件「{plugin.Name}」的独立后端进程（下次调用自动拉起）" };
+    }
+
+    private object OpenExternalUrl(JsonElement payload)
+    {
+        string url = (payload.TryGetProperty("url", out var up) ? up.GetString() : null)?.Trim() ?? "";
+        if (!PluginRegistryClient.IsAllowedHttpsUrl(url))
+        {
+            throw new ArgumentException("仅允许在默认浏览器中打开安全的 https:// 链接");
+        }
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
+        return new { ok = true, url };
+    }
+
+    private async Task<object> CheckAppUpdateAsync(JsonElement payload)
+    {
+        bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
+                                 pp.ValueKind == JsonValueKind.True;
+        var info = await _appUpdater.CheckForUpdateAsync(
+            CurrentAppVersion,
+            includePrerelease,
+            mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
+        _latestUpdateInfo = info;
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            update = info,
+            message = info.HasUpdate
+                ? $"发现新版本 v{info.LatestVersion}{(info.IsPrerelease ? "（测试版）" : "")}"
+                : $"当前 v{info.CurrentVersion} 已是最新版本"
+        };
+    }
+
+    private async Task<object> DownloadAndApplyAppUpdateAsync(JsonElement payload)
+    {
+        bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
+                                 pp.ValueKind == JsonValueKind.True;
+
+        await _appUpdateGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var info = _latestUpdateInfo;
+            if (info is null || !info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+            {
+                info = await _appUpdater.CheckForUpdateAsync(
+                    CurrentAppVersion,
+                    includePrerelease,
+                    mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
+                _latestUpdateInfo = info;
+            }
+            if (!info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+            {
+                return new { ok = false, message = "当前已是最新版本或未找到便携包附件" };
+            }
+
+            string targetDir = AppContext.BaseDirectory;
+            // Verify target directory is writable before downloading ~70MB
+            try
+            {
+                string probe = Path.Combine(targetDir, $".update_probe_{Guid.NewGuid():N}");
+                File.WriteAllText(probe, "ok");
+                File.Delete(probe);
+            }
+            catch
+            {
+                throw new InvalidOperationException("当前安装目录无写入权限，请点击「查看更新说明」前往 GitHub 手动下载覆盖");
+            }
+
+            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 0.0, status = "downloading" });
+            var progress = new Progress<double>(pct =>
+            {
+                BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = Math.Round(pct, 1), status = "downloading" });
+            });
+
+            var staged = await _appUpdater.DownloadAndStageUpdateAsync(
+                info,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                progress: progress).ConfigureAwait(false);
+
+            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 100.0, status = "applying" });
+
+            string updaterScript = AppUpdateService.WritePortableUpdaterScript(staged, targetDir, Environment.ProcessId);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{updaterScript}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            SuppressHardwareCleanupOnDispose = true;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(350).ConfigureAwait(false);
+                await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
+            });
+
+            return new
+            {
+                ok = true,
+                version = info.LatestVersion,
+                verifiedSha256 = staged.VerifiedSha256,
+                message = $"v{info.LatestVersion} 校验通过，正在重启并原地更新..."
+            };
+        }
+        catch
+        {
+            BroadcastEvent("appUpdateProgress", new { version = "", percent = 0.0, status = "idle" });
+            throw;
+        }
+        finally
+        {
+            _appUpdateGate.Release();
+        }
+    }
+
+    private object UpdatePluginPreferences(JsonElement payload)
+    {
+        if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
+        {
+            string raw = (mp.GetString() ?? "").Trim();
+            if (!string.IsNullOrEmpty(raw) && !PluginRegistryClient.IsAllowedHttpsUrl(raw))
+            {
+                throw new ArgumentException("GitHub 下载镜像前缀必须留空或为合法的 https:// 地址");
+            }
+            _settings.PluginDownloadMirrorPrefix = raw;
+        }
+        if (payload.TryGetProperty("pluginDeveloperMode", out var dm) && (dm.ValueKind == JsonValueKind.True || dm.ValueKind == JsonValueKind.False))
+        {
+            _settings.PluginDeveloperMode = dm.GetBoolean();
+        }
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            pluginDownloadMirrorPrefix = _settings.PluginDownloadMirrorPrefix,
+            pluginDeveloperMode = _settings.PluginDeveloperMode
+        };
     }
 
     private object SetPluginEnabled(JsonElement payload)
@@ -2906,7 +3487,9 @@ public sealed class WebUiBridge : IDisposable
                 _pluginStore,
                 url,
                 sha256,
-                progress).ConfigureAwait(false);
+                progress,
+                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
 
             _pluginHost.StopPlugin(installed.Id);
             BroadcastEvent("pluginDownloadProgress", new { label, percent = 100.0, status = "done" });
@@ -2924,6 +3507,94 @@ public sealed class WebUiBridge : IDisposable
         {
             _pluginInstallGate.Release();
         }
+    }
+
+    private async Task<object> UpdateAllPluginsAsync()
+    {
+        var catalogs = await _pluginRegistry.FetchAllCatalogsAsync(_settings.PluginStoreUrls).ConfigureAwait(false);
+        var officialRevoked = new HashSet<string>(
+            catalogs.Where(c => c.IsOfficial && c.RevokedIds is { Count: > 0 }).SelectMany(c => c.RevokedIds),
+            StringComparer.OrdinalIgnoreCase);
+
+        var installedMap = _pluginStore.ListPlugins()
+            .Where(p => p.IsValid)
+            .ToDictionary(p => p.Id, p => p, StringComparer.OrdinalIgnoreCase);
+
+        var targets = new List<PluginStoreCatalogItem>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cat in catalogs)
+        {
+            foreach (var p in cat.Plugins)
+            {
+                if (!seen.Add(p.Id)) continue;
+                if (officialRevoked.Contains(p.Id)) continue;
+                if (installedMap.TryGetValue(p.Id, out var inst) &&
+                    PluginRegistryClient.IsNewerVersion(p.Version, inst.Version))
+                {
+                    targets.Add(p);
+                }
+            }
+        }
+
+        if (targets.Count == 0)
+        {
+            return new { ok = true, updatedCount = 0, failedCount = 0, escalatedIds = Array.Empty<string>(), message = "所有已安装插件均已是最新版本" };
+        }
+
+        int updatedCount = 0;
+        int failedCount = 0;
+        var escalatedIds = new List<string>();
+        var errors = new List<string>();
+
+        await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            for (int i = 0; i < targets.Count; i++)
+            {
+                var item = targets[i];
+                string label = $"({i + 1}/{targets.Count}) {item.Name}";
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
+                try
+                {
+                    var progress = new Progress<double>(pct =>
+                    {
+                        BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
+                    });
+                    var installed = await _pluginRegistry.DownloadAndInstallAsync(
+                        _pluginStore,
+                        item.ZipUrl,
+                        item.Sha256,
+                        progress,
+                        mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
+                        beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
+                    _pluginHost.StopPlugin(installed.Id);
+                    updatedCount++;
+                    if (!installed.ConsentAccepted)
+                    {
+                        escalatedIds.Add(installed.Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failedCount++;
+                    errors.Add($"{item.Name}: {ex.Message}");
+                }
+            }
+            BroadcastEvent("pluginDownloadProgress", new { label = "更新完成", percent = 100.0, status = "done" });
+            BroadcastStateSnapshot();
+        }
+        finally
+        {
+            _pluginInstallGate.Release();
+        }
+
+        string msg = failedCount == 0
+            ? (escalatedIds.Count > 0
+                ? $"已更新 {updatedCount} 个插件（其中 {escalatedIds.Count} 个因新增权限已自动暂停，请在「已安装」页重新确认）"
+                : $"已全部更新完成（共 {updatedCount} 个插件）")
+            : $"更新完成：成功 {updatedCount} 个，失败 {failedCount} 个（{string.Join("；", errors.Take(2))}）";
+
+        return new { ok = failedCount == 0, updatedCount, failedCount, escalatedIds, errors, message = msg };
     }
 
     private object AddPluginStoreUrl(JsonElement payload)
@@ -2985,7 +3656,7 @@ public sealed class WebUiBridge : IDisposable
                     permissions = plugin.Permissions,
                     theme = _settings.UiTheme,
                     layout = _settings.UiLayout,
-                    haloDeckVersion = "0.6.0",
+                    haloDeckVersion = typeof(WebUiBridge).Assembly.GetName().Version?.ToString(3) ?? "0.6.2",
                     isElevated = Win32Interop.IsCurrentProcessElevated()
                 };
 
@@ -3046,6 +3717,18 @@ public sealed class WebUiBridge : IDisposable
                 string dataDir = _pluginStore.EnsurePluginDataDirectory(plugin.Id);
                 Process.Start(new ProcessStartInfo { FileName = dataDir, UseShellExecute = true });
                 return new { ok = true };
+
+            case "openUrl":
+            {
+                RequirePerm(plugin, "shell:openUrl");
+                string targetUrl = args.TryGetProperty("url", out var urlProp) ? (urlProp.GetString() ?? "").Trim() : "";
+                if (!PluginRegistryClient.IsAllowedHttpsUrl(targetUrl))
+                {
+                    throw new ArgumentException("仅允许打开安全的 https:// 外部链接");
+                }
+                Process.Start(new ProcessStartInfo { FileName = targetUrl, UseShellExecute = true });
+                return new { ok = true, url = targetUrl };
+            }
 
             case "themeApply":
             {
@@ -3231,5 +3914,17 @@ public sealed class WebUiBridge : IDisposable
                 }
             }
         });
+    }
+
+    private async Task<object> RunMenuKeyDiagnosticAsync(JsonElement payload)
+    {
+        int durationMs = payload.ValueKind == JsonValueKind.Object &&
+                         payload.TryGetProperty("durationMs", out var dp) &&
+                         dp.ValueKind == JsonValueKind.Number
+            ? dp.GetInt32()
+            : 5000;
+
+        var report = await _inputHub.RunMenuKeyDiagnosticAsync(durationMs, _gpdController.CachedConfig).ConfigureAwait(false);
+        return report;
     }
 }

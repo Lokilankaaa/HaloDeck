@@ -17,6 +17,7 @@ public sealed class InjectionManifest
     public string? OptiScalerVersion { get; set; }
     public bool HasOptiPatcher { get; set; }
     public bool HasFakenvapi { get; set; }
+    public bool HasMfgUnlocker { get; set; }
     public DateTimeOffset InjectedAtUtc { get; set; }
     public List<string> CreatedFiles { get; set; } = new();
     public List<BackedUpOriginalFile> BackedUpFiles { get; set; } = new();

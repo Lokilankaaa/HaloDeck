@@ -8,6 +8,7 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.Json;
 using HaloDeck.Core.Models;
+using HaloDeck.Core.Services;
 using Microsoft.Win32;
 
 namespace HaloDeck.App.Native;
@@ -24,6 +25,7 @@ public sealed class HardwareDaemonStatus
     public int AppliedTdpWatts { get; set; } = 40;
     public int AppliedSlowWatts { get; set; } = 45;
     public int AppliedFastWatts { get; set; } = 50;
+    public bool TdpLockActive { get; set; }
     public string PmTableVersion { get; set; } = string.Empty;
     public double? HwStapmLimitWatts { get; set; }
     public double? HwSlowLimitWatts { get; set; }
@@ -48,7 +50,7 @@ public sealed class HardwareDaemonStatus
 /// </summary>
 public sealed class PawnIoHardwareDaemon : ServiceBase
 {
-    public const int CurrentDaemonVersion = 4;
+    public const int CurrentDaemonVersion = 5;
     public const string WindowsServiceName = "HaloDeckHardwareSvc";
     public const string PipeName = "HaloDeck.Hardware.v1";
 
@@ -85,18 +87,24 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private int _appliedTdpWatts = 40;
     private int _appliedSlowWatts = 45;
     private int _appliedFastWatts = 50;
+    private bool _tdpLockActive;
     private string _pmTableVersion = string.Empty;
     private double? _hwStapmLimitWatts;
     private double? _hwSlowLimitWatts;
     private double? _hwFastLimitWatts;
     private bool _pmTableResolved;
     private bool _pmTableUnavailable;
+    private bool _resetPmOnNextRead;
+    private int _pmResolveFailures;
     private DateTime _lastPmReadUtc = DateTime.MinValue;
     private DateTime _lastGpdSvcCheckUtc = DateTime.MinValue;
     private DateTime _lastPawnIoInitAttemptUtc = DateTime.MinValue;
     private bool _cachedGpdSvcExists;
     private bool _cachedGpdSvcRunning;
     private readonly ulong[] _pmTableBuf = new ulong[1024];
+    private readonly TdpLockReconciler _tdpReconciler = new();
+    private nint _suspendResumeNotifyHandle;
+    private DeviceNotifyCallbackRoutine? _suspendResumeCallback;
 
     private string _fanMode = "auto";
     private int _manualFanPercent = 55;
@@ -108,6 +116,25 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     private DateTime _lastFanHeartbeatUtc = DateTime.UtcNow;
     private EtwPresentFpsTracker? _fpsTracker;
     private volatile int _lastTargetPid;
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint DeviceNotifyCallbackRoutine(nint context, uint type, nint setting);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
+    {
+        public nint Callback;
+        public nint Context;
+    }
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerRegisterSuspendResumeNotification(
+        uint flags,
+        ref DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS recipient,
+        out nint registrationHandle);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerUnregisterSuspendResumeNotification(nint registrationHandle);
 
     private delegate int PawnIoOpenDelegate(out nint handle);
     private delegate int PawnIoLoadDelegate(nint handle, byte[] blob, nuint size);
@@ -124,6 +151,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         ServiceName = WindowsServiceName;
         CanStop = true;
         CanShutdown = true;
+        CanHandlePowerEvent = true;
         AutoLog = false;
     }
 
@@ -136,6 +164,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
     {
         _cts = new CancellationTokenSource();
         InitializePawnIo();
+        RegisterPowerResumeCallback();
         _fpsTracker = new EtwPresentFpsTracker();
         _fpsTracker.Start();
         _pipeTask = Task.Run(() => PipeServerLoopAsync(_cts.Token), _cts.Token);
@@ -153,6 +182,60 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         base.OnShutdown();
     }
 
+    protected override bool OnPowerEvent(PowerBroadcastStatus powerStatus)
+    {
+        if (powerStatus is PowerBroadcastStatus.ResumeAutomatic
+            or PowerBroadcastStatus.ResumeSuspend
+            or PowerBroadcastStatus.ResumeCritical)
+        {
+            HandlePowerResumeSignal($"ServicePowerEvent:{powerStatus}");
+        }
+        return true;
+    }
+
+    private void RegisterPowerResumeCallback()
+    {
+        try
+        {
+            _suspendResumeCallback = OnPowerSuspendResumeNotification;
+            var sub = new DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
+            {
+                Callback = Marshal.GetFunctionPointerForDelegate(_suspendResumeCallback),
+                Context = 0
+            };
+            if (PowerRegisterSuspendResumeNotification(Win32Interop.DEVICE_NOTIFY_CALLBACK, ref sub, out nint handle) == 0)
+            {
+                _suspendResumeNotifyHandle = handle;
+            }
+        }
+        catch
+        {
+            // Fall back to ServiceBase.OnPowerEvent and watchdog time-gap detection
+        }
+    }
+
+    private uint OnPowerSuspendResumeNotification(nint context, uint type, nint setting)
+    {
+        if (type is Win32Interop.PBT_APMRESUMESUSPEND
+            or Win32Interop.PBT_APMRESUMEAUTOMATIC
+            or Win32Interop.PBT_APMRESUMECRITICAL)
+        {
+            HandlePowerResumeSignal($"PowerNotify:0x{type:X}");
+        }
+        return 0;
+    }
+
+    private void HandlePowerResumeSignal(string source)
+    {
+        lock (_hwLock)
+        {
+            _resetPmOnNextRead = true;
+            _lastPmReadUtc = DateTime.MinValue;
+            _pmResolveFailures = 0;
+        }
+        _tdpReconciler.NotifyPowerResume(DateTime.UtcNow, source);
+    }
+
     private void RestoreAutoFanAndCleanup()
     {
         try
@@ -160,6 +243,17 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             _cts?.Cancel();
         }
         catch { }
+
+        if (_suspendResumeNotifyHandle != 0)
+        {
+            try
+            {
+                PowerUnregisterSuspendResumeNotification(_suspendResumeNotifyHandle);
+            }
+            catch { }
+            _suspendResumeNotifyHandle = 0;
+        }
+        _suspendResumeCallback = null;
 
         try
         {
@@ -433,42 +527,83 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
 
     private async Task FanWatchdogLoopAsync(CancellationToken ct)
     {
+        DateTime lastLoopUtc = DateTime.UtcNow;
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(2000, ct).ConfigureAwait(false);
+                DateTime nowUtc = DateTime.UtcNow;
+                if (TdpLockPolicy.IsSleepTimeGap(lastLoopUtc, nowUtc))
+                {
+                    HandlePowerResumeSignal("WatchdogTimeGap");
+                }
+                lastLoopUtc = nowUtc;
+
                 lock (_hwLock)
                 {
-                    if (!_ecReady || _ecHandle == 0) continue;
-
-                    WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
+                    if (_ecReady && _ecHandle != 0)
                     {
-                        _lastFanRpm = ReadFanRpmInternal();
-
-                        if (string.Equals(_fanMode, "auto", StringComparison.OrdinalIgnoreCase))
+                        WithNamedMutex(@"Global\Access_ISABUS.HTP.Method", () =>
                         {
-                            return;
-                        }
+                            _lastFanRpm = ReadFanRpmInternal();
 
-                        // If curve mode hasn't received client temperature heartbeat in 15s, hand control back to BIOS auto
-                        if ((_fanMode is "curve" or "silent" or "balanced") &&
-                            (DateTime.UtcNow - _lastFanHeartbeatUtc) > TimeSpan.FromSeconds(15))
+                            if (string.Equals(_fanMode, "auto", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return;
+                            }
+
+                            // If curve mode hasn't received client temperature heartbeat in 15s, hand control back to BIOS auto
+                            if ((_fanMode is "curve" or "silent" or "balanced") &&
+                                (DateTime.UtcNow - _lastFanHeartbeatUtc) > TimeSpan.FromSeconds(15))
+                            {
+                                _fanMode = "auto";
+                                _appliedFanPwm = 0;
+                                EcWriteByte(0x047A, 0);
+                                EcWriteByte(0x047B, 0);
+                                return;
+                            }
+
+                            if (_fanMode == "manual" && _lastSmuCpuTempC > 0)
+                            {
+                                _lastTempC = _lastSmuCpuTempC;
+                            }
+
+                            ApplyFanModeLocked(_fanMode, _manualFanPercent, _lastTempC, forceWrite: false);
+                        });
+                    }
+
+                    if (_tdpLockActive)
+                    {
+                        TryEnsurePawnIoReadyLocked();
+                        if (_smuReady && _smuHandle != 0)
                         {
-                            _fanMode = "auto";
-                            _appliedFanPwm = 0;
-                            EcWriteByte(0x047A, 0);
-                            EcWriteByte(0x047B, 0);
-                            return;
+                            TryRefreshPmTableLocked(force: false);
+                            var target = new TdpPowerTarget(_appliedTdpWatts, _appliedSlowWatts, _appliedFastWatts);
+                            var decision = _tdpReconciler.Evaluate(
+                                nowUtc,
+                                target,
+                                _hwStapmLimitWatts,
+                                _hwSlowLimitWatts,
+                                _hwFastLimitWatts);
+                            if (decision.ShouldApply)
+                            {
+                                double? obsStapm = _hwStapmLimitWatts;
+                                double? obsSlow = _hwSlowLimitWatts;
+                                double? obsFast = _hwFastLimitWatts;
+                                if (ApplyStrixHaloTdpLocked(target.StapmWatts, target.SlowWatts, target.FastWatts, out _))
+                                {
+                                    _tdpReconciler.RecordApplied(
+                                        nowUtc,
+                                        target,
+                                        decision.Reason,
+                                        obsStapm,
+                                        obsSlow,
+                                        obsFast);
+                                }
+                            }
                         }
-
-                        if (_fanMode == "manual" && _lastSmuCpuTempC > 0)
-                        {
-                            _lastTempC = _lastSmuCpuTempC;
-                        }
-
-                        ApplyFanModeLocked(_fanMode, _manualFanPercent, _lastTempC, forceWrite: false);
-                    });
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -536,6 +671,13 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 {
                     TryEnsurePawnIoReadyLocked();
                     bool ok = ApplyStrixHaloTdpLocked(watts, slowWatts, fastWatts, out string err);
+                    if (ok)
+                    {
+                        _tdpReconciler.RecordApplied(
+                            DateTime.UtcNow,
+                            new TdpPowerTarget(_appliedTdpWatts, _appliedSlowWatts, _appliedFastWatts),
+                            TdpReapplyReason.None);
+                    }
                     return new { ok, error = err, status = BuildStatusSnapshotLocked(fpsSample.Fps, fpsSample.FrameTimeMs, fpsSample.SourcePid) };
                 }
             }
@@ -624,6 +766,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             AppliedTdpWatts = _appliedTdpWatts,
             AppliedSlowWatts = _appliedSlowWatts,
             AppliedFastWatts = _appliedFastWatts,
+            TdpLockActive = _tdpLockActive,
             PmTableVersion = _pmTableVersion,
             HwStapmLimitWatts = _hwStapmLimitWatts,
             HwSlowLimitWatts = _hwSlowLimitWatts,
@@ -642,7 +785,7 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         };
     }
 
-    private bool ApplyStrixHaloTdpLocked(int watts, int slowWatts, int fastWatts, out string error)
+    private bool ApplyStrixHaloTdpLocked(int watts, int slowWatts, int fastWatts, out string error, bool allowReinitRetry = true)
     {
         error = string.Empty;
         if (!_smuReady || _smuHandle == 0 || _pawnExecute is null)
@@ -683,11 +826,21 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
             localErr = $"SMU TDP 写入失败 (MP1 rsp={rspCode}, PSMU hr=0x{hr:X8})";
         });
 
+        if (!success && allowReinitRetry)
+        {
+            ReinitializeSmuHandleLocked();
+            if (_smuReady && _smuHandle != 0)
+            {
+                return ApplyStrixHaloTdpLocked(watts, slowWatts, fastWatts, out error, allowReinitRetry: false);
+            }
+        }
+
         if (success)
         {
             _appliedTdpWatts = watts;
             _appliedSlowWatts = slowWatts;
             _appliedFastWatts = fastWatts;
+            _tdpLockActive = true;
             _hwStapmLimitWatts = watts;
             _hwSlowLimitWatts = slowWatts;
             _hwFastLimitWatts = fastWatts;
@@ -702,9 +855,36 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
         return success;
     }
 
+    private void ReinitializeSmuHandleLocked()
+    {
+        if (_pawnClose is not null && _smuHandle != 0)
+        {
+            try { _pawnClose(_smuHandle); } catch { }
+        }
+        _smuHandle = 0;
+        _smuReady = false;
+        _pmTableResolved = false;
+        _pmTableUnavailable = false;
+        _pmResolveFailures = 0;
+        InitializePawnIoLocked();
+    }
+
     private void TryRefreshPmTableLocked(bool force)
     {
-        if (!_smuReady || _smuHandle == 0 || _pawnExecute is null || _pmTableUnavailable)
+        if (!_smuReady || _smuHandle == 0 || _pawnExecute is null)
+        {
+            return;
+        }
+
+        if (_resetPmOnNextRead)
+        {
+            _pmTableResolved = false;
+            _pmTableUnavailable = false;
+            _pmResolveFailures = 0;
+            _resetPmOnNextRead = false;
+        }
+
+        if (_pmTableUnavailable)
         {
             return;
         }
@@ -722,10 +902,15 @@ public sealed class PawnIoHardwareDaemon : ServiceBase
                 int hrResolve = _pawnExecute(_smuHandle, "ioctl_resolve_pm_table", Array.Empty<ulong>(), 0, verOut, 2, out _);
                 if (hrResolve < 0 || verOut[0] == 0)
                 {
-                    _pmTableUnavailable = true;
+                    _pmResolveFailures++;
+                    if (_pmResolveFailures >= 3)
+                    {
+                        _pmTableUnavailable = true;
+                    }
                     return;
                 }
 
+                _pmResolveFailures = 0;
                 _pmTableVersion = $"0x{(uint)verOut[0]:X8}";
                 _pmTableResolved = true;
             }

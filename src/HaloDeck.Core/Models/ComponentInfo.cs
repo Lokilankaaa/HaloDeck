@@ -5,7 +5,8 @@ public enum ComponentSlot
     OptiScalerStable,
     OptiScalerNightly,
     OptiPatcher,
-    Fakenvapi
+    Fakenvapi,
+    MfgUnlocker
 }
 
 public sealed class ComponentReleaseAsset
