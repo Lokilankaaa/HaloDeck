@@ -3252,7 +3252,7 @@ public sealed class WebUiBridge : IDisposable
                 return new { ok = false, message = "当前已是最新版本或未找到便携包附件" };
             }
 
-            string targetDir = AppContext.BaseDirectory;
+            string targetDir = Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             // Verify target directory is writable before downloading ~70MB
             try
             {
@@ -3291,7 +3291,14 @@ public sealed class WebUiBridge : IDisposable
             _ = Task.Run(async () =>
             {
                 await Task.Delay(350).ConfigureAwait(false);
-                await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
+                if (RequestExitForRelaunch is { } exitHandler)
+                {
+                    exitHandler.Invoke();
+                }
+                else
+                {
+                    await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
+                }
             });
 
             return new
