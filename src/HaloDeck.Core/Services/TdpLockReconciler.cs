@@ -68,17 +68,9 @@ public static class TdpLockPolicy
                 prof.TdpWatts);
         }
 
-        if (settings.PowerLinkageEnabled)
-        {
-            int linkedWatts = isAcOnline ? settings.AcTdpWatts : settings.BatteryTdpWatts;
-            return ComputeStageLimits(
-                linkedWatts,
-                settings.FlatPowerLock,
-                settings.UnlockThreeStagePower,
-                settings.SlowPptWatts,
-                settings.FastPptWatts);
-        }
-
+        // Respect the user's active CurrentTdpWatts across startup, sleep/resume, and SMU drift.
+        // PowerLinkageEnabled (AcTdpWatts / BatteryTdpWatts) only updates CurrentTdpWatts on an actual
+        // AC <-> Battery plug/unplug transition so manual TDP adjustments are never overwritten on wake.
         return ComputeStageLimits(
             settings.CurrentTdpWatts,
             settings.FlatPowerLock,

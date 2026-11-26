@@ -35,7 +35,7 @@ public sealed class TdpResumeReconcilerTests
     }
 
     [Fact]
-    public void TdpLockPolicy_ResolveEffectiveTarget_PrioritizesPerGameThenPowerLinkageThenGlobal()
+    public void TdpLockPolicy_ResolveEffectiveTarget_PrioritizesPerGameThenActiveCurrentTdp()
     {
         var settings = new AppSettings
         {
@@ -46,21 +46,22 @@ public sealed class TdpResumeReconcilerTests
             AcTdpWatts = 65
         };
 
-        // Power linkage AC vs Battery
+        // Even with PowerLinkageEnabled, wake/drift reconciliation must preserve the user's active CurrentTdpWatts
+        // instead of snapping back to AcTdpWatts/BatteryTdpWatts (which only apply on actual plug/unplug events).
         Assert.Equal(
-            new TdpPowerTarget(65, 65, 65),
+            new TdpPowerTarget(40, 40, 40),
             TdpLockPolicy.ResolveEffectiveTarget(settings, runningGame: null, isAcOnline: true));
         Assert.Equal(
-            new TdpPowerTarget(22, 22, 22),
+            new TdpPowerTarget(40, 40, 40),
             TdpLockPolicy.ResolveEffectiveTarget(settings, runningGame: null, isAcOnline: false));
 
-        // Disabled linkage falls back to CurrentTdpWatts
+        // Disabled linkage also uses CurrentTdpWatts
         settings.PowerLinkageEnabled = false;
         Assert.Equal(
             new TdpPowerTarget(40, 40, 40),
             TdpLockPolicy.ResolveEffectiveTarget(settings, runningGame: null, isAcOnline: true));
 
-        // Active per-game profile overrides global & linkage
+        // Active per-game profile overrides global CurrentTdpWatts
         settings.PowerLinkageEnabled = true;
         settings.PerGameProfiles["game-1"] = new GamePerformanceProfile
         {
@@ -79,10 +80,10 @@ public sealed class TdpResumeReconcilerTests
             new TdpPowerTarget(28, 28, 28),
             TdpLockPolicy.ResolveEffectiveTarget(settings, runningGame, isAcOnline: true));
 
-        // Non-running inspected game does NOT override
+        // Non-running inspected game does NOT override CurrentTdpWatts
         runningGame.IsCurrentlyRunning = false;
         Assert.Equal(
-            new TdpPowerTarget(65, 65, 65),
+            new TdpPowerTarget(40, 40, 40),
             TdpLockPolicy.ResolveEffectiveTarget(settings, runningGame, isAcOnline: true));
     }
 

@@ -70,6 +70,8 @@ public sealed class WebUiBridge : IDisposable
     private string? _selectedInspectGameId;
 
     private bool? _lastObservedAcOnline;
+    private bool? _pendingAcOnline;
+    private int _pendingAcConfirmCount;
     private string? _appliedProfileGameId;
     private int? _preProfileRefreshRateHz;
     private bool? _preProfileDynamicRefreshRate;
@@ -672,46 +674,73 @@ public sealed class WebUiBridge : IDisposable
             }
         }
 
-        // 2. AC/Battery Power Linkage when not overridden by an active per-game TDP profile
-        if (_lastObservedAcOnline != sys.IsAcOnline)
+        // 2. AC/Battery Power Linkage when not overridden by an active per-game TDP profile.
+        // Require 2 consecutive polls (~1.6s) on an AC/Battery flip so transient USB-C PD renegotiation
+        // blips during Modern Standby wake never spuriously overwrite the user's manual TDP.
+        if (_lastObservedAcOnline is null)
         {
-            bool isInitial = _lastObservedAcOnline is null;
             _lastObservedAcOnline = sys.IsAcOnline;
-
-            bool hasActiveGameTdp = _appliedProfileGameId is not null &&
-                                    _settings.PerGameProfiles.TryGetValue(_appliedProfileGameId, out var gp) &&
-                                    gp.Enabled;
-
-            if (!isInitial && _settings.PowerLinkageEnabled && !hasActiveGameTdp)
+            _pendingAcOnline = null;
+            _pendingAcConfirmCount = 0;
+        }
+        else if (_lastObservedAcOnline == sys.IsAcOnline)
+        {
+            _pendingAcOnline = null;
+            _pendingAcConfirmCount = 0;
+        }
+        else
+        {
+            if (_pendingAcOnline == sys.IsAcOnline)
             {
-                int targetWatts = sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts;
-                _settings.CurrentTdpWatts = targetWatts;
-                _settingsStore.Save(_settings);
-                if (sys.HardwareService.ServiceRunning)
+                _pendingAcConfirmCount++;
+            }
+            else
+            {
+                _pendingAcOnline = sys.IsAcOnline;
+                _pendingAcConfirmCount = 1;
+            }
+
+            if (_pendingAcConfirmCount >= 2)
+            {
+                _lastObservedAcOnline = sys.IsAcOnline;
+                _pendingAcOnline = null;
+                _pendingAcConfirmCount = 0;
+
+                bool hasActiveGameTdp = _appliedProfileGameId is not null &&
+                                        _settings.PerGameProfiles.TryGetValue(_appliedProfileGameId, out var gp) &&
+                                        gp.Enabled;
+
+                if (_settings.PowerLinkageEnabled && !hasActiveGameTdp)
                 {
-                    var linkTarget = TdpLockPolicy.ComputeStageLimits(
-                        targetWatts,
-                        _settings.FlatPowerLock,
-                        _settings.UnlockThreeStagePower,
-                        _settings.SlowPptWatts,
-                        _settings.FastPptWatts);
-                    var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
-                        linkTarget.StapmWatts,
-                        linkTarget.SlowWatts,
-                        linkTarget.FastWatts);
-                    if (okLink)
+                    int targetWatts = sys.IsAcOnline ? _settings.AcTdpWatts : _settings.BatteryTdpWatts;
+                    _settings.CurrentTdpWatts = targetWatts;
+                    _settingsStore.Save(_settings);
+                    if (sys.HardwareService.ServiceRunning)
                     {
-                        _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                        var linkTarget = TdpLockPolicy.ComputeStageLimits(
+                            targetWatts,
+                            _settings.FlatPowerLock,
+                            _settings.UnlockThreeStagePower,
+                            _settings.SlowPptWatts,
+                            _settings.FastPptWatts);
+                        var (okLink, _, _) = _systemControl.HardwareClient.SetTdp(
+                            linkTarget.StapmWatts,
+                            linkTarget.SlowWatts,
+                            linkTarget.FastWatts);
+                        if (okLink)
+                        {
+                            _tdpReconciler.RecordApplied(DateTime.UtcNow, linkTarget);
+                        }
                     }
+                    BroadcastEvent("toast", new
+                    {
+                        kind = "info",
+                        message = sys.IsAcOnline
+                            ? $"已切换至外接电源模式 · TDP 自动调至 {targetWatts}W"
+                            : $"已切换至电池续航模式 · TDP 自动调至 {targetWatts}W"
+                    });
+                    BroadcastStateSnapshot();
                 }
-                BroadcastEvent("toast", new
-                {
-                    kind = "info",
-                    message = sys.IsAcOnline
-                        ? $"已切换至外接电源模式 · TDP 自动调至 {targetWatts}W"
-                        : $"已切换至电池续航模式 · TDP 自动调至 {targetWatts}W"
-                });
-                BroadcastStateSnapshot();
             }
         }
     }
@@ -752,15 +781,6 @@ public sealed class WebUiBridge : IDisposable
         try
         {
             target = TdpLockPolicy.ResolveEffectiveTarget(_settings, _runningGame, sys.IsAcOnline);
-            bool hasActiveGameTdp = _runningGame is { IsCurrentlyRunning: true } &&
-                                    _settings.PerGameProfiles.TryGetValue(_runningGame.Id, out var activeProf) &&
-                                    activeProf.Enabled &&
-                                    activeProf.TdpWatts is >= 8 and <= 120;
-            if (_settings.PowerLinkageEnabled && !hasActiveGameTdp && _settings.CurrentTdpWatts != target.StapmWatts)
-            {
-                _settings.CurrentTdpWatts = target.StapmWatts;
-                ScheduleSaveSettings();
-            }
 
             var (ok, _, nextHw) = _systemControl.HardwareClient.SetTdp(
                 target.StapmWatts,
