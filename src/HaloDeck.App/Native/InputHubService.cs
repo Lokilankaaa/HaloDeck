@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -56,6 +57,14 @@ public sealed class InputHubService : IDisposable
     private DateTime _lastOskTriggerAtUtc = DateTime.MinValue;
     private int _oskReleaseDispatchPending;
     private readonly GuideMenuTriggerGuard _guideMenuGuard = new();
+    private readonly GpdVendorHidMenuListener _vendorHidListener = new();
+    private readonly GpdVendorHidMenuParser _rawHidParser = new();
+    private bool _rawInputRegistered;
+    private bool _prevAsyncF13Down;
+    private volatile KeyCaptureDiagnosticSession? _activeDiagSession;
+
+    public bool LastRegisterF13Success { get; private set; }
+    public int LastRegisterF13Error { get; private set; }
 
     public event Action? ToggleQamRequested;
     public event Action? ToggleConsoleRequested;
@@ -118,6 +127,50 @@ public sealed class InputHubService : IDisposable
     {
         _settings = settings;
         _gamepadMouseModeEnabled = settings.GamepadMouseModeEnabled;
+        _vendorHidListener.RawReportReceived += OnVendorHidRawReport;
+        _vendorHidListener.MenuButtonPressed += OnVendorHidMenuButtonPressed;
+    }
+
+    private void OnVendorHidRawReport(byte[] packet)
+    {
+        if (_activeDiagSession is { } diag)
+        {
+            int len = Math.Min(16, packet.Length);
+            string hex = BitConverter.ToString(packet, 0, len);
+            byte magic = packet.Length > 1 ? packet[1] : (byte)0;
+            byte keyByte = packet.Length >= 9 ? packet[8] : (byte)0;
+            diag.Record(
+                Environment.TickCount64,
+                "GpdVendorHid",
+                $"len={packet.Length} magic=0x{magic:X2} key[8]=0x{keyByte:X2}",
+                hex,
+                wouldTriggerQam: false);
+        }
+    }
+
+    private void OnVendorHidMenuButtonPressed()
+    {
+        if (!_settings.InterceptPhysicalMenuButton)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        if (_activeDiagSession is { } diag)
+        {
+            diag.Record(
+                now,
+                "GpdVendorHid",
+                "GPD 0xFF00 物理菜单键上升沿 (01 A5/B4 ... [8]=0x68)",
+                "01-A5/B4-...-68",
+                wouldTriggerQam: true);
+            return;
+        }
+
+        if (_guideMenuGuard.TryClaimQamMenuToggle(now))
+        {
+            _ = Task.Run(() => ToggleQamRequested?.Invoke());
+        }
     }
 
     public void UpdateSettings(AppSettings settings)
@@ -164,10 +217,39 @@ public sealed class InputHubService : IDisposable
         _hwndSource?.AddHook(WndProc);
         EnsureKeyboardHookInstalled();
         RegisterGlobalHotkeys();
+        RegisterRawInputChannels(hwnd);
+    }
+
+    private void RegisterRawInputChannels(nint hwnd)
+    {
+        if (hwnd == 0 || _rawInputRegistered)
+        {
+            return;
+        }
+
+        var devices = new Win32Interop.RAWINPUTDEVICE[]
+        {
+            new() { usUsagePage = 0x0001, usUsage = 0x0006, dwFlags = Win32Interop.RIDEV_INPUTSINK, hwndTarget = hwnd },
+            new() { usUsagePage = 0x000C, usUsage = 0x0001, dwFlags = Win32Interop.RIDEV_INPUTSINK, hwndTarget = hwnd },
+            new() { usUsagePage = 0xFF00, usUsage = 0x0001, dwFlags = Win32Interop.RIDEV_INPUTSINK, hwndTarget = hwnd }
+        };
+
+        try
+        {
+            _rawInputRegistered = Win32Interop.RegisterRawInputDevices(
+                devices,
+                (uint)devices.Length,
+                (uint)Marshal.SizeOf<Win32Interop.RAWINPUTDEVICE>());
+        }
+        catch
+        {
+            _rawInputRegistered = false;
+        }
     }
 
     public void StartPolling()
     {
+        _vendorHidListener.Start();
         _ = Task.Run(() => PollLoopAsync(_cts.Token), _cts.Token);
     }
 
@@ -216,7 +298,13 @@ public sealed class InputHubService : IDisposable
         bool backF13 = _settings.EnableBackButtonHotkeys && (!filterByHw || _assignedBackButtonFnHidCodes!.Contains(0x0068));
         if (_settings.InterceptPhysicalMenuButton || backF13)
         {
-            Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
+            LastRegisterF13Success = Win32Interop.RegisterHotKey(_hotkeyWindowHwnd, HotkeyPaddleQamF13Id, Win32Interop.MOD_NOREPEAT, 0x7C);
+            LastRegisterF13Error = LastRegisterF13Success ? 0 : Marshal.GetLastWin32Error();
+        }
+        else
+        {
+            LastRegisterF13Success = false;
+            LastRegisterF13Error = 0;
         }
 
         // Bare paddle bindings for GPD Win 5 L4/R4 (HID 0x69..0x6B -> VK_F14..VK_F16).
@@ -258,24 +346,40 @@ public sealed class InputHubService : IDisposable
         if (nCode >= 0 && lParam != 0)
         {
             var kb = Marshal.PtrToStructure<Win32Interop.KBDLLHOOKSTRUCT>(lParam);
-            if (kb.dwExtraInfo == Win32Interop.SyntheticChordBreakExtraInfo ||
-                (kb.flags & Win32Interop.LLKHF_INJECTED) != 0)
+            if (kb.dwExtraInfo == Win32Interop.SyntheticChordBreakExtraInfo)
             {
                 return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
             }
 
-            // Fallback capture for GPD Win 5 physical menu key VK_F13 (0x7C) in WH_KEYBOARD_LL
-            // so firmware/drivers whose F13 does not trigger RegisterHotKey still reliably summon QAM.
+            bool isInjected = (kb.flags & Win32Interop.LLKHF_INJECTED) != 0;
+            int msgHook = wParam.ToInt32();
+            bool isKeyDownHook = msgHook is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
+
+            if (isKeyDownHook && _activeDiagSession is { } diag)
+            {
+                bool isF13Diag = kb.vkCode == 0x7C && _settings.InterceptPhysicalMenuButton;
+                diag.Record(
+                    Environment.TickCount64,
+                    "KeyboardHookLL",
+                    $"vk=0x{kb.vkCode:X2} scan=0x{kb.scanCode:X2} flags=0x{kb.flags:X2} injected={isInjected}",
+                    $"{kb.vkCode:X2}-{kb.scanCode:X2}-{kb.flags:X2}",
+                    wouldTriggerQam: isF13Diag);
+            }
+
+            // Capture GPD Win 5 physical menu key VK_F13 (0x7C) BEFORE LLKHF_INJECTED skip
+            // so driver/helper-injected F13 or non-RegisterHotKey firmware both reliably summon QAM.
             if (kb.vkCode == 0x7C && _settings.InterceptPhysicalMenuButton)
             {
-                int msgF13 = wParam.ToInt32();
-                if (msgF13 is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN)
+                if (isKeyDownHook && _activeDiagSession is null && _guideMenuGuard.TryClaimQamMenuToggle(Environment.TickCount64))
                 {
-                    if (_guideMenuGuard.TryClaimQamMenuToggle(Environment.TickCount64))
-                    {
-                        _ = Task.Run(() => ToggleQamRequested?.Invoke());
-                    }
+                    _ = Task.Run(() => ToggleQamRequested?.Invoke());
                 }
+                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            }
+
+            if (isInjected)
+            {
+                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
             }
 
             // Suppress GPD Win 5 firmware's unconditional raw F14 (0x7D) / F15 (0x7E) duplicate keystrokes
@@ -380,10 +484,27 @@ public sealed class InputHubService : IDisposable
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
+        if (msg == Win32Interop.WM_INPUT)
+        {
+            HandleRawInput(lParam);
+            return 0;
+        }
+
         if (msg == Win32Interop.WM_HOTKEY)
         {
             int id = wParam.ToInt32();
             long now = Environment.TickCount64;
+            if (_activeDiagSession is { } diagHot)
+            {
+                bool isMenuHk = id is HotkeyQamId or HotkeyPaddleQamF13Id;
+                diagHot.Record(now, "RegisterHotKey", $"WM_HOTKEY id=0x{id:X}", $"{id:X4}", wouldTriggerQam: isMenuHk);
+                if (isMenuHk)
+                {
+                    handled = true;
+                    return 0;
+                }
+            }
+
             if (_lastHotkeyTickMs.TryGetValue(id, out long prev) && now - prev < 280)
             {
                 handled = true;
@@ -418,12 +539,166 @@ public sealed class InputHubService : IDisposable
         return 0;
     }
 
+    private void HandleRawInput(nint hRawInput)
+    {
+        if (hRawInput == 0)
+        {
+            return;
+        }
+
+        uint headerSize = (uint)Marshal.SizeOf<Win32Interop.RAWINPUTHEADER>();
+        uint dwSize = 0;
+        if (Win32Interop.GetRawInputData(hRawInput, Win32Interop.RID_INPUT, 0, ref dwSize, headerSize) != 0 ||
+            dwSize < headerSize ||
+            dwSize > 4096)
+        {
+            return;
+        }
+
+        nint buf = Marshal.AllocHGlobal((int)dwSize);
+        try
+        {
+            uint read = Win32Interop.GetRawInputData(hRawInput, Win32Interop.RID_INPUT, buf, ref dwSize, headerSize);
+            if (read == uint.MaxValue || read < headerSize)
+            {
+                return;
+            }
+
+            var header = Marshal.PtrToStructure<Win32Interop.RAWINPUTHEADER>(buf);
+            if (header.dwType == Win32Interop.RIM_TYPEKEYBOARD)
+            {
+                if (read < headerSize + (uint)Marshal.SizeOf<Win32Interop.RAWKEYBOARD>())
+                {
+                    return;
+                }
+
+                var rk = Marshal.PtrToStructure<Win32Interop.RAWKEYBOARD>(buf + (int)headerSize);
+                if ((rk.Flags & Win32Interop.RI_KEY_BREAK) != 0)
+                {
+                    return;
+                }
+
+                bool matches = RawKeyboardMenuMatcher.IsF13KeyDown(rk.VKey, rk.MakeCode, rk.Flags);
+                long now = Environment.TickCount64;
+                if (_activeDiagSession is { } diag)
+                {
+                    diag.Record(
+                        now,
+                        "RawInputKbd",
+                        $"vk=0x{rk.VKey:X2} make=0x{rk.MakeCode:X2} flags=0x{rk.Flags:X2}",
+                        $"{rk.VKey:X2}-{rk.MakeCode:X2}-{rk.Flags:X2}",
+                        wouldTriggerQam: matches && _settings.InterceptPhysicalMenuButton);
+                    return;
+                }
+
+                if (_settings.InterceptPhysicalMenuButton && matches && _guideMenuGuard.TryClaimQamMenuToggle(now))
+                {
+                    _ = Task.Run(() => ToggleQamRequested?.Invoke());
+                }
+            }
+            else if (header.dwType == Win32Interop.RIM_TYPEHID)
+            {
+                uint rawHidSize = (uint)Marshal.SizeOf<Win32Interop.RAWHID>();
+                if (read < headerSize + rawHidSize)
+                {
+                    return;
+                }
+
+                var rawHid = Marshal.PtrToStructure<Win32Interop.RAWHID>(buf + (int)headerSize);
+                int dataOffset = (int)(headerSize + rawHidSize);
+                int avail = (int)read - dataOffset;
+                long totalRaw = (long)rawHid.dwSizeHid * rawHid.dwCount;
+                if (avail <= 0 || totalRaw <= 0)
+                {
+                    return;
+                }
+
+                int copyLen = (int)Math.Min(avail, Math.Min(totalRaw, 256));
+                var rawBytes = new byte[copyLen];
+                Marshal.Copy(buf + dataOffset, rawBytes, 0, copyLen);
+
+                uint vid = 0, pid = 0;
+                ushort up = 0, u = 0;
+                if (header.hDevice != 0)
+                {
+                    uint devInfoSize = (uint)Marshal.SizeOf<Win32Interop.RID_DEVICE_INFO>();
+                    nint devInfoBuf = Marshal.AllocHGlobal((int)devInfoSize);
+                    try
+                    {
+                        Marshal.WriteInt32(devInfoBuf, (int)devInfoSize);
+                        if (Win32Interop.GetRawInputDeviceInfoW(header.hDevice, Win32Interop.RIDI_DEVICEINFO, devInfoBuf, ref devInfoSize) != uint.MaxValue)
+                        {
+                            var info = Marshal.PtrToStructure<Win32Interop.RID_DEVICE_INFO>(devInfoBuf);
+                            if (info.dwType == Win32Interop.RIM_TYPEHID)
+                            {
+                                vid = info.hid.dwVendorId;
+                                pid = info.hid.dwProductId;
+                                up = info.hid.usUsagePage;
+                                u = info.hid.usUsage;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(devInfoBuf);
+                    }
+                }
+
+                bool isGpdVendorMenu = up == 0xFF00 &&
+                                       vid == 0x2F24 &&
+                                       !GpdControllerService.IsConfigTransferActive &&
+                                       _rawHidParser.ProcessReport(rawBytes);
+
+                long now = Environment.TickCount64;
+                if (_activeDiagSession is { } diag)
+                {
+                    string hex = BitConverter.ToString(rawBytes, 0, Math.Min(16, rawBytes.Length));
+                    diag.Record(
+                        now,
+                        "RawInputHid",
+                        $"VID={vid:X4} PID={pid:X4} UP=0x{up:X4} U=0x{u:X4} len={rawBytes.Length}",
+                        hex,
+                        wouldTriggerQam: isGpdVendorMenu && _settings.InterceptPhysicalMenuButton);
+                    return;
+                }
+
+                if (_settings.InterceptPhysicalMenuButton && isGpdVendorMenu && _guideMenuGuard.TryClaimQamMenuToggle(now))
+                {
+                    _ = Task.Run(() => ToggleQamRequested?.Invoke());
+                }
+            }
+        }
+        catch
+        {
+            // Ignore malformed or transient raw input packets
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
     private async Task PollLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             try
             {
+                bool f13AsyncDown = (Win32Interop.GetAsyncKeyState(0x7C) & 0x8000) != 0;
+                if (f13AsyncDown && !_prevAsyncF13Down && _settings.InterceptPhysicalMenuButton)
+                {
+                    long nowTick = Environment.TickCount64;
+                    if (_activeDiagSession is { } diagAsync)
+                    {
+                        diagAsync.Record(nowTick, "AsyncKeyState", "GetAsyncKeyState(VK_F13 0x7C) 上升沿", "7C", wouldTriggerQam: true);
+                    }
+                    else if (_guideMenuGuard.TryClaimQamMenuToggle(nowTick))
+                    {
+                        ToggleQamRequested?.Invoke();
+                    }
+                }
+                _prevAsyncF13Down = f13AsyncDown;
+
                 if (XInputInterop.TryGetCombinedGamepadState(out var gamepad, out int count))
                 {
                     if (count != ConnectedControllerCount)
@@ -503,12 +778,22 @@ public sealed class InputHubService : IDisposable
                         continue;
                     }
 
+                    if (_activeDiagSession is { } diagX && buttons != _prevButtons)
+                    {
+                        diagX.Record(
+                            Environment.TickCount64,
+                            "XInputEx",
+                            $"wButtons=0x{(ushort)buttons:X4} Guide={(buttons.HasFlag(XInputButtons.Guide) ? 1 : 0)} LT={gamepad.bLeftTrigger} RT={gamepad.bRightTrigger}",
+                            $"{(ushort)buttons:X4}",
+                            wouldTriggerQam: buttons.HasFlag(XInputButtons.Guide) && _settings.InterceptGuideMenuButton);
+                    }
+
                     // 0. Check solo short-press of XInput hidden Guide/Menu button (0x0400 via XInputGetStateEx #100)
                     // Matches GPDTool's dual-channel 0x0400007C (Guide + F13) while preserving Steam Guide+Button chords.
-                    if (_settings.InterceptGuideMenuButton)
+                    if (_settings.InterceptGuideMenuButton && _activeDiagSession is null)
                     {
                         bool guideDown = buttons.HasFlag(XInputButtons.Guide);
-                        bool otherActive = (buttons & ~XInputButtons.Guide) != XInputButtons.None ||
+                        bool otherActive = (buttons & XInputInterop.KnownNonGuideButtonsMask) != XInputButtons.None ||
                                            gamepad.bLeftTrigger > 30 || gamepad.bRightTrigger > 30;
                         if (_guideMenuGuard.UpdateGuideState(guideDown, otherActive, Environment.TickCount64))
                         {
@@ -517,7 +802,7 @@ public sealed class InputHubService : IDisposable
                             ToggleQamRequested?.Invoke();
                         }
                     }
-                    else
+                    else if (!_settings.InterceptGuideMenuButton)
                     {
                         _guideMenuGuard.Reset();
                     }
@@ -827,10 +1112,77 @@ public sealed class InputHubService : IDisposable
         _wheelCarry = 0;
     }
 
+    public async Task<KeyCaptureSessionReport> RunMenuKeyDiagnosticAsync(
+        int durationMs = 5000,
+        GpdControllerConfig? gpdConfig = null,
+        CancellationToken ct = default)
+    {
+        int clampedMs = Math.Clamp(durationMs, 2000, 10000);
+        var session = new KeyCaptureDiagnosticSession(Environment.TickCount64);
+        _activeDiagSession = session;
+        try
+        {
+            await Task.Delay(clampedMs, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _activeDiagSession = null;
+            _guideMenuGuard.Reset();
+        }
+
+        bool gpdToolRunning = false;
+        bool gpdToolElevated = false;
+        try
+        {
+            var procs = Process.GetProcessesByName("GPDTool");
+            foreach (var proc in procs)
+            {
+                using (proc)
+                {
+                    gpdToolRunning = true;
+                    try
+                    {
+                        if (Win32Interop.IsProcessElevated((uint)proc.Id))
+                        {
+                            gpdToolElevated = true;
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+
+        var (_, gpdSvcRunning) = PawnIoHardwareDaemon.ProbeWindowsServiceState("GPDToolService");
+
+        var env = new KeyCaptureEnvironmentInfo(
+            SelfElevated: Win32Interop.IsCurrentProcessElevated(),
+            RegisterHotKeyF13Ok: LastRegisterF13Success,
+            RegisterHotKeyF13Error: LastRegisterF13Error,
+            GpdVendorHidConnected: _vendorHidListener.IsConnected,
+            GpdVendorHidDevice: _vendorHidListener.ConnectedDeviceLabel,
+            GpdVendorHidError: _vendorHidListener.LastOpenError,
+            XInputBackend: XInputInterop.ActiveBackendName,
+            ConnectedXInputCount: ConnectedControllerCount,
+            GpdToolRunning: gpdToolRunning,
+            GpdToolElevated: gpdToolElevated,
+            GpdToolServiceRunning: gpdSvcRunning,
+            FirmwareX: gpdConfig?.FirmwareX ?? string.Empty,
+            FirmwareK: gpdConfig?.FirmwareK ?? string.Empty,
+            InterceptPhysicalMenuButton: _settings.InterceptPhysicalMenuButton,
+            InterceptGuideMenuButton: _settings.InterceptGuideMenuButton);
+
+        return session.BuildReport(env, clampedMs);
+    }
+
     public void Dispose()
     {
+        _activeDiagSession = null;
         ReleaseHeldMouseButtons();
         _cts.Cancel();
+        _vendorHidListener.RawReportReceived -= OnVendorHidRawReport;
+        _vendorHidListener.MenuButtonPressed -= OnVendorHidMenuButtonPressed;
+        _vendorHidListener.Dispose();
         RemoveKeyboardHook();
         UnregisterGlobalHotkeys();
         _hwndSource?.RemoveHook(WndProc);

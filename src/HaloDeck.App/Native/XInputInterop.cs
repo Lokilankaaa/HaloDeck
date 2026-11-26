@@ -53,14 +53,30 @@ internal static class XInputInterop
     [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
     private static extern uint XInputGetState_1_4(uint dwUserIndex, out XInputState pState);
 
+    [DllImport("xinput1_3.dll", EntryPoint = "#100")]
+    private static extern uint XInputGetStateEx_1_3(uint dwUserIndex, out XInputState pState);
+
+    [DllImport("xinput1_3.dll", EntryPoint = "XInputGetState")]
+    private static extern uint XInputGetState_1_3(uint dwUserIndex, out XInputState pState);
+
     [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState")]
     private static extern uint XInputGetState_9_1_0(uint dwUserIndex, out XInputState pState);
 
+    public const XInputButtons KnownNonGuideButtonsMask =
+        XInputButtons.DPadUp | XInputButtons.DPadDown | XInputButtons.DPadLeft | XInputButtons.DPadRight |
+        XInputButtons.Start | XInputButtons.Back | XInputButtons.LeftThumb | XInputButtons.RightThumb |
+        XInputButtons.LeftShoulder | XInputButtons.RightShoulder |
+        XInputButtons.A | XInputButtons.B | XInputButtons.X | XInputButtons.Y;
+
+    private static bool _useFallback13;
     private static bool _useFallbackStandard14;
     private static bool _useFallback910;
+    private static string _activeBackendName = "xinput1_4.dll (#100 Ex)";
     private static long _lastButtonOrTriggerTick64;
     private static readonly long[] DisconnectedRetryTick64 = new long[4];
-    private const long DisconnectedBackoffMs = 3000;
+    private const long DisconnectedBackoffMs = 1000;
+
+    public static string ActiveBackendName => _activeBackendName;
 
     public static bool TryGetCombinedGamepadState(out XInputGamepad combined, out int connectedCount)
     {
@@ -153,6 +169,24 @@ internal static class XInputInterop
             {
                 return XInputGetState_9_1_0(userIndex, out state) == ERROR_SUCCESS;
             }
+
+            if (_useFallback13)
+            {
+                if (!_useFallbackStandard14)
+                {
+                    try
+                    {
+                        return XInputGetStateEx_1_3(userIndex, out state) == ERROR_SUCCESS;
+                    }
+                    catch (EntryPointNotFoundException)
+                    {
+                        _useFallbackStandard14 = true;
+                        _activeBackendName = "xinput1_3.dll (Std)";
+                    }
+                }
+                return XInputGetState_1_3(userIndex, out state) == ERROR_SUCCESS;
+            }
+
             if (!_useFallbackStandard14)
             {
                 try
@@ -162,15 +196,46 @@ internal static class XInputInterop
                 catch (EntryPointNotFoundException)
                 {
                     _useFallbackStandard14 = true;
+                    _activeBackendName = "xinput1_4.dll (Std)";
                 }
             }
             return XInputGetState_1_4(userIndex, out state) == ERROR_SUCCESS;
         }
         catch (DllNotFoundException)
         {
+            if (!_useFallback13)
+            {
+                _useFallback13 = true;
+                _useFallbackStandard14 = false;
+                _activeBackendName = "xinput1_3.dll (#100 Ex)";
+                try
+                {
+                    return XInputGetStateEx_1_3(userIndex, out state) == ERROR_SUCCESS;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    _useFallbackStandard14 = true;
+                    _activeBackendName = "xinput1_3.dll (Std)";
+                    try
+                    {
+                        return XInputGetState_1_3(userIndex, out state) == ERROR_SUCCESS;
+                    }
+                    catch { }
+                }
+                catch (DllNotFoundException)
+                {
+                    // Fall through to xinput9_1_0.dll
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
             if (!_useFallback910)
             {
                 _useFallback910 = true;
+                _activeBackendName = "xinput9_1_0.dll (Std)";
                 try
                 {
                     return XInputGetState_9_1_0(userIndex, out state) == ERROR_SUCCESS;
