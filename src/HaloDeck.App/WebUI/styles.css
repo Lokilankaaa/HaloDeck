@@ -6215,3 +6215,144 @@ body[data-theme="frost"] .hero-top-pills .pill-badge.live {
   border-color: rgba(110, 231, 183, 0.52) !important;
   color: #ecfdf5 !important;
 }
+
+
+/* ==================== v0.6.3 Polish: Top Settings Update Dot, Standby Battery Card & 3-Col Community ==================== */
+.tab-btn-settings {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.85);
+  flex-shrink: 0;
+}
+
+.tab-btn-settings.active .settings-update-dot {
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+}
+
+/* Tab 1 Bottom-Left Standby Battery & Power Status Card */
+.bento-power-status-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bento-standby-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bento-standby-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bento-standby-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bento-standby-bar {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.bento-standby-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  transition: width 0.25s ease;
+}
+
+.bento-standby-bar-fill.is-charging {
+  background: linear-gradient(90deg, #10b981 0%, #06b6d4 100%);
+}
+
+.bento-standby-pct {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bento-standby-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bento-standby-cell {
+  padding: 8px 10px;
+  border-radius: var(--radius-inner);
+  background: var(--bg-subtile);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* Tab 4 Community 3-Card Balanced Grid */
+.community-social-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.community-social-card.is-vertical {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 15px 13px;
+  min-height: 154px;
+}
+
+.social-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.social-icon.is-author {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.36);
+  color: #38bdf8;
+}
+
+.social-card-url {
+  font-size: 10.5px;
+  font-family: var(--font-mono, Consolas, monospace);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+body[data-theme="frost"] .social-icon.is-author {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.28);
+  color: #2563eb;
+}

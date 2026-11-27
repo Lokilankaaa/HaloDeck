@@ -488,7 +488,7 @@ public sealed class AppUpdateService : IDisposable
             $stageRoot = '{{escapedStage}}'
             $launchAfterApply = {{launchFlag}}
 
-            $logDir = Join-Path $env:LOCALAPPDATA 'HaloDeck'
+            $logDir = Join-Path (Join-Path $env:LOCALAPPDATA 'HaloDeck') 'logs'
             $logPath = Join-Path $logDir 'last-update.log'
             function Write-UpdateLog([string]$msg) {
                 try {

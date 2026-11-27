@@ -21,6 +21,26 @@ public static class HaloDeckPaths
         return newRoot;
     }
 
+    public static string ResolveLogsDirectory(string? customAppDataRoot = null)
+    {
+        string dir = Path.Combine(ResolveAppDataRoot(customAppDataRoot), "logs");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    public static string ResolveComponentsDirectory(string? customAppDataRoot = null)
+    {
+        string dir = Path.Combine(ResolveAppDataRoot(customAppDataRoot), "components");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    public static string ResolveUpdateLogPath(string? customAppDataRoot = null)
+        => Path.Combine(ResolveLogsDirectory(customAppDataRoot), "last-update.log");
+
+    public static string ResolveLegacyUpdateLogPath(string? customAppDataRoot = null)
+        => Path.Combine(ResolveAppDataRoot(customAppDataRoot), "last-update.log");
+
     private static void TryMigrateLegacyAppData(string localAppData, string newRoot)
     {
         lock (MigrationLock)

@@ -224,6 +224,28 @@ public sealed class PluginRegistryClient : IDisposable
         }
     }
 
+    public static string NormalizeMirrorPrefix(string? rawOrPreset)
+    {
+        string raw = (rawOrPreset ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(raw) || string.Equals(raw, "direct", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+        if (string.Equals(raw, "ghproxy", StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://gh-proxy.com/";
+        }
+        if (string.Equals(raw, "ghfast", StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://ghfast.top/";
+        }
+        if (!IsAllowedHttpsUrl(raw))
+        {
+            throw new ArgumentException("下载加速镜像前缀必须留空或为合法的 https:// 地址");
+        }
+        return raw.EndsWith('/') ? raw : raw + "/";
+    }
+
     public static IReadOnlyList<string> BuildDownloadCandidateUrls(string resolvedZipUrl, string? mirrorPrefix)
     {
         var list = new List<string>(2);

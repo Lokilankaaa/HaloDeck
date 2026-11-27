@@ -181,6 +181,14 @@
         <button data-view="qam">快捷侧栏 440×720</button>
         <button data-view="both">双端并排对比</button>
       </div>
+      <div class="seg" role="group" aria-label="场景切换">
+        <button data-mock-scene="standby" class="active">桌面待机</button>
+        <button data-mock-scene="gaming">运行游戏中</button>
+      </div>
+      <div class="seg" role="group" aria-label="更新状态模拟">
+        <button data-mock-upd="0" class="active">已是最新</button>
+        <button data-mock-upd="1">模拟新版红点</button>
+      </div>
       <div class="seg" role="group" aria-label="主题快速切换">
         <button data-mock-theme="aurora" class="active">极光深色</button>
         <button data-mock-theme="frost">凝霜浅色</button>
@@ -374,6 +382,9 @@
             slot: "OptiScalerNightly",
             displayName: "OptiScaler (Nightly v10+)",
             repoSlug: "optiscaler/OptiScaler-nightly",
+            author: "OptiScaler Team",
+            license: "MIT",
+            homepageUrl: "https://github.com/optiscaler/OptiScaler",
             isInstalled: true,
             installedVersion: "v0.9.9-pre10",
             latestVersion: "v0.9.9-pre10",
@@ -384,6 +395,9 @@
             slot: "OptiScalerStable",
             displayName: "OptiScaler (Stable v0.9.4)",
             repoSlug: "optiscaler/OptiScaler",
+            author: "OptiScaler Team",
+            license: "MIT",
+            homepageUrl: "https://github.com/optiscaler/OptiScaler",
             isInstalled: true,
             installedVersion: "v0.9.4",
             latestVersion: "v0.9.4",
@@ -394,6 +408,9 @@
             slot: "MfgUnlocker",
             displayName: "MFG Unlocker (XeMFG 多帧解锁 · by dashdogy)",
             repoSlug: "dashdogy/MFG-Unlocker",
+            author: "dashdogy",
+            license: "MIT",
+            homepageUrl: "https://github.com/dashdogy/MFG-Unlocker",
             isInstalled: true,
             installedVersion: "v1.2.1",
             latestVersion: "v1.3.0",
@@ -404,6 +421,9 @@
             slot: "Fakenvapi",
             displayName: "Fakenvapi (Anti-Lag 2 桥接 · by FakeMichau)",
             repoSlug: "optiscaler/fakenvapi",
+            author: "FakeMichau",
+            license: "MIT",
+            homepageUrl: "https://github.com/optiscaler/fakenvapi",
             isInstalled: true,
             installedVersion: "v1.3.8",
             latestVersion: "v1.3.8",
@@ -414,6 +434,9 @@
             slot: "OptiPatcher",
             displayName: "OptiPatcher (ASI 插件)",
             repoSlug: "optiscaler/OptiPatcher",
+            author: "OptiScaler Team",
+            license: "MIT",
+            homepageUrl: "https://github.com/optiscaler/OptiPatcher",
             isInstalled: true,
             installedVersion: "v0.7.4",
             latestVersion: "v0.7.4",
@@ -484,24 +507,30 @@
 
         const initTheme = params.get("theme") === "frost" ? "frost" : "aurora";
         const initLayout = params.get("layout") === "cockpit" ? "cockpit" : "bento";
+        const initScene = params.get("scene") === "gaming" ? "gaming" : "standby";
+        const initHasUpd = params.get("upd") === "1";
+
+        defaultGames[0].isCurrentlyRunning = initScene === "gaming";
 
         return {
-          runningGame: defaultGames[0],
+          runningGame: initScene === "gaming" ? defaultGames[0] : null,
           activeInspectGame: defaultGames[0],
           games: defaultGames,
           presets,
           components,
           customExtensions: [],
           settingsFilePath: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\settings.json",
+          userDataDirectory: "C:\\Users\\Player\\AppData\\Local\\HaloDeck",
           logDirectory: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\logs",
           componentsDirectory: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\components",
+          dedicatedVramMb: 16384,
           connectedControllers: 1,
           isElevated: false,
           appVersion: "0.6.3-rc.1",
           latestUpdate: {
-            hasUpdate: true,
+            hasUpdate: initHasUpd,
             currentVersion: "0.6.3-rc.1",
-            latestVersion: "0.6.3",
+            latestVersion: initHasUpd ? "0.6.3" : "0.6.3-rc.1",
             isPrerelease: false,
             title: "HaloDeck v0.6.3 正式版",
             htmlUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.3",
@@ -600,17 +629,17 @@
             cpuBoostMode: "off",
             cpuTopologyBadge: "单CCD 8核 · 32MB L3",
             cpuName: "AMD Ryzen AI MAX+ 395",
-            currentFps: 98,
-            frameTimeMs: 10.2,
-            apuPowerWatts: 37.8,
-            systemDrawWatts: 49.4,
-            gpuUsagePercent: 92,
-            gfxClockMhz: 2480,
+            currentFps: initScene === "gaming" ? 98 : 0,
+            frameTimeMs: initScene === "gaming" ? 10.2 : 0,
+            apuPowerWatts: initScene === "gaming" ? 37.8 : 11.4,
+            systemDrawWatts: initScene === "gaming" ? 49.4 : 18.2,
+            gpuUsagePercent: initScene === "gaming" ? 92 : 8,
+            gfxClockMhz: initScene === "gaming" ? 2480 : 800,
             memClockMhz: 2000,
-            cpuUsagePercent: 38,
-            cpuClockMhz: 3150,
-            cpuTempC: 66,
-            gpuTempC: 63,
+            cpuUsagePercent: initScene === "gaming" ? 38 : 12,
+            cpuClockMhz: initScene === "gaming" ? 3150 : 2100,
+            cpuTempC: initScene === "gaming" ? 66 : 44,
+            gpuTempC: initScene === "gaming" ? 63 : 42,
             vramUsedMb: 9420,
             vramTotalMb: 16384,
             sharedVramUsedMb: 1430,
@@ -618,10 +647,12 @@
             totalRamGb: 64,
             hasBattery: true,
             batteryPercent: 84,
-            isOnAcPower: true,
-            isCharging: true,
-            estimatedChargerWatts: 65.0,
-            batteryEtaMinutes: 132,
+            isOnAcPower: initScene === "gaming",
+            isCharging: false,
+            batteryRateWatts: initScene === "gaming" ? 0 : -18.2,
+            estimatedChargerWatts: initScene === "gaming" ? 65.0 : null,
+            batteryEtaMinutes: initScene === "gaming" ? 132 : 254,
+            estimatedStandbyMinutes: 254,
             adlAvailable: true,
             rtssInstalled: true,
             rtssRunning: true,
@@ -676,8 +707,12 @@
       function syncToolbarButtons() {
         const theme = mockState.settings.uiTheme;
         const layout = mockState.settings.uiLayout;
+        const scene = mockState.runningGame ? "gaming" : "standby";
+        const updFlag = mockState.latestUpdate?.hasUpdate ? "1" : "0";
         document.querySelectorAll("[data-mock-theme]").forEach((b) => b.classList.toggle("active", b.dataset.mockTheme === theme));
         document.querySelectorAll("[data-mock-layout]").forEach((b) => b.classList.toggle("active", b.dataset.mockLayout === layout));
+        document.querySelectorAll("[data-mock-scene]").forEach((b) => b.classList.toggle("active", b.dataset.mockScene === scene));
+        document.querySelectorAll("[data-mock-upd]").forEach((b) => b.classList.toggle("active", b.dataset.mockUpd === updFlag));
       }
 
       async function handleMockRpc(method, payload = {}) {
@@ -790,6 +825,37 @@
             }
             broadcastSnapshot();
             return { ok: true };
+          case "setDownloadMirror": {
+            const raw = String(payload.prefix ?? payload.pluginDownloadMirrorPrefix ?? "").trim();
+            if (raw && !/^https:\/\//i.test(raw)) {
+              throw new Error("下载加速镜像前缀必须留空或为合法的 https:// 地址");
+            }
+            s.pluginDownloadMirrorPrefix = raw ? (raw.endsWith("/") ? raw : raw + "/") : "";
+            broadcastSnapshot();
+            return { ok: true, pluginDownloadMirrorPrefix: s.pluginDownloadMirrorPrefix };
+          }
+          case "getDiagnosticReport":
+            return {
+              ok: true,
+              report: [
+                "=== HaloDeck 环境诊断报告 ===",
+                `版本与权限: HaloDeck v${mockState.appVersion} (标准用户权限)`,
+                "操作系统: Microsoft Windows NT 10.0.26100.0",
+                "处理器 / 显存 / 内存: AMD Ryzen AI MAX+ 395 | VRAM: 16384 MB (16.0 GB DXGI 物理专用显存) | RAM: 64 GB",
+                "硬件守护与驱动: HaloDeckHardwareSvc 运行中 (协议 v5) | PawnIO/SMU=就绪 | EC=就绪",
+                `功耗与散热: 目标 TDP=${s.currentTdpWatts}W (PM SPL=${hw.hwStapmLimitWatts}W) | 风扇模式=${s.fanMode} (${hw.fanRpm} RPM)`,
+                "手柄与菜单键: 已连接 (FW X405 / K109) | 0xFF00 HID/F13=已启用 | Guide=已启用",
+                `全局下载线路: ${s.pluginDownloadMirrorPrefix || "GitHub 官方直连"}`,
+                "用户数据目录: C:\\Users\\***\\AppData\\Local\\HaloDeck",
+                "运行日志目录: C:\\Users\\***\\AppData\\Local\\HaloDeck\\logs"
+              ].join("\n")
+            };
+          case "openLogsDirectory":
+            return { ok: true, opened: true, path: mockState.logDirectory };
+          case "openUserDataDirectory":
+            return { ok: true, opened: true, path: mockState.userDataDirectory };
+          case "openComponentsDirectory":
+            return { ok: true, opened: true, path: mockState.componentsDirectory };
           case "getGpdController":
             return clone(mockState.gpdController);
           case "saveGpdController":
@@ -964,6 +1030,29 @@
       document.querySelectorAll("[data-mock-layout]").forEach((btn) => {
         btn.addEventListener("click", () => {
           mockState.settings.uiLayout = btn.dataset.mockLayout;
+          broadcastSnapshot();
+        });
+      });
+      document.querySelectorAll("[data-mock-scene]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const gaming = btn.dataset.mockScene === "gaming";
+          mockState.games[0].isCurrentlyRunning = gaming;
+          mockState.runningGame = gaming ? mockState.games[0] : null;
+          mockState.systemControl.currentFps = gaming ? 98 : 0;
+          mockState.systemControl.apuPowerWatts = gaming ? 37.8 : 11.4;
+          mockState.systemControl.systemDrawWatts = gaming ? 49.4 : 18.2;
+          mockState.systemControl.gpuUsagePercent = gaming ? 92 : 8;
+          mockState.systemControl.gfxClockMhz = gaming ? 2480 : 800;
+          mockState.systemControl.isOnAcPower = gaming;
+          mockState.systemControl.isCharging = false;
+          broadcastSnapshot();
+        });
+      });
+      document.querySelectorAll("[data-mock-upd]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const hasUpd = btn.dataset.mockUpd === "1";
+          mockState.latestUpdate.hasUpdate = hasUpd;
+          mockState.latestUpdate.latestVersion = hasUpd ? "0.6.3" : mockState.appVersion;
           broadcastSnapshot();
         });
       });

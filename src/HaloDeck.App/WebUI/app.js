@@ -1063,11 +1063,17 @@
     setEl("kpiBat", pfUi.badge);
     setEl("kpiBatSub", pfUi.kpiBatSub);
 
-    // Bento live telemetry strip
+    // Bento live telemetry strip & standby battery card
     setEl("bentoLiveFps", sys.currentFps > 0 ? `${sys.currentFps} FPS` : "桌面待命");
     setEl("bentoLiveTemp", `C ${sys.cpuTempC || "--"}° · G ${sys.gpuTempC || "--"}°`);
     setEl("bentoLiveGpu", `${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}MHz`);
     setEl("bentoLiveFan", hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM` : (hw.serviceRunning ? "自动温控" : "待授权"));
+    setEl("bentoStandbyBatPct", sys.hasBattery ? `${sys.batteryPercent}%` : "外接直供");
+    setEl("bentoStandbyEta", pfUi.etaVal);
+    setEl("bentoStandbyNetW", pfUi.batVal);
+    setEl("bentoStandbySvc", hw.serviceRunning && hw.smuReady ? `PawnIO v${hw.daemonVersion || 5}` : "标准用户态");
+    const standbyBar = document.getElementById("bentoStandbyBatBar");
+    if (standbyBar) standbyBar.style.width = `${sys.hasBattery ? Math.max(4, Math.min(100, sys.batteryPercent || 0)) : 100}%`;
 
     // QAM live tiles & monitor grid
     setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
@@ -2010,7 +2016,7 @@
               </div>
             </section>
 
-            <section class="hh-card bento-game-card">
+            <section class="hh-card bento-game-card ${active && gamePerf ? "" : "bento-power-status-card"}">
               ${active && gamePerf ? `
                 <div class="bento-game-card-top">
                   ${active.coverImageUrl
@@ -2051,12 +2057,34 @@
                   </div>
                 </div>
               ` : `
-                <div class="bento-game-empty">
-                  <div>
-                    <strong class="hh-card-title">桌面待命 · 当前未运行游戏</strong>
-                    <span class="bento-game-desc" style="display:block;margin-top:4px;">进入游戏后自动识别并可绑定独立功耗与刷新率${savedProfileCount > 0 ? `（已保存 ${savedProfileCount} 款专属方案）` : "，也可提前配置 FSR 4 超分"}</span>
+                <div class="bento-standby-head">
+                  <div class="bento-standby-title-group">
+                    <span class="hh-card-title">电池续航与供电状态</span>
+                    <span class="hh-card-badge ${pfUi.modeClass || "live"}">${esc(pfUi.modeText || (sys.isOnAcPower ? "AC 直供" : "电池供电"))}</span>
                   </div>
-                  <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">游戏与超分 ▸</button>
+                  <button id="btnHomeGoLibrary" class="bento-link-pill" data-focusable="true">前往游戏库 →</button>
+                </div>
+
+                <div class="bento-standby-bar-row">
+                  <div class="bento-standby-bar" aria-label="电池电量进度">
+                    <div id="bentoStandbyBatBar" class="bento-standby-bar-fill ${sys.isCharging ? "is-charging" : ""}" style="width:${sys.hasBattery ? Math.max(4, Math.min(100, sys.batteryPercent || 0)) : 100}%;"></div>
+                  </div>
+                  <strong id="bentoStandbyBatPct" class="bento-standby-pct">${sys.hasBattery ? `${sys.batteryPercent}%` : "外接直供"}</strong>
+                </div>
+
+                <div class="bento-standby-grid">
+                  <div class="bento-standby-cell">
+                    <span class="bento-tele-label">预计续航 / 充满</span>
+                    <strong id="bentoStandbyEta" class="bento-tele-val accent-teal">${esc(pfUi.etaVal)}</strong>
+                  </div>
+                  <div class="bento-standby-cell">
+                    <span class="bento-tele-label">电池净充放</span>
+                    <strong id="bentoStandbyNetW" class="bento-tele-val">${esc(pfUi.batVal)}</strong>
+                  </div>
+                  <div class="bento-standby-cell">
+                    <span class="bento-tele-label">守护服务直控</span>
+                    <strong id="bentoStandbySvc" class="bento-tele-val">${hw.serviceRunning && hw.smuReady ? `PawnIO v${hw.daemonVersion || 5}` : "标准用户态"}</strong>
+                  </div>
                 </div>
               `}
             </section>
@@ -2610,113 +2638,19 @@
     const installedComps = comps.filter((c) => c.isInstalled).map((c) => `${c.slot}@${c.installedVersion || "ok"}`);
     const enabledPlugins = plugins.filter((p) => p.enabled && p.isValid).map((p) => `${p.id}@${p.version || "?"}`);
     const mirror = resolveMirrorInfo(settings.pluginDownloadMirrorPrefix);
-    const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
+    const vramMb = snap.dedicatedVramMb > 0 ? snap.dedicatedVramMb : (sys.vramTotalMb || 16384);
+    const vramTotalGb = (vramMb / 1024).toFixed(0);
     return [
-      "=== HaloDeck Environment Diagnostic ===",
-      `AppVersion: v${snap.appVersion || "0.6.3"} (${snap.isElevated ? "Admin" : "Standard"})`,
-      `HardwareSvc: running=${!!hw.serviceRunning} v${hw.daemonVersion || 0} | SMU=${!!hw.smuReady} | EC=${!!hw.ecReady}`,
-      `Power/Fan: TDP=${settings.currentTdpWatts || 40}W (SPL=${hw.hwStapmLimitWatts ?? "--"}W) | Fan=${settings.fanMode || "auto"} (${hw.fanRpm || 0} RPM)`,
-      `Display/GPU: ${sys.screenWidth || 1920}x${sys.screenHeight || 1080}@${sys.refreshRateHz || 120}Hz${sys.isDynamicRefreshRate ? " DRR" : ""} | VRAM=${vramTotalGb}GB | RAM=${sys.totalRamGb || "--"}GB`,
-      `Controller: connected=${!!gpd.connected} FW=X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"} | 0xFF00/F13=${settings.interceptPhysicalMenuButton !== false} | Guide=${settings.interceptGuideMenuButton !== false}`,
-      `Kernel: ${settings.activeOptiScalerSlot || "OptiScalerNightly"} | InstalledComps(${installedComps.length}/${comps.length}): ${installedComps.join(", ") || "none"}`,
-      `Plugins(${enabledPlugins.length}/${plugins.length} enabled): ${enabledPlugins.join(", ") || "none"}`,
-      `DownloadMirror: ${mirror.id} (${mirror.prefix || "direct"})`
+      "=== HaloDeck 环境诊断报告 ===",
+      `版本与权限: HaloDeck v${snap.appVersion || "0.6.3"} (${snap.isElevated ? "管理员权限" : "标准用户权限"})`,
+      `硬件守护与驱动: HaloDeckHardwareSvc running=${!!hw.serviceRunning} v${hw.daemonVersion || 0} | PawnIO/SMU=${!!hw.smuReady} | EC=${!!hw.ecReady}`,
+      `功耗与散热: TDP=${settings.currentTdpWatts || 40}W (PM SPL=${hw.hwStapmLimitWatts ?? "--"}W) | Fan=${settings.fanMode || "auto"} (${hw.fanRpm || 0} RPM)`,
+      `显示与显存: ${sys.screenWidth || 1920}x${sys.screenHeight || 1080}@${sys.refreshRateHz || 120}Hz${sys.isDynamicRefreshRate ? " DRR" : ""} | VRAM=${vramTotalGb}GB | RAM=${sys.totalRamGb || "--"}GB`,
+      `手柄与菜单键: connected=${!!gpd.connected} FW=X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"} | 0xFF00/F13=${settings.interceptPhysicalMenuButton !== false} | Guide=${settings.interceptGuideMenuButton !== false}`,
+      `核心组件 (${installedComps.length}/${comps.length}, 默认 ${settings.activeOptiScalerSlot || "OptiScalerNightly"}): ${installedComps.join(", ") || "无"}`,
+      `社区插件 (${enabledPlugins.length}/${plugins.length} 已启用): ${enabledPlugins.join(", ") || "无"}`,
+      `全局下载线路: ${mirror.prefix || "GitHub 官方直连"}`
     ].join("\n");
-  }
-
-  function openCommunityGroupModal() {
-    const modal = document.getElementById("modalBackdrop");
-    const title = document.getElementById("modalTitle");
-    const sub = document.getElementById("modalSubtitle");
-    const body = document.getElementById("modalBody");
-    if (!modal || !title || !sub || !body) return;
-    title.textContent = "HaloDeck 玩家交流群";
-    sub.textContent = "掌机功耗调优 · FSR 4 / XeFG 实测 · 社区插件分享";
-    body.innerHTML = `
-      <div class="community-modal-body">
-        <div class="community-qr-card">
-          <div class="community-qr-mock" aria-hidden="true">
-            <svg viewBox="0 0 80 80" width="92" height="92" fill="none">
-              <rect x="4" y="4" width="24" height="24" rx="4" stroke="currentColor" stroke-width="5"/>
-              <rect x="11" y="11" width="10" height="10" rx="2" fill="currentColor"/>
-              <rect x="52" y="4" width="24" height="24" rx="4" stroke="currentColor" stroke-width="5"/>
-              <rect x="59" y="11" width="10" height="10" rx="2" fill="currentColor"/>
-              <rect x="4" y="52" width="24" height="24" rx="4" stroke="currentColor" stroke-width="5"/>
-              <rect x="11" y="59" width="10" height="10" rx="2" fill="currentColor"/>
-              <rect x="36" y="10" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="36" y="24" width="8" height="16" rx="1.5" fill="currentColor"/>
-              <rect x="36" y="48" width="12" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="54" y="38" width="10" height="10" rx="1.5" fill="currentColor"/>
-              <rect x="66" y="52" width="10" height="24" rx="2" fill="currentColor"/>
-              <rect x="46" y="64" width="14" height="12" rx="2" fill="currentColor"/>
-            </svg>
-          </div>
-          <div class="community-qr-copy">
-            <strong>HaloDeck 核心玩家群（QQ）</strong>
-            <span class="cw-row-sub">群号：<code>1038492650</code> · 加群请备注掌机型号（如 GPD Win 5）</span>
-            <div style="display:flex;gap:8px;margin-top:8px;">
-              <button id="btnCopyGroupId" class="btn btn-sm btn-primary" data-focusable="true">复制群号</button>
-              <button class="btn btn-sm" data-open-url="https://github.com/Lokilankaaa/HaloDeck/discussions" data-focusable="true">GitHub 讨论区 ↗</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-    modal.classList.remove("hidden");
-    document.getElementById("btnCopyGroupId")?.addEventListener("click", async () => {
-      await copyTextToClipboard("1038492650");
-      showToast("已复制交流群号 1038492650", "success");
-    });
-    body.querySelectorAll("[data-open-url]").forEach((btn) => {
-      btn.addEventListener("click", () => rpc("openExternalUrl", { url: btn.dataset.openUrl }).catch((err) => showToast(err.message, "error")));
-    });
-  }
-
-  function openCommunityDonateModal() {
-    const modal = document.getElementById("modalBackdrop");
-    const title = document.getElementById("modalTitle");
-    const sub = document.getElementById("modalSubtitle");
-    const body = document.getElementById("modalBody");
-    if (!modal || !title || !sub || !body) return;
-    title.textContent = "请作者喝杯咖啡";
-    sub.textContent = "HaloDeck 永久开源免费，赞赏完全自愿，感谢每一份鼓励";
-    body.innerHTML = `
-      <div class="donate-modal-grid">
-        <div class="donate-qr-slot is-wechat">
-          <div class="donate-qr-badge">微信赞赏</div>
-          <div class="donate-qr-frame">
-            <svg viewBox="0 0 64 64" width="76" height="76" fill="none">
-              <rect x="4" y="4" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="10" y="10" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="40" y="4" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="46" y="10" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="4" y="40" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="10" y="46" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="30" y="30" width="12" height="12" rx="2" fill="currentColor"/>
-              <rect x="48" y="44" width="12" height="16" rx="2" fill="currentColor"/>
-            </svg>
-          </div>
-          <span class="cw-row-sub">打开微信扫一扫支持开发</span>
-        </div>
-        <div class="donate-qr-slot is-alipay">
-          <div class="donate-qr-badge">支付宝赞赏</div>
-          <div class="donate-qr-frame">
-            <svg viewBox="0 0 64 64" width="76" height="76" fill="none">
-              <rect x="4" y="4" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="10" y="10" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="40" y="4" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="46" y="10" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="4" y="40" width="20" height="20" rx="3" stroke="currentColor" stroke-width="4"/>
-              <rect x="10" y="46" width="8" height="8" rx="1.5" fill="currentColor"/>
-              <rect x="32" y="28" width="10" height="14" rx="2" fill="currentColor"/>
-              <rect x="46" y="46" width="14" height="14" rx="2" fill="currentColor"/>
-            </svg>
-          </div>
-          <span class="cw-row-sub">打开支付宝扫一扫支持开发</span>
-        </div>
-      </div>
-    `;
-    modal.classList.remove("hidden");
   }
 
   function renderControlsView() {
@@ -2738,9 +2672,8 @@
     const customExts = snap.customExtensions || [];
     const plugins = snap.plugins || [];
     const activeSlot = settings.activeOptiScalerSlot || "OptiScalerNightly";
-    const userDataDir = getParentDirPath(snap.settingsFilePath, "C:\\Users\\Player\\AppData\\Local\\HaloDeck");
+    const userDataDir = snap.userDataDirectory || getParentDirPath(snap.settingsFilePath, "C:\\Users\\***\\AppData\\Local\\HaloDeck");
     const logsDir = snap.logDirectory || `${userDataDir}\\logs`;
-    const compsDir = snap.componentsDirectory || `${userDataDir}\\components`;
 
     const navIcons = {
       gamepad: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="5"></rect><path d="M7 12h4M9 10v4"></path><circle cx="15.5" cy="11" r="0.9" fill="currentColor"></circle><circle cx="17.5" cy="13" r="0.9" fill="currentColor"></circle></svg>`,
@@ -2755,7 +2688,7 @@
       { id: "system", label: "外观与系统", desc: "布局 · 主题 · 电源偏好" },
       { id: "components", label: "组件与许可", desc: "驱动 · 超分内核 · MIT" },
       { id: "about", label: "更新与诊断", desc: "版本 · 镜像 · 按键抓包", dot: hasUpd },
-      { id: "community", label: "社区与支持", desc: "开源仓库 · 交流群" }
+      { id: "community", label: "社区与支持", desc: "开源仓库 · 作者主页" }
     ];
 
     let paneHtml = "";
@@ -3151,7 +3084,9 @@
 
           <div class="cw-group">
             ${comps.map((c) => {
-              const meta = COMPONENT_LICENSE_META[c.slot] || { license: "MIT", author: "Open Source", url: c.repoSlug ? `https://github.com/${c.repoSlug}` : "" };
+              const fallbackMeta = COMPONENT_LICENSE_META[c.slot] || { license: "MIT", author: "Open Source", url: c.repoSlug ? `https://github.com/${c.repoSlug}` : "" };
+              const license = c.license || fallbackMeta.license;
+              const homepageUrl = c.homepageUrl || fallbackMeta.url;
               const pct = state.progressBySlot[c.slot];
               const statusTag = c.isInstalled
                 ? (c.hasUpdate ? `<span class="pill-badge warn">可更新 ${esc(c.latestVersion || "")}</span>` : `<span class="pill-badge live">已安装</span>`)
@@ -3167,7 +3102,7 @@
                     <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
                       <span class="cw-row-title">${esc(displayTitle)}</span>
                       ${statusTag}
-                      <span class="comp-license-pill">${esc(meta.license)}</span>
+                      <span class="comp-license-pill">${esc(license)}</span>
                       ${c.slot === activeSlot ? `<span class="pill-badge blue">默认内核</span>` : ""}
                     </div>
                     <span class="cw-row-sub">本地：${esc(c.installedVersion || "未安装")} · 最新：${esc(c.latestVersion || "待查询")}${c.repoSlug ? ` · ${esc(c.repoSlug)}` : ""}</span>
@@ -3177,7 +3112,7 @@
                     ${typeof pct === "number" && pct > 0 && pct < 100
                       ? `<div class="comp-progress"><div class="comp-progress-fill" style="width:${pct}%"></div></div>`
                       : ""}
-                    ${meta.url ? `<button class="btn btn-sm" data-open-url="${esc(meta.url)}" data-focusable="true">主页 ↗</button>` : ""}
+                    ${homepageUrl ? `<button class="btn btn-sm" data-open-url="${esc(homepageUrl)}" data-focusable="true">主页 ↗</button>` : ""}
                     <button class="btn btn-sm" data-import-comp="${esc(c.slot)}" data-focusable="true">离线包</button>
                     <button class="btn btn-sm btn-primary" data-install-comp="${esc(c.slot)}" data-focusable="true">
                       ${c.isInstalled ? (c.hasUpdate ? "升级" : "重装") : "下载"}
@@ -3246,7 +3181,8 @@
       const autoCheckOn = settings.autoCheckUpdatesOnStartup !== false;
       const showCustomRow = state.mirrorCustomOpen || mirrorInfo.id === "custom";
       const customDraftVal = state.mirrorCustomDraft || (mirrorInfo.id === "custom" ? mirrorInfo.prefix : "");
-      const vramTotalGb = sys.vramTotalMb > 0 ? (sys.vramTotalMb / 1024).toFixed(0) : "16";
+      const vramMb = snap.dedicatedVramMb > 0 ? snap.dedicatedVramMb : (sys.vramTotalMb || 16384);
+      const vramTotalGb = (vramMb / 1024).toFixed(0);
       const installedCompsCount = comps.filter((c) => c.isInstalled).length;
       const enabledPluginsCount = plugins.filter((p) => p.enabled && p.isValid).length;
 
@@ -3420,7 +3356,7 @@
                 <span class="cw-row-title">运行日志目录</span>
                 <span class="cw-row-sub diag-path-mono">${esc(logsDir)}</span>
               </div>
-              <button id="btnOpenLogsDir" class="btn btn-sm" data-open-folder="${esc(logsDir)}" data-focusable="true">打开目录</button>
+              <button id="btnOpenLogsDir" class="btn btn-sm" data-focusable="true">打开目录</button>
             </div>
 
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
@@ -3428,7 +3364,7 @@
                 <span class="cw-row-title">用户数据目录</span>
                 <span class="cw-row-sub diag-path-mono">${esc(userDataDir)}</span>
               </div>
-              <button id="btnOpenUserDataDir" class="btn btn-sm" data-open-folder="${esc(userDataDir)}" data-focusable="true">打开目录</button>
+              <button id="btnOpenUserDataDir" class="btn btn-sm" data-focusable="true">打开目录</button>
             </div>
           </div>
 
@@ -3465,7 +3401,7 @@
         <div class="settings-section-head">
           <div>
             <h2>社区与支持</h2>
-            <p>关注开发进展、加入掌机玩家交流群，与社区共同打磨更好用的掌机控制台</p>
+            <p>关注开源项目进展、参与问题讨论与查看实机调优视频</p>
           </div>
         </div>
 
@@ -3479,7 +3415,7 @@
             </div>
             <div class="community-hero-copy">
               <h3>开源 · 免费 · 为掌机玩家而生</h3>
-              <p>HaloDeck 遵循 MIT 开源协议持续更新，所有功耗调优、FSR 4 / XeFG 超分部署与社区插件沙箱均永久免费开放。欢迎 Star 支持、提交建议或分享你的专属插件。</p>
+              <p>HaloDeck 遵循 MIT 开源协议持续迭代，所有功耗调优、FSR 4 / XeFG 超分部署与社区插件沙箱均永久免费开放。欢迎在 GitHub 点亮 Star、提交反馈或共同参与贡献。</p>
               <div class="community-hero-pills">
                 <span class="hh-card-badge live">MIT 开源协议</span>
                 <span class="hh-card-badge">永久免费 · 无广告</span>
@@ -3489,73 +3425,48 @@
           </div>
         </div>
 
-        <div class="community-social-grid">
-          <button class="community-social-card" data-open-url="https://github.com/Lokilankaaa/HaloDeck" data-focusable="true">
-            <div class="social-icon is-github">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.37 6.84 9.73.5.09.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.85.09-.66.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.84c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.59.69.49A10.25 10.25 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>
-            </div>
-            <div class="social-card-copy">
-              <strong>GitHub 仓库</strong>
-              <span>浏览源码、查看完整更新日志与参与讨论</span>
-            </div>
-            <span class="social-card-cta">前往 Star ↗</span>
-          </button>
-
-          <button class="community-social-card" data-open-url="https://space.bilibili.com/" data-focusable="true">
-            <div class="social-icon is-bili">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3.5"></rect><path d="M8 3l2.5 3M16 3l-2.5 3"></path><line x1="9" y1="11.5" x2="9" y2="14"></line><line x1="15" y1="11.5" x2="15" y2="14"></line></svg>
-            </div>
-            <div class="social-card-copy">
-              <strong>哔哩哔哩</strong>
-              <span>版本演示、8060S 实机测帧与超分调优攻略</span>
-            </div>
-            <span class="social-card-cta">关注主页 ↗</span>
-          </button>
-
-          <button id="btnShowGroupModal" class="community-social-card" data-focusable="true">
-            <div class="social-icon is-group">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-            </div>
-            <div class="social-card-copy">
-              <strong>玩家交流群</strong>
-              <span>掌机同好答疑、游戏专属档与插件互通</span>
-            </div>
-            <span class="social-card-cta">查看群码 ▸</span>
-          </button>
-
-          <button class="community-social-card" data-open-url="https://www.douyin.com/" data-focusable="true">
-            <div class="social-icon is-social">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"></path></svg>
-            </div>
-            <div class="social-card-copy">
-              <strong>抖音 / 社交账号</strong>
-              <span>日常开发片段、掌机实拍与新功能抢先看</span>
-            </div>
-            <span class="social-card-cta">前往关注 ↗</span>
-          </button>
-        </div>
-
-        <div class="hh-card">
-          <div class="hh-card-head">
-            <span class="hh-card-title">请作者喝杯咖啡（完全自愿）</span>
-            <span class="hh-card-badge">感谢陪伴开源成长</span>
-          </div>
-          <div class="donate-choice-grid">
-            <div class="donate-choice-card">
-              <div class="donate-choice-copy">
-                <strong>爱发电 · 持续赞助</strong>
-                <span>支持长期维护新机型适配、驱动兼容与插件生态</span>
+        <div class="community-social-grid cols-3">
+          <button class="community-social-card is-vertical" data-open-url="https://github.com/Lokilankaaa/HaloDeck" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-github">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.37 6.84 9.73.5.09.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.85.09-.66.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.84c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.59.69.49A10.25 10.25 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>
               </div>
-              <button class="btn btn-sm btn-primary" data-open-url="https://afdian.com/" data-focusable="true">前往爱发电 ↗</button>
+              <span class="social-card-cta">前往 Star ↗</span>
             </div>
-            <div class="donate-choice-card">
-              <div class="donate-choice-copy">
-                <strong>微信 / 支付宝赞赏</strong>
-                <span>扫码随心请作者喝杯咖啡，助力项目持续打磨</span>
+            <div class="social-card-copy">
+              <strong>HaloDeck 项目仓库</strong>
+              <span>浏览源码、点亮 Star、参与 Issue 反馈与 PR 贡献</span>
+            </div>
+            <span class="social-card-url">github.com/Lokilankaaa/HaloDeck</span>
+          </button>
+
+          <button class="community-social-card is-vertical" data-open-url="https://github.com/Lokilankaaa" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-author">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
               </div>
-              <button id="btnShowDonateModal" class="btn btn-sm" data-focusable="true">查看赞赏码 ▸</button>
+              <span class="social-card-cta">关注主页 ↗</span>
             </div>
-          </div>
+            <div class="social-card-copy">
+              <strong>作者 GitHub 主页</strong>
+              <span>关注 Lokilankaaa 开源动态、插件生态与新工具发布</span>
+            </div>
+            <span class="social-card-url">github.com/Lokilankaaa</span>
+          </button>
+
+          <button class="community-social-card is-vertical" data-open-url="https://b23.tv/pANRtSc" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-bili">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3.5"></rect><path d="M8 3l2.5 3M16 3l-2.5 3"></path><line x1="9" y1="11.5" x2="9" y2="14"></line><line x1="15" y1="11.5" x2="15" y2="14"></line></svg>
+              </div>
+              <span class="social-card-cta">前往 B 站 ↗</span>
+            </div>
+            <div class="social-card-copy">
+              <strong>作者哔哩哔哩主页</strong>
+              <span>嗷嗷嗷嗷的猫神 · 版本演示、实机测帧与掌机调优视频</span>
+            </div>
+            <span class="social-card-url">b23.tv/pANRtSc</span>
+          </button>
         </div>
       `;
     }
@@ -3575,8 +3486,7 @@
             `).join("")}
           </div>
           <div class="settings-nav-footer">
-            <span class="settings-nav-ver">HaloDeck v${esc(curVer)}</span>
-            <span class="settings-nav-arch">AMD Strix Halo · MIT</span>
+            <span class="settings-nav-ver">v${esc(curVer)}</span>
           </div>
         </aside>
         <section class="settings-pane">
@@ -3736,29 +3646,10 @@
               </div>
               <button class="mem-alert-btn" id="btnExpandPagefile" data-focusable="true">扩容至 24–40GB</button>
             </div>` : ""}
-          <div>
-            <div class="section-label">
-              <span>超分预设方案 (${esc(kernelShort)})</span>
-              <span>点击自动填入</span>
-            </div>
-            <div class="preset-grid ${isUninjectedPreview ? "uninjected-preview" : ""}">
-              ${presets.map((p) => `
-                <button class="preset-card ${state.selectedPresetId === p.id ? "active" : ""}"
-                        data-preset="${esc(p.id)}"
-                        data-focusable="true">
-                  <div class="preset-card-head">
-                    <span class="preset-name">${esc(p.name)}</span>
-                    <span class="preset-tag">${esc(p.subtitle.split("·")[0].trim())}</span>
-                  </div>
-                  <div class="preset-sub">${esc(p.recommendedFor)}</div>
-                </button>
-              `).join("")}
-            </div>
-          </div>
 
           <div>
             <div class="section-label">
-              <span>OptiScaler 超分辨率与插帧参数</span>
+              <span>OptiScaler 超分辨率与插帧参数 (${esc(kernelShort)})</span>
               <span>${isUninjectedPreview ? "待注入预览" : `已生效：${esc(formatConfigSummary(inj?.appliedConfig || cfg))}`}</span>
             </div>
             <div class="cw-group ${isUninjectedPreview ? "uninjected-preview" : ""}">
@@ -4729,23 +4620,10 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
-      const topVerBtn = document.getElementById("btnTopAppVersion");
-      const topVerLabel = document.getElementById("topAppUpdateLabel");
-      if (topVerBtn) {
-        const curVer = state.snapshot?.appVersion || "0.6.2";
-        const upd = state.snapshot?.latestUpdate;
-        const hasUpd = !!(upd && upd.hasUpdate);
-        topVerBtn.classList.toggle("has-update", hasUpd);
-        topVerBtn.title = hasUpd
-          ? `发现新版本 v${upd.latestVersion}，点击查看更新日志并一键更新`
-          : `当前版本 v${curVer}，点击检查在线更新`;
-        const labelText = state.appUpdateChecking
-          ? "检查中..."
-          : (hasUpd ? `更新 v${upd.latestVersion}` : "检查更新");
-        if (topVerLabel) topVerLabel.textContent = labelText;
-        else topVerBtn.textContent = labelText;
-        const devTag = document.getElementById("deviceTag");
-        if (devTag) devTag.textContent = `GPD WIN 5 · v${curVer}`;
+      const settingsUpdateDot = document.getElementById("topSettingsUpdateDot");
+      if (settingsUpdateDot) {
+        const hasUpd = !!(state.snapshot?.latestUpdate && state.snapshot.latestUpdate.hasUpdate);
+        settingsUpdateDot.classList.toggle("hidden", !hasUpd);
       }
     }
 
@@ -6515,6 +6393,12 @@
       state.focusIndex = 0;
       render();
     });
+    document.getElementById("btnHomeGoLibrary")?.addEventListener("click", () => {
+      state.tab = "opti";
+      state.optiSubTab = "library";
+      state.focusIndex = 0;
+      render();
+    });
 
     // Monitor & OSD events
     document.getElementById("btnCycleOsdPos")?.addEventListener("click", async () => {
@@ -6747,7 +6631,7 @@
         }
         state.mirrorCustomOpen = false;
         try {
-          await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: preset.prefix });
+          await rpc("setDownloadMirror", { prefix: preset.prefix, preset: preset.id });
           if (state.snapshot?.settings) state.snapshot.settings.pluginDownloadMirrorPrefix = preset.prefix;
           showToast(`下载加速线路已切换为：${preset.label}`, "success");
           render();
@@ -6765,7 +6649,7 @@
       const raw = (document.getElementById("settingsMirrorCustomInput")?.value || state.mirrorCustomDraft || "").trim();
       const normalized = raw ? (raw.endsWith("/") ? raw : `${raw}/`) : "";
       try {
-        await rpc("updatePluginPreferences", { pluginDownloadMirrorPrefix: normalized });
+        await rpc("setDownloadMirror", { prefix: normalized });
         if (state.snapshot?.settings) state.snapshot.settings.pluginDownloadMirrorPrefix = normalized;
         state.mirrorCustomOpen = false;
         state.mirrorCustomDraft = "";
@@ -6797,9 +6681,20 @@
       showToast(next ? "已开启启动时自动检测更新" : "已关闭启动时自动检测更新", "info");
     });
 
+    const fetchSanitizedDiagnosticReport = async () => {
+      try {
+        const res = await rpc("getDiagnosticReport", {});
+        if (res?.report) return res.report;
+      } catch {
+        // Fallback when offline or bridge unavailable
+      }
+      return buildDiagnosticSummaryText();
+    };
+
     document.getElementById("btnCopyFullDiag")?.addEventListener("click", async () => {
       try {
-        await copyTextToClipboard(buildDiagnosticSummaryText());
+        const report = await fetchSanitizedDiagnosticReport();
+        await copyTextToClipboard(report);
         showToast("已复制完整脱敏诊断信息到剪贴板", "success");
       } catch (err) {
         showToast(`复制失败：${err.message || err}`, "error");
@@ -6808,7 +6703,8 @@
 
     document.getElementById("btnReportIssue")?.addEventListener("click", async () => {
       try {
-        await copyTextToClipboard(buildDiagnosticSummaryText());
+        const report = await fetchSanitizedDiagnosticReport();
+        await copyTextToClipboard(report);
         showToast("已复制脱敏诊断摘要，正在打开 GitHub Issues...", "success");
       } catch {
         // Non-fatal clipboard failure
@@ -6820,25 +6716,28 @@
       }
     });
 
-    document.querySelectorAll("[data-open-folder]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const folderPath = el.dataset.openFolder;
-        if (!folderPath) return;
-        try {
-          await rpc("openFolder", { path: folderPath });
-          showToast(`已打开目录：${folderPath}`, "info");
-        } catch (err) {
-          showToast(err.message || "无法打开目录", "error");
-        }
-      });
+    document.getElementById("btnOpenLogsDir")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openLogsDirectory", {});
+        showToast(res?.path ? `已打开日志目录：${res.path}` : "已打开运行日志目录", "info");
+      } catch (err) {
+        showToast(err.message || "无法打开日志目录", "error");
+      }
+    });
+
+    document.getElementById("btnOpenUserDataDir")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openUserDataDirectory", {});
+        showToast(res?.path ? `已打开用户数据目录：${res.path}` : "已打开用户数据目录", "info");
+      } catch (err) {
+        showToast(err.message || "无法打开用户数据目录", "error");
+      }
     });
 
     document.getElementById("btnOpenComponentsDir")?.addEventListener("click", async () => {
-      const userDataDir = getParentDirPath(state.snapshot?.settingsFilePath, "C:\\Users\\Player\\AppData\\Local\\HaloDeck");
-      const compsDir = state.snapshot?.componentsDirectory || `${userDataDir}\\components`;
       try {
-        await rpc("openFolder", { path: compsDir });
-        showToast(`已打开组件目录：${compsDir}`, "info");
+        const res = await rpc("openComponentsDirectory", {});
+        showToast(res?.path ? `已打开组件目录：${res.path}` : "已打开组件目录", "info");
       } catch (err) {
         showToast(err.message || "无法打开组件目录", "error");
       }
@@ -6855,9 +6754,6 @@
         }
       });
     });
-
-    document.getElementById("btnShowGroupModal")?.addEventListener("click", () => openCommunityGroupModal());
-    document.getElementById("btnShowDonateModal")?.addEventListener("click", () => openCommunityDonateModal());
     document.getElementById("btnCheckAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateChecking) return;
       state.appUpdateChecking = true;
