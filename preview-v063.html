@@ -185,6 +185,11 @@
         <button data-mock-scene="standby" class="active">桌面待机</button>
         <button data-mock-scene="gaming">运行游戏中</button>
       </div>
+      <div class="seg" role="group" aria-label="组件就绪状态模拟">
+        <button data-mock-comp="all" class="active">组件已齐</button>
+        <button data-mock-comp="fresh">新装机缺组件</button>
+        <button data-mock-comp="nomfg">缺多帧组件</button>
+      </div>
       <div class="seg" role="group" aria-label="更新状态模拟">
         <button data-mock-upd="0" class="active">v0.6.3 最新</button>
         <button data-mock-upd="1">模拟 ↑ v0.6.4</button>
@@ -509,8 +514,29 @@
         const initLayout = params.get("layout") === "cockpit" ? "cockpit" : "bento";
         const initScene = params.get("scene") === "gaming" ? "gaming" : "standby";
         const initHasUpd = params.get("upd") === "1";
+        const rawCompState = params.get("compState");
+        const initCompState = (rawCompState === "fresh" || rawCompState === "nomfg") ? rawCompState : "all";
 
         defaultGames[0].isCurrentlyRunning = initScene === "gaming";
+
+        if (initCompState === "fresh") {
+          components.forEach((c) => {
+            c.isInstalled = false;
+            c.installedVersion = null;
+            c.hasUpdate = false;
+          });
+          defaultGames[0].injection = { isInjected: false };
+        } else if (initCompState === "nomfg") {
+          const mfg = components.find((c) => c.slot === "MfgUnlocker");
+          if (mfg) {
+            mfg.isInstalled = false;
+            mfg.installedVersion = null;
+            mfg.hasUpdate = false;
+          }
+          defaultGames[0].injection.appliedConfig.fgType = "xefg";
+          defaultGames[0].injection.appliedConfig.xeFgMultiplier = 3;
+          defaultGames[0].injection.appliedConfig.xeFgDynamicMfg = false;
+        }
 
         return {
           runningGame: initScene === "gaming" ? defaultGames[0] : null,
@@ -704,14 +730,78 @@
         broadcastEvent("stateChanged", clone(mockState));
       }
 
+      function resolveCurrentCompState() {
+        const comps = mockState.components || [];
+        const hasCore = comps.some((c) => (c.slot === "OptiScalerNightly" || c.slot === "OptiScalerStable") && c.isInstalled);
+        const hasMfg = comps.some((c) => c.slot === "MfgUnlocker" && c.isInstalled);
+        if (!hasCore) return "fresh";
+        if (!hasMfg) return "nomfg";
+        return "all";
+      }
+
+      function applyCompState(mode) {
+        const freshDefaults = createInitialMockState();
+        const baseComps = freshDefaults.components;
+        const baseFirstGameInj = {
+          isInjected: true,
+          proxyDllName: "dxgi.dll",
+          appliedConfig: {
+            proxyDllName: "dxgi.dll",
+            srMode: "fsr4_int8",
+            fgType: "xefg",
+            fgInputMode: "auto",
+            enableOptiPatcher: true,
+            enableFakenvapi: true,
+            enableCustomDlls: true,
+            spoofDxgi: true,
+            framerateLimit: 116,
+            vsyncMode: "on",
+            xeFgMultiplier: 2,
+            xeFgDynamicMfg: false,
+            xeFgDynamicTargetFps: 0
+          }
+        };
+
+        mockState.components.forEach((c) => {
+          const ref = baseComps.find((x) => x.slot === c.slot);
+          c.isInstalled = true;
+          c.installedVersion = ref?.latestVersion || c.latestVersion || "v1.0.0";
+          c.hasUpdate = false;
+        });
+
+        if (mode === "fresh") {
+          mockState.components.forEach((c) => {
+            c.isInstalled = false;
+            c.installedVersion = null;
+            c.hasUpdate = false;
+          });
+          mockState.games[0].injection = { isInjected: false };
+        } else if (mode === "nomfg") {
+          const mfg = mockState.components.find((c) => c.slot === "MfgUnlocker");
+          if (mfg) {
+            mfg.isInstalled = false;
+            mfg.installedVersion = null;
+            mfg.hasUpdate = false;
+          }
+          baseFirstGameInj.appliedConfig.xeFgMultiplier = 3;
+          mockState.games[0].injection = baseFirstGameInj;
+        } else {
+          mockState.games[0].injection = baseFirstGameInj;
+        }
+        mockState.activeInspectGame = mockState.games[0];
+        broadcastSnapshot();
+      }
+
       function syncToolbarButtons() {
         const theme = mockState.settings.uiTheme;
         const layout = mockState.settings.uiLayout;
         const scene = mockState.runningGame ? "gaming" : "standby";
         const updFlag = mockState.latestUpdate?.hasUpdate ? "1" : "0";
+        const compState = resolveCurrentCompState();
         document.querySelectorAll("[data-mock-theme]").forEach((b) => b.classList.toggle("active", b.dataset.mockTheme === theme));
         document.querySelectorAll("[data-mock-layout]").forEach((b) => b.classList.toggle("active", b.dataset.mockLayout === layout));
         document.querySelectorAll("[data-mock-scene]").forEach((b) => b.classList.toggle("active", b.dataset.mockScene === scene));
+        document.querySelectorAll("[data-mock-comp]").forEach((b) => b.classList.toggle("active", b.dataset.mockComp === compState));
         document.querySelectorAll("[data-mock-upd]").forEach((b) => b.classList.toggle("active", b.dataset.mockUpd === updFlag));
       }
 
@@ -1066,6 +1156,11 @@
           mockState.systemControl.isOnAcPower = gaming;
           mockState.systemControl.isCharging = false;
           broadcastSnapshot();
+        });
+      });
+      document.querySelectorAll("[data-mock-comp]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          applyCompState(btn.dataset.mockComp);
         });
       });
       document.querySelectorAll("[data-mock-upd]").forEach((btn) => {

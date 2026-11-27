@@ -6204,6 +6204,12 @@ body[data-theme="frost"] .pill-badge.warn {
   color: #b45309 !important;
 }
 
+body[data-theme="frost"] .hero-top-pills .pill-badge {
+  background: rgba(15, 23, 42, 0.54) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #f1f5f9 !important;
+}
+
 body[data-theme="frost"] .hero-top-pills .pill-badge.blue {
   background: rgba(14, 165, 233, 0.28) !important;
   border-color: rgba(125, 211, 252, 0.52) !important;
@@ -6496,4 +6502,156 @@ body[data-theme="frost"] .brand-ver-chip.has-update {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* ==================== v0.6.3 v4: Unified Missing Components Reminder Card (Console + QAM) ==================== */
+.comp-missing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: var(--radius-inner);
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  background: rgba(245, 158, 11, 0.11);
+  flex-shrink: 0;
+}
+
+.comp-missing-card.is-required {
+  border-color: rgba(249, 115, 22, 0.56);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.14) 0%, rgba(245, 158, 11, 0.12) 100%);
+}
+
+.comp-missing-card.is-qam {
+  padding: 9px 10px;
+  gap: 6px;
+}
+
+.comp-missing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.comp-missing-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.comp-missing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.72);
+  flex-shrink: 0;
+}
+
+.comp-missing-card.is-required .comp-missing-dot {
+  background: #f97316;
+  box-shadow: 0 0 9px rgba(249, 115, 22, 0.78);
+}
+
+.comp-missing-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #fde68a;
+  line-height: 1.25;
+}
+
+.comp-missing-card.is-required .comp-missing-title {
+  color: #fed7aa;
+}
+
+.comp-missing-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.comp-missing-actions .btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  min-height: 25px;
+}
+
+.comp-missing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.comp-missing-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.comp-missing-name {
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.comp-missing-desc {
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comp-missing-qam-names {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  opacity: 0.92;
+}
+
+/* Frost Light Theme High-Contrast Overrides for Missing Components Card */
+body[data-theme="frost"] .comp-missing-card {
+  border-color: rgba(217, 119, 6, 0.38);
+  background: rgba(254, 243, 199, 0.88);
+}
+
+body[data-theme="frost"] .comp-missing-card.is-required {
+  border-color: rgba(220, 38, 38, 0.36);
+  background: linear-gradient(135deg, rgba(254, 226, 226, 0.92) 0%, rgba(255, 237, 213, 0.92) 100%);
+}
+
+body[data-theme="frost"] .comp-missing-title {
+  color: #92400e;
+}
+
+body[data-theme="frost"] .comp-missing-card.is-required .comp-missing-title {
+  color: #b91c1c;
+}
+
+body[data-theme="frost"] .comp-missing-dot {
+  box-shadow: none;
+}
+
+body[data-theme="frost"] .comp-missing-item {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(15, 23, 42, 0.09);
+}
+
+body[data-theme="frost"] .comp-missing-name {
+  color: #0f172a;
+}
+
+body[data-theme="frost"] .comp-missing-desc,
+body[data-theme="frost"] .comp-missing-qam-names {
+  color: #475569;
 }

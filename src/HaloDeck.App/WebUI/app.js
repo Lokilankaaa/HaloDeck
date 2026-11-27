@@ -1409,6 +1409,180 @@
     return comps.some((c) => c.slot === "MfgUnlocker" && c.isInstalled);
   }
 
+  function getMissingComponentsForConfig(cfg) {
+    const comps = state.snapshot?.components || [];
+    const activeSlot = state.snapshot?.settings?.activeOptiScalerSlot || "OptiScalerNightly";
+    const isInstalled = (slot) => comps.some((c) => c.slot === slot && c.isInstalled);
+
+    const hasNightly = isInstalled("OptiScalerNightly");
+    const hasStable = isInstalled("OptiScalerStable");
+    const hasAnyOpti = hasNightly || hasStable;
+
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg?.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg?.xeFgDynamicMfg;
+    const needsMfgUnlocker = cfg?.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+
+    const items = [];
+    const installSlots = [];
+    let needsNightlySwitch = false;
+    let hasMissingCore = false;
+
+    const addInstall = (slot, severity, name, desc) => {
+      items.push({ kind: "install", severity, slot, name, desc });
+      if (!installSlots.includes(slot)) installSlots.push(slot);
+    };
+
+    if (!hasAnyOpti) {
+      hasMissingCore = true;
+      const targetCoreSlot = needsMfgUnlocker
+        ? "OptiScalerNightly"
+        : (activeSlot === "OptiScalerStable" ? "OptiScalerStable" : "OptiScalerNightly");
+      addInstall(
+        targetCoreSlot,
+        "required",
+        "OptiScaler 超分内核",
+        "新装机需先下载主内核后才能部署 FSR 4 / XeFG"
+      );
+      if (needsMfgUnlocker && activeSlot === "OptiScalerStable") {
+        needsNightlySwitch = true;
+      }
+    } else if (needsMfgUnlocker && !hasNightly) {
+      needsNightlySwitch = true;
+      addInstall(
+        "OptiScalerNightly",
+        "feature",
+        "OptiScaler Nightly v10+",
+        "XeFG 3X / 4X 多帧与动态多帧 (DMFG) 需安装 Nightly v10+ 主内核"
+      );
+    } else if (needsMfgUnlocker && activeSlot === "OptiScalerStable") {
+      needsNightlySwitch = true;
+      items.push({
+        kind: "switch_kernel",
+        severity: "feature",
+        slot: "OptiScalerNightly",
+        name: "切换至 Nightly v10+ 内核",
+        desc: "XeFG 3X / 4X 多帧与动态多帧 (DMFG) 需使用 Nightly v10+ 主内核"
+      });
+    }
+
+    if (needsMfgUnlocker && !isInstalled("MfgUnlocker")) {
+      addInstall(
+        "MfgUnlocker",
+        "feature",
+        "MFG Unlocker (by dashdogy)",
+        "解锁 XeFG 3X / 4X 多帧与动态多帧 (DMFG)"
+      );
+    }
+
+    if (cfg?.enableOptiPatcher && !isInstalled("OptiPatcher")) {
+      addInstall(
+        "OptiPatcher",
+        "recommended",
+        "OptiPatcher",
+        "免显卡伪装直接解锁游戏内置 DLSS / DLSS-G 选项"
+      );
+    }
+
+    if (cfg?.enableFakenvapi && !isInstalled("Fakenvapi")) {
+      addInstall(
+        "Fakenvapi",
+        "recommended",
+        "Fakenvapi",
+        "提供 AMD Anti-Lag 2 低延迟与 Reflex 桥接"
+      );
+    }
+
+    return { items, installSlots, needsNightlySwitch, hasMissingCore };
+  }
+
+  function renderMissingComponentsCard(cfg, compact = false) {
+    const missing = getMissingComponentsForConfig(cfg);
+    if (!missing.items.length) return "";
+
+    const installing = !!state.installingMissingComps;
+    const isRequired = missing.hasMissingCore;
+    const primaryLabel = installing
+      ? (compact ? "补齐中..." : "正在补齐安装...")
+      : (missing.installSlots.length > 0
+        ? (compact ? "一键补齐" : "一键补齐安装")
+        : "切换至 Nightly");
+
+    if (compact) {
+      const namesLine = missing.items.map((item) => item.name).join(" · ");
+      return `
+        <div class="comp-missing-card is-qam ${isRequired ? "is-required" : "is-warn"}">
+          <div class="comp-missing-head">
+            <div class="comp-missing-title-wrap">
+              <span class="comp-missing-dot" aria-hidden="true"></span>
+              <strong class="comp-missing-title">${isRequired ? "缺少超分主内核，暂无法注入" : `当前方案缺少 ${missing.items.length} 项组件`}</strong>
+            </div>
+          </div>
+          <div class="comp-missing-qam-names">${esc(namesLine)}</div>
+          <div class="comp-missing-actions">
+            <button id="btnInstallMissingComps" class="btn btn-sm btn-primary" style="flex:1;" data-focusable="true" ${installing || state.busy ? "disabled" : ""}>${primaryLabel}</button>
+            <button id="btnQamGoMissingComps" class="btn btn-sm" data-focusable="true">前往安装</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="comp-missing-card ${isRequired ? "is-required" : "is-warn"}">
+        <div class="comp-missing-head">
+          <div class="comp-missing-title-wrap">
+            <span class="comp-missing-dot" aria-hidden="true"></span>
+            <strong class="comp-missing-title">${isRequired ? "尚未安装超分主内核，暂无法注入" : `当前方案缺少 ${missing.items.length} 项所需组件`}</strong>
+          </div>
+          <div class="comp-missing-actions">
+            <button id="btnInstallMissingComps" class="btn btn-sm btn-primary" data-focusable="true" ${installing || state.busy ? "disabled" : ""}>${primaryLabel}</button>
+            <button id="btnGoMissingComps" class="btn btn-sm" data-focusable="true">前往组件与许可 ▸</button>
+          </div>
+        </div>
+        <div class="comp-missing-list">
+          ${missing.items.map((item) => `
+            <div class="comp-missing-item">
+              <span class="comp-missing-name">${esc(item.name)}</span>
+              <span class="comp-missing-desc">${esc(item.desc)}</span>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  async function installMissingComponentsForCurrentConfig() {
+    if (state.installingMissingComps || state.busy) return;
+    const missing = getMissingComponentsForConfig(state.config);
+    if (!missing.items.length) return;
+
+    state.installingMissingComps = true;
+    render();
+    try {
+      for (let i = 0; i < missing.installSlots.length; i += 1) {
+        const slot = missing.installSlots[i];
+        showToast(`正在下载并安装 ${slot} (${i + 1}/${missing.installSlots.length})...`, "info");
+        await rpc("installComponent", { slot });
+      }
+      if (missing.needsNightlySwitch && state.snapshot?.settings) {
+        await rpc("saveSettings", {
+          ...state.snapshot.settings,
+          activeOptiScalerSlot: "OptiScalerNightly"
+        });
+      }
+      const snap = await rpc("getSnapshot");
+      if (snap) applySnapshot(snap);
+      showToast(
+        missing.installSlots.length > 0 ? "所需超分组件已全部补齐就绪" : "已切换至 OptiScaler Nightly v10+ 内核",
+        "success"
+      );
+    } catch (err) {
+      showToast(err?.message || "补齐安装组件失败，请检查下载加速线路后重试", "error");
+    } finally {
+      state.installingMissingComps = false;
+      render();
+    }
+  }
+
   function syncSrModeConfig(srMode) {
     state.selectedPresetId = "custom";
     state._userModifiedConfig = true;
@@ -3493,13 +3667,9 @@
 
     const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
     const kernelShort = kernel.slot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4";
-    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
     const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
     const xeFgDmfg = !!cfg.xeFgDynamicMfg;
     const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
-    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
-    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
-    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
     const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
 
     return `
@@ -3613,6 +3783,8 @@
               <button class="mem-alert-btn" id="btnExpandPagefile" data-focusable="true">扩容至 24–40GB</button>
             </div>` : ""}
 
+          ${renderMissingComponentsCard(cfg, false)}
+
           <div>
             <div class="section-label">
               <span>OptiScaler 超分辨率与插帧参数 (${esc(kernelShort)})</span>
@@ -3677,19 +3849,6 @@
                       { value: "90", label: "90" },
                       { value: "120", label: "120" }
                     ], String(xeFgDmfgTarget), "compact")}
-                  </div>
-                ` : ""}
-
-                ${showMissingMfgUnlockerHint ? `
-                  <div class="xefg-mfg-hint xefg-mfg-hint-row">
-                    <span>AMD 8060S 原版 <code>libxess_fg.dll</code> 最高仅支持 2X，解锁 3X/4X 与 DMFG 需安装 <strong>MFG Unlocker (by dashdogy)</strong>（单机专用）。</span>
-                    <button id="btnGoMfgUnlockerComp" class="btn btn-sm btn-primary" data-focusable="true">前往组件中心下载</button>
-                  </div>
-                ` : ""}
-
-                ${showXeFgStableHint ? `
-                  <div class="xefg-mfg-hint">
-                    当前内核为 Stable v0.9.4，3X/4X 多帧与 DMFG 需切换至 <strong>Nightly v10+</strong> 内核与 XeSS 3 (<code>libxess_fg.dll</code>)
                   </div>
                 ` : ""}
               ` : ""}
@@ -4295,7 +4454,7 @@
       const gpd = snap.gpdController || {};
       const draft = state.gpdDraft;
       const interceptOsk = settings.interceptPhysicalOskButton !== false;
-    const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
+      const physicalMenuQam = (settings.interceptPhysicalMenuButton !== false) || (settings.interceptGuideMenuButton !== false);
       const dirtyGpd = hasPendingGpdChanges(gpd, draft);
       const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
       const curLayout = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
@@ -4325,21 +4484,23 @@
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>输入辅助与系统联动</span>
-              ${renderSwitch("swQamMouseMode", !!settings.gamepadMouseModeEnabled)}
+              <span>按键与电源联动</span>
             </div>
-            <button id="btnTestOsk" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:7px;" data-focusable="true">呼出 / 收起屏幕键盘</button>
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">接管机身键盘键</span>
+              <span class="cw-row-title">机身菜单键呼出侧栏</span>
+              ${renderSwitch("swInterceptMenuBtn", physicalMenuQam)}
+            </div>
+            <div class="cw-row qam-compact-row">
+              <span class="cw-row-title">机身键盘键呼出屏幕键盘</span>
               ${renderSwitch("swInterceptOsk", interceptOsk)}
             </div>
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">插拔电自动切 (${settings.batteryTdpWatts || 25}W / ${settings.acTdpWatts || 55}W)</span>
+              <span class="cw-row-title">插拔电自动切功耗 (${settings.batteryTdpWatts || 25}W / ${settings.acTdpWatts || 55}W)</span>
               ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
             </div>
             ${!snap.isElevated ? `
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">提权游戏侧栏 / OSD 穿透（本次临时）</span>
+              <span class="cw-row-title">提权穿透全屏游戏</span>
               <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权</button>
             </div>` : ""}
           </div>
@@ -4407,15 +4568,9 @@
 
     const inj = active?.injection;
     const cfg = state.config;
-    const presets = snap.presets || [];
-    const kernel = getActiveKernelInfo();
-    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
     const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
     const xeFgDmfg = !!cfg.xeFgDynamicMfg;
     const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
-    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
-    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
-    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
     const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
@@ -4439,14 +4594,11 @@
           </div>
         </div>
 
+        ${renderMissingComponentsCard(cfg, true)}
+
         <div class="qam-section">
-          <div class="qam-section-title"><span>预设与超分参数</span></div>
-          <div class="qam-preset-row">
-            ${presets.slice(0, 3).map((p) => `
-              <button class="pill-btn qam-pill ${state.selectedPresetId === p.id ? "active" : ""}" data-preset="${esc(p.id)}" data-focusable="true">${esc(p.name.split("·")[0].trim())}</button>
-            `).join("")}
-          </div>
-          <div style="display:flex;flex-direction:column;gap:7px;margin-top:6px;">
+          <div class="qam-section-title"><span>超分与插帧参数</span></div>
+          <div style="display:flex;flex-direction:column;gap:7px;">
             ${renderSegmented("data-sr-mode", [
               { value: "fsr4_int8", label: "FSR4" },
               { value: "fsr4_int8_lite", label: "4 Lite" },
@@ -4473,8 +4625,6 @@
                 { value: "90", label: "90" },
                 { value: "120", label: "120" }
               ], String(xeFgDmfgTarget), "compact") : ""}
-              ${showXeFgStableHint ? `<div class="xefg-mfg-hint is-qam">需 Nightly v10+ 内核与 XeSS 3 (libxess_fg.dll)</div>` : ""}
-              ${showMissingMfgUnlockerHint ? `<div class="xefg-mfg-hint is-qam">AMD &gt;2X 多帧需在主控台「设置 → 组件与许可」安装 MFG Unlocker (by dashdogy)</div>` : ""}
             ` : ""}
             ${renderSegmented("data-fps-limit", [
               { value: "0", label: "不限帧" },
@@ -6320,7 +6470,6 @@
     };
     document.getElementById("btnToolboxMouse")?.addEventListener("click", toggleMouseMode);
     document.getElementById("swMouseMode")?.addEventListener("click", toggleMouseMode);
-    document.getElementById("swQamMouseMode")?.addEventListener("click", toggleMouseMode);
 
     // Per-game performance profile (adjusting Watts or Hz automatically enables & persists the profile)
     const resolveGamePerfTarget = () => (IS_QAM || state.tab === "handheld") ? getRunningGame() : getActiveGame();
@@ -6505,21 +6654,16 @@
       await rpc("saveSettings", { ...s, muteGameGamepadInOverlay: next });
       showToast(next ? "已开启侧栏期间屏蔽游戏后台手柄输入" : "已关闭游戏后台手柄屏蔽（更兼容《剑星》等游戏）", "info");
     });
-    document.getElementById("swPhysicalMenuQam")?.addEventListener("click", async () => {
+    const togglePhysicalMenuQam = async () => {
       const s = state.snapshot?.settings;
       if (!s) return;
       const curOn = (s.interceptPhysicalMenuButton !== false) || (s.interceptGuideMenuButton !== false);
       const next = !curOn;
       await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next, interceptGuideMenuButton: next });
       showToast(next ? "已开启机身菜单键短按呼出快捷侧栏" : "已关闭机身菜单键呼出侧栏", "info");
-    });
-    document.getElementById("swInterceptMenuBtn")?.addEventListener("click", async () => {
-      const s = state.snapshot?.settings;
-      if (!s) return;
-      const next = s.interceptPhysicalMenuButton === false;
-      await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
-      showToast(next ? "已开启机身快捷菜单键 (Vendor HID / F13) 呼出侧栏" : "已释放机身快捷菜单键 (Vendor HID / F13)", "info");
-    });
+    };
+    document.getElementById("swPhysicalMenuQam")?.addEventListener("click", togglePhysicalMenuQam);
+    document.getElementById("swInterceptMenuBtn")?.addEventListener("click", togglePhysicalMenuQam);
     document.getElementById("swInterceptGuideBtn")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
       if (!s) return;
@@ -7110,8 +7254,14 @@
         render();
       });
     });
-    document.getElementById("btnGoMfgUnlockerComp")?.addEventListener("click", () => {
+    document.getElementById("btnInstallMissingComps")?.addEventListener("click", () => {
+      installMissingComponentsForCurrentConfig();
+    });
+    document.getElementById("btnGoMissingComps")?.addEventListener("click", () => {
       navigateToSettings("components");
+    });
+    document.getElementById("btnQamGoMissingComps")?.addEventListener("click", () => {
+      rpc("showConsole", { tab: "controls", subtab: "components" });
     });
     document.querySelectorAll("[data-fps-limit]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -7379,6 +7529,17 @@
     if (!active || state.busy) return;
     if (active.antiCheat?.riskLevel === "HighRisk") {
       showToast(`该游戏检测到内核反作弊 (${active.antiCheat.detectedSystems?.join(", ")})，已安全拦截`, "error");
+      return;
+    }
+
+    const missing = getMissingComponentsForConfig(state.config);
+    if (missing.hasMissingCore) {
+      showToast("尚未安装 OptiScaler 超分内核，已为你打开「设置 → 组件与许可」", "warn");
+      if (IS_QAM) {
+        rpc("showConsole", { tab: "controls", subtab: "components" });
+      } else {
+        navigateToSettings("components");
+      }
       return;
     }
 

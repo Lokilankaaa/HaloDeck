@@ -96,7 +96,7 @@ public sealed class InjectionEngine
             var optiRoot = _components.ResolveActiveOptiScalerRoot(activeOptiScalerSlot);
             if (optiRoot is null)
             {
-                return Fail("尚未下载或导入 OptiScaler 核心组件，请先前往「组件中心」安装 OptiScaler。");
+                return Fail("尚未下载或导入 OptiScaler 核心组件，请先前往「设置 → 组件与许可」安装 OptiScaler。");
             }
 
             var coreDllPath = FindOptiScalerMainBinary(optiRoot);
@@ -312,7 +312,7 @@ public sealed class InjectionEngine
                 }
                 else
                 {
-                    warnings.Add("未安装 MFG Unlocker (by dashdogy) 组件：AMD 显卡原版 libxess_fg.dll 最高仅支持 2X；请前往「组件中心」一键下载 MFG Unlocker 以解锁 3X/4X 多帧生成。");
+                    warnings.Add("未安装 MFG Unlocker (by dashdogy) 组件：AMD 显卡原版 libxess_fg.dll 最高仅支持 2X；请前往「设置 → 组件与许可」一键下载 MFG Unlocker 以解锁 3X/4X 多帧生成。");
                 }
             }
             else
