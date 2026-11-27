@@ -642,6 +642,25 @@ internal static class Win32Interop
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern nint FindWindowW(string? lpClassName, string? lpWindowName);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int GetClassNameW(nint hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    public static string GetForegroundWindowClassName()
+    {
+        try
+        {
+            nint fg = GetForegroundWindow();
+            if (fg == 0) return string.Empty;
+            var sb = new StringBuilder(128);
+            int len = GetClassNameW(fg, sb, sb.Capacity);
+            return len > 0 ? sb.ToString(0, len) : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindowVisible(nint hWnd);

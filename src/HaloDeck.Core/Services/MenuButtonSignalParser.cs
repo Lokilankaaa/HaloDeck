@@ -109,7 +109,11 @@ public sealed record KeyCaptureEnvironmentInfo(
     string FirmwareX,
     string FirmwareK,
     bool InterceptPhysicalMenuButton,
-    bool InterceptGuideMenuButton);
+    bool InterceptGuideMenuButton,
+    bool KeyboardHookInstalled = false,
+    long KeyboardHookHandle = 0,
+    long KeyboardHookHitCount = 0,
+    int KeyboardHookLastError = 0);
 
 public sealed record KeyCaptureSessionReport(
     int DurationMs,
@@ -163,6 +167,7 @@ public sealed class KeyCaptureDiagnosticSession
         sb.AppendLine($"硬件开关: 菜单键拦截={(env.InterceptPhysicalMenuButton ? "开" : "关")} | Guide(0x0400)={(env.InterceptGuideMenuButton ? "开" : "关")}");
         sb.AppendLine($"GPD Vendor HID (0xFF00): {(env.GpdVendorHidConnected ? $"已连接 ({env.GpdVendorHidDevice})" : $"未连接 ({(string.IsNullOrWhiteSpace(env.GpdVendorHidError) ? "未找到设备" : env.GpdVendorHidError)})")}");
         sb.AppendLine($"RegisterHotKey(F13): {(env.RegisterHotKeyF13Ok ? "注册成功" : $"被占用或失败 (Win32={env.RegisterHotKeyF13Error})")}");
+        sb.AppendLine($"WH_KEYBOARD_LL 钩子: {(env.KeyboardHookInstalled ? $"运行中 (handle=0x{env.KeyboardHookHandle:X}, 累计命中={env.KeyboardHookHitCount}次)" : $"未安装/失败 (Win32={env.KeyboardHookLastError})")}");
         sb.AppendLine($"XInput 后端: {env.XInputBackend} | 已连接手柄数: {env.ConnectedXInputCount}");
         sb.AppendLine($"GPD 手柄固件: X={NullDash(env.FirmwareX)} / K={NullDash(env.FirmwareK)}");
         sb.AppendLine($"GPDTool.exe: {(env.GpdToolRunning ? (env.GpdToolElevated ? "运行中 (管理员)" : "运行中 (普通权限)") : "未运行")} | GPDToolService: {(env.GpdToolServiceRunning ? "运行中" : "未运行")}");
