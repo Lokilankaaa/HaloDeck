@@ -23,6 +23,9 @@ public sealed class ComponentInfo
     public string DisplayName { get; set; } = string.Empty;
     public string RepoSlug { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public string License { get; set; } = "MIT";
+    public string Author { get; set; } = string.Empty;
+    public string HomepageUrl { get; set; } = string.Empty;
     public bool IsInstalled { get; set; }
     public string? InstalledVersion { get; set; }
     public string? InstalledDirectory { get; set; }

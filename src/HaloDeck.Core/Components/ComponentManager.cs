@@ -46,6 +46,8 @@ public sealed class ComponentManager
         SyncInstalledDirectories();
     }
 
+    public string ComponentsRoot => _componentsRoot;
+
     public string CustomDllsRoot => _customDllsRoot;
 
     public IReadOnlyList<ComponentInfo> GetComponents() => _components.Values.OrderBy(c => (int)c.Slot).ToList();
@@ -731,6 +733,9 @@ public sealed class ComponentManager
             Slot = ComponentSlot.OptiScalerStable,
             DisplayName = "OptiScaler (Stable)",
             RepoSlug = "optiscaler/OptiScaler",
+            Author = "OptiScaler Team",
+            License = "MIT",
+            HomepageUrl = "https://github.com/optiscaler/OptiScaler",
             Description = "官方稳定版超分与帧生成中间件，支持 DLSS / XeSS / FSR / OptiFG 转换。"
         },
         [ComponentSlot.OptiScalerNightly] = new ComponentInfo
@@ -738,6 +743,9 @@ public sealed class ComponentManager
             Slot = ComponentSlot.OptiScalerNightly,
             DisplayName = "OptiScaler (Nightly)",
             RepoSlug = "optiscaler/OptiScaler-nightly",
+            Author = "OptiScaler Team",
+            License = "MIT",
+            HomepageUrl = "https://github.com/optiscaler/OptiScaler",
             Description = "官方每日测试构建，包含最新 FSR4 / OptiFG / 游戏兼容性修复。"
         },
         [ComponentSlot.OptiPatcher] = new ComponentInfo
@@ -745,6 +753,9 @@ public sealed class ComponentManager
             Slot = ComponentSlot.OptiPatcher,
             DisplayName = "OptiPatcher (ASI 插件)",
             RepoSlug = "optiscaler/OptiPatcher",
+            Author = "OptiScaler Team",
+            License = "MIT",
+            HomepageUrl = "https://github.com/optiscaler/OptiPatcher",
             Description = "免 DXGI 显卡伪装直接解锁游戏内置 DLSS & DLSS-G 菜单选项，强烈建议搭配 AMD Strix Halo 使用。"
         },
         [ComponentSlot.Fakenvapi] = new ComponentInfo
@@ -752,6 +763,9 @@ public sealed class ComponentManager
             Slot = ComponentSlot.Fakenvapi,
             DisplayName = "Fakenvapi (Anti-Lag 2 桥接)",
             RepoSlug = "optiscaler/fakenvapi",
+            Author = "FakeMichau",
+            License = "MIT",
+            HomepageUrl = "https://github.com/optiscaler/fakenvapi",
             Description = "在 AMD 8060S/8050S 等非 N 卡上将 NVIDIA Reflex 转换为 AMD Anti-Lag 2，并辅助开启 DLSS-G 桥接。"
         },
         [ComponentSlot.MfgUnlocker] = new ComponentInfo
@@ -759,6 +773,9 @@ public sealed class ComponentManager
             Slot = ComponentSlot.MfgUnlocker,
             DisplayName = "MFG Unlocker (XeMFG 多帧解锁 · by dashdogy)",
             RepoSlug = "dashdogy/MFG-Unlocker",
+            Author = "dashdogy",
+            License = "MIT",
+            HomepageUrl = "https://github.com/dashdogy/MFG-Unlocker",
             Description = "MIT 开源插件（github.com/dashdogy/MFG-Unlocker），解除 AMD/NVIDIA 上 Intel XeFG 2X 限制以解锁 3X/4X 多帧生成与 DMFG（单机游戏专用，按需自动部署为 .asi 插件）。"
         }
     };

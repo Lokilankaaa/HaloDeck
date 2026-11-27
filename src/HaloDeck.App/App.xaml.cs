@@ -1752,7 +1752,7 @@ public partial class App : System.Windows.Application
                 await qamCore.ExecuteScriptAsync("document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]').click()");
                 qamControlsOk = await WaitUntilAsync(
                     qamCore,
-                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swQamMouseMode')) && Boolean(document.getElementById('swInterceptOsk')) && Boolean(document.getElementById('btnPickL4')) && Boolean(document.getElementById('btnPickR4')) && document.querySelectorAll('[data-ui-layout]').length === 2 && document.querySelectorAll('[data-ui-theme]').length === 2 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
+                    "document.querySelector('.qam-rail-btn[data-qam-tab=\"controls\"]')?.classList.contains('active') && Boolean(document.getElementById('swInterceptMenuBtn')) && Boolean(document.getElementById('swInterceptOsk')) && Boolean(document.getElementById('btnPickL4')) && Boolean(document.getElementById('btnPickR4')) && document.querySelectorAll('[data-ui-layout]').length === 2 && document.querySelectorAll('[data-ui-theme]').length === 2 && document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2");
                 await Task.Delay(180);
                 await PrepareCleanCaptureAsync(qamCore);
                 await CapturePngAsync(qamCore, outputDir, "v4_12_qam_controls.png");

@@ -1011,6 +1011,11 @@ public sealed class WebUiBridge : IDisposable
                 "addPluginStoreUrl" => AddPluginStoreUrl(payload),
                 "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
                 "updatePluginPreferences" => UpdatePluginPreferences(payload),
+                "setDownloadMirror" => SetDownloadMirror(payload),
+                "getDiagnosticReport" => BuildDiagnosticReport(),
+                "openLogsDirectory" => OpenLogsDirectory(),
+                "openUserDataDirectory" => OpenUserDataDirectory(),
+                "openComponentsDirectory" => OpenComponentsDirectory(),
                 "openExternalUrl" => OpenExternalUrl(payload),
                 "checkAppUpdate" => await CheckAppUpdateAsync(payload),
                 "downloadAndApplyAppUpdate" => await DownloadAndApplyAppUpdateAsync(payload),
@@ -1047,6 +1052,10 @@ public sealed class WebUiBridge : IDisposable
             customExtensions = _componentManager.GetCustomExtensions(_settings.DisabledCustomDlls),
             settings = _settings,
             settingsFilePath = _settingsStore.SettingsFilePath,
+            userDataDirectory = HaloDeckPaths.ResolveAppDataRoot(),
+            logDirectory = HaloDeckPaths.ResolveLogsDirectory(),
+            componentsDirectory = _componentManager.ComponentsRoot,
+            dedicatedVramMb = DxgiVramDetector.TryDetectDedicatedVramMb(),
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             isElevated = Win32Interop.IsCurrentProcessElevated(),
@@ -3324,12 +3333,7 @@ public sealed class WebUiBridge : IDisposable
     {
         if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
         {
-            string raw = (mp.GetString() ?? "").Trim();
-            if (!string.IsNullOrEmpty(raw) && !PluginRegistryClient.IsAllowedHttpsUrl(raw))
-            {
-                throw new ArgumentException("GitHub 下载镜像前缀必须留空或为合法的 https:// 地址");
-            }
-            _settings.PluginDownloadMirrorPrefix = raw;
+            _settings.PluginDownloadMirrorPrefix = PluginRegistryClient.NormalizeMirrorPrefix(mp.GetString());
         }
         if (payload.TryGetProperty("pluginDeveloperMode", out var dm) && (dm.ValueKind == JsonValueKind.True || dm.ValueKind == JsonValueKind.False))
         {
@@ -3344,6 +3348,129 @@ public sealed class WebUiBridge : IDisposable
             pluginDeveloperMode = _settings.PluginDeveloperMode
         };
     }
+
+    private object SetDownloadMirror(JsonElement payload)
+    {
+        string raw = string.Empty;
+        if (payload.ValueKind == JsonValueKind.Object)
+        {
+            if (payload.TryGetProperty("prefix", out var p) && p.ValueKind == JsonValueKind.String)
+            {
+                raw = p.GetString() ?? string.Empty;
+            }
+            else if (payload.TryGetProperty("preset", out var pr) && pr.ValueKind == JsonValueKind.String)
+            {
+                raw = pr.GetString() ?? string.Empty;
+            }
+            else if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
+            {
+                raw = mp.GetString() ?? string.Empty;
+            }
+        }
+
+        string normalized = PluginRegistryClient.NormalizeMirrorPrefix(raw);
+        _settings.PluginDownloadMirrorPrefix = normalized;
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            pluginDownloadMirrorPrefix = normalized
+        };
+    }
+
+    private object BuildDiagnosticReport()
+    {
+        var sys = _latestSystemState ?? _systemControl.GetState(targetPid: ResolveTargetRenderPid());
+        var hw = sys.HardwareService;
+        var gpd = _gpdController.CachedConfig;
+        int dedicatedVramMb = DxgiVramDetector.TryDetectDedicatedVramMb();
+        if (dedicatedVramMb <= 0)
+        {
+            dedicatedVramMb = sys.VramTotalMb;
+        }
+
+        string userDataDir = HaloDeckPaths.ResolveAppDataRoot();
+        string logsDir = HaloDeckPaths.ResolveLogsDirectory();
+
+        var input = new DiagnosticReportInput
+        {
+            AppVersion = CurrentAppVersion,
+            IsElevated = Win32Interop.IsCurrentProcessElevated(),
+            OsVersion = Environment.OSVersion.VersionString,
+            CpuName = sys.CpuName ?? string.Empty,
+            DedicatedVramMb = dedicatedVramMb,
+            TotalRamGb = sys.TotalRamGb,
+            ScreenWidth = sys.ScreenWidth,
+            ScreenHeight = sys.ScreenHeight,
+            RefreshRateHz = sys.RefreshRateHz,
+            IsDynamicRefreshRate = sys.IsDynamicRefreshRate,
+            HardwareServiceRunning = hw.ServiceRunning,
+            HardwareDaemonVersion = hw.DaemonVersion,
+            SmuReady = hw.SmuReady,
+            EcReady = hw.EcReady,
+            CurrentTdpWatts = _settings.CurrentTdpWatts,
+            HwStapmLimitWatts = hw.HwStapmLimitWatts,
+            FanMode = _settings.FanMode,
+            FanRpm = hw.FanRpm,
+            GpdConnected = gpd?.Connected ?? false,
+            GpdFirmwareX = gpd?.FirmwareX ?? string.Empty,
+            GpdFirmwareK = gpd?.FirmwareK ?? string.Empty,
+            InterceptPhysicalMenuButton = _settings.InterceptPhysicalMenuButton,
+            InterceptGuideMenuButton = _settings.InterceptGuideMenuButton,
+            ActiveOptiScalerSlot = _settings.ActiveOptiScalerSlot,
+            DownloadMirrorPrefix = _settings.PluginDownloadMirrorPrefix,
+            UserDataDirectory = userDataDir,
+            LogsDirectory = logsDir,
+            Components = _componentManager.GetComponents()
+                .Select(c => new DiagnosticComponentEntry
+                {
+                    Name = c.DisplayName,
+                    Installed = c.IsInstalled,
+                    Version = c.InstalledVersion ?? string.Empty
+                })
+                .ToList(),
+            Plugins = ListPluginsWithStatus()
+                .Select(p => new DiagnosticPluginEntry
+                {
+                    Id = p.Id,
+                    Name = p.Name,
+                    Version = p.Version,
+                    Enabled = p.Enabled,
+                    IsValid = p.IsValid
+                })
+                .ToList(),
+            UpdateLogTail = DiagnosticReportBuilder.ReadUpdateLogTail()
+        };
+
+        string report = DiagnosticReportBuilder.Build(input);
+        return new
+        {
+            ok = true,
+            report,
+            dedicatedVramMb,
+            logsDirectory = logsDir,
+            userDataDirectory = userDataDir
+        };
+    }
+
+    private static object OpenDirectorySafe(string directoryPath)
+    {
+        Directory.CreateDirectory(directoryPath);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"\"{directoryPath}\"",
+            UseShellExecute = true
+        });
+        return new { ok = true, opened = true, path = directoryPath };
+    }
+
+    private object OpenLogsDirectory() => OpenDirectorySafe(HaloDeckPaths.ResolveLogsDirectory());
+
+    private object OpenUserDataDirectory() => OpenDirectorySafe(HaloDeckPaths.ResolveAppDataRoot());
+
+    private object OpenComponentsDirectory() => OpenDirectorySafe(_componentManager.ComponentsRoot);
 
     private object SetPluginEnabled(JsonElement payload)
     {
