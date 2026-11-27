@@ -170,8 +170,8 @@ public partial class App : System.Windows.Application
             WindowStyle = 0
         };
         _hiddenHotkeyHost = new HwndSource(hostParams);
-        _inputHub.AttachHotkeyWindow(_hiddenHotkeyHost.Handle);
         HandheldToolboxService.AttachInputPaneWatcher(_hiddenHotkeyHost.Handle);
+        _inputHub.AttachHotkeyWindow(_hiddenHotkeyHost.Handle);
         if (!isVerifyMode)
         {
             _hiddenHotkeyHost.AddHook(PowerBroadcastWndProc);
@@ -1061,6 +1061,7 @@ public partial class App : System.Windows.Application
             or Win32Interop.PBT_APMRESUMEAUTOMATIC
             or Win32Interop.PBT_APMRESUMECRITICAL)
         {
+            _inputHub?.ReinstallKeyboardHook();
             _bridge?.NotifySystemPowerResume($"WM_POWERBROADCAST:0x{wp:X}");
         }
         else if (wp == Win32Interop.PBT_POWERSETTINGCHANGE && lParam != 0)
@@ -1073,6 +1074,7 @@ public partial class App : System.Windows.Application
                     int state = setting.Data;
                     if (TdpLockPolicy.IsDisplayWakeTransition(_lastConsoleDisplayState, state))
                     {
+                        _inputHub?.ReinstallKeyboardHook();
                         _bridge?.NotifySystemPowerResume("DisplayWake");
                     }
                     _lastConsoleDisplayState = state;

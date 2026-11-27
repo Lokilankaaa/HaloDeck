@@ -488,6 +488,13 @@ public sealed class HandheldToolboxService : IDisposable
         return visible;
     }
 
+    /// <summary>
+    /// Strictly lock-free, non-blocking snapshot check safe to invoke directly inside WH_KEYBOARD_LL.
+    /// Relies on the TabTip STA monitor started during app initialization via <see cref="AttachInputPaneWatcher"/>.
+    /// </summary>
+    public static bool ShouldCloseFromHookSnapshotFast()
+        => OskGuard.ShouldCloseFromSnapshot(Environment.TickCount64, autoDismissGraceMs: 550);
+
     public static bool ShouldCloseFromHookSnapshot()
     {
         EnsureTabTipMonitorStarted();
@@ -527,7 +534,7 @@ public sealed class HandheldToolboxService : IDisposable
         try
         {
             string mode = (preferredMode ?? "tabtip").Trim().ToLowerInvariant();
-            if (mode == "osk")
+            if (string.Equals(mode, "osk", StringComparison.Ordinal))
             {
                 nint oskHwnd = Win32Interop.FindWindowW("OSKMainClass", null);
                 if (oskHwnd != 0 && Win32Interop.IsWindowVisible(oskHwnd))
@@ -576,6 +583,7 @@ public sealed class HandheldToolboxService : IDisposable
                 }
                 finally
                 {
+                    TryCloseWindowByClass("OSKMainClass");
                     OskGuard.CompleteIntentionalClose(Environment.TickCount64, postCloseSuppressMs: 350);
                 }
 
@@ -602,6 +610,7 @@ public sealed class HandheldToolboxService : IDisposable
                 }
             }
 
+            TryCloseWindowByClass("OSKMainClass");
             QueryTabTipVisible();
             return "已呼出屏幕键盘";
         }

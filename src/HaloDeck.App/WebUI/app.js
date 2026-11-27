@@ -89,7 +89,7 @@
     { value: 0x0068, label: "F13 (呼出侧栏)" },
     { value: 0x0069, label: "F14 (切换帧率窗)" },
     { value: 0x006A, label: "F15 (超分菜单)" },
-    { value: 0x006B, label: "F16 (呼出前端主界面)" },
+    { value: 0x006B, label: "F16 (打开主界面)" },
     { value: 0x0049, label: "Insert (超分菜单)" }
   ];
 
@@ -493,23 +493,39 @@
       }
     } else if (name === "appUpdateProgress" && data) {
       state.appUpdateProgress = data.status === "idle" ? null : { version: data.version || "", percent: data.percent || 0, status: data.status || "downloading" };
+      syncTopAppVersionChip();
       const btn = document.getElementById("btnApplyAppUpdate");
       const modalBtn = document.getElementById("btnModalApplyAppUpdate");
       const modalProg = document.getElementById("appUpdateModalProg");
-      const text = data.status === "applying"
-        ? "校验通过，正在重启更新..."
-        : `下载中 ${Math.round(data.percent || 0)}%`;
-      if (btn) {
-        btn.textContent = text;
-        btn.disabled = true;
-      }
-      if (modalBtn) {
-        modalBtn.textContent = text;
-        modalBtn.disabled = true;
-      }
-      if (modalProg) {
-        modalProg.classList.remove("hidden");
-        modalProg.textContent = text;
+      if (data.status === "idle") {
+        const latestVer = state.snapshot?.latestUpdate?.latestVersion;
+        if (btn) {
+          btn.textContent = latestVer ? `一键更新 v${latestVer}` : "一键更新";
+          btn.disabled = false;
+        }
+        if (modalBtn) {
+          modalBtn.textContent = latestVer ? `一键更新 v${latestVer}` : "一键更新";
+          modalBtn.disabled = false;
+        }
+        if (modalProg) {
+          modalProg.classList.add("hidden");
+        }
+      } else {
+        const text = data.status === "applying"
+          ? "校验通过，正在重启更新..."
+          : `下载中 ${Math.round(data.percent || 0)}%`;
+        if (btn) {
+          btn.textContent = text;
+          btn.disabled = true;
+        }
+        if (modalBtn) {
+          modalBtn.textContent = text;
+          modalBtn.disabled = true;
+        }
+        if (modalProg) {
+          modalProg.classList.remove("hidden");
+          modalProg.textContent = text;
+        }
       }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
@@ -517,6 +533,34 @@
   }
 
   // ---------------- Formatters & Live Telemetry ----------------
+  function syncTopAppVersionChip() {
+    if (IS_QAM) return;
+    const topVerBtn = document.getElementById("btnTopAppVersion");
+    if (!topVerBtn) return;
+    const curVer = state.snapshot?.appVersion || "0.6.3";
+    const upd = state.snapshot?.latestUpdate;
+    const hasUpd = !!(upd && upd.hasUpdate);
+    const prog = state.appUpdateProgress;
+    if (prog) {
+      topVerBtn.classList.add("has-update");
+      const targetVer = prog.version || upd?.latestVersion || "";
+      if (prog.status === "applying") {
+        topVerBtn.textContent = "更新中…";
+        topVerBtn.title = `正在校验并重启应用${targetVer ? ` v${targetVer}` : ""}，点击前往「设置 → 更新与诊断」`;
+      } else {
+        const pct = Math.max(0, Math.min(100, Math.round(prog.percent || 0)));
+        topVerBtn.textContent = `↓ ${pct}%`;
+        topVerBtn.title = `正在后台下载${targetVer ? ` v${targetVer}` : "更新"}（${pct}%），下载期间可自由切换页面，点击返回「设置 → 更新与诊断」`;
+      }
+      return;
+    }
+    topVerBtn.classList.toggle("has-update", hasUpd);
+    topVerBtn.textContent = hasUpd ? `↑ v${upd.latestVersion}` : `v${curVer}`;
+    topVerBtn.title = hasUpd
+      ? `发现新版本 v${upd.latestVersion}，点击前往「设置 → 更新与诊断」`
+      : `当前版本 v${curVer}，点击前往「设置 → 更新与诊断」`;
+  }
+
   function formatRefreshTag(sys) {
     if (!sys) return "--Hz";
     if (sys.isDynamicRefreshRate) {
@@ -1872,7 +1916,7 @@
             <!-- Col 1: Power Engine, CPU Boost & Live 60s Power/Temp Sparkline -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">功耗引擎与核心睿频</span>
+                <span class="hh-card-title">功耗与睿频</span>
                 <span id="consoleTdpBadge" class="hh-card-badge live">${hw.hwStapmLimitWatts != null ? `PM实读 ${hw.hwStapmLimitWatts.toFixed(0)}W` : `目标 ${curTdp}W`}</span>
               </div>
 
@@ -1932,7 +1976,7 @@
             <!-- Col 2: Display, Audio, OSD & Live Dual-Fan Curve Preview -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">显示 · 声光 · 双风扇温控</span>
+                <span class="hh-card-title">显示、音量与风扇</span>
                 <span id="dispRefreshSub" class="ck-muted">${esc(formatRefreshTag(sys))}</span>
               </div>
 
@@ -2032,7 +2076,7 @@
             <!-- Col 3: Running Game Status & 2x4 Quick Actions -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">前台游戏与掌机工具箱</span>
+                <span class="hh-card-title">游戏与快捷操作</span>
                 <span class="hh-card-badge ${active ? "live" : ""}">${active ? "游戏运行中" : "桌面待命"}</span>
               </div>
 
@@ -2435,7 +2479,7 @@
         <div class="mon-top-grid">
           <div class="hh-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">双风扇智能温控与 5 点曲线</span>
+              <span class="hh-card-title">风扇温控曲线</span>
               <span id="fanRpmBadge" class="hh-card-badge ${hw.ecReady ? "live" : ""}">${hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM · PWM ${pwmPctNow}%` : "EC 待命"}</span>
             </div>
 
@@ -2510,7 +2554,7 @@
 
           <div class="hh-card mon-cpu-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">CPU 睿频模式与 SMU 功耗策略</span>
+              <span class="hh-card-title">CPU 睿频与功耗上限</span>
               <span class="hh-card-badge">${esc(sys.cpuTopologyBadge || "单CCD 8核 · 32MB L3")}</span>
             </div>
 
@@ -2646,7 +2690,7 @@
         <div class="mon-top-grid">
           <div class="hh-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">OSD 性能悬浮窗样式设置</span>
+              <span class="hh-card-title">悬浮窗样式</span>
               <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}${activeBackend === "rtss" ? " · RTSS" : ""}`}</span>
             </div>
             <div class="osd-level-pills" style="margin-bottom:8px;">
@@ -2663,7 +2707,7 @@
             <div class="cw-group">
               <div class="cw-row" style="min-height:42px;padding:7px 12px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">渲染通道（全屏穿透）</span>
+                  <span class="cw-row-title">悬浮窗显示方式</span>
                   <span class="cw-row-sub">${rtssRunning ? "RTSS 运行中 · 支持独占全屏穿透" : (rtssInstalled ? "已安装 RTSS（未启动）· 点击下方模式自动启动" : "未安装 RTSS · 点击穿透模式将自动安装并启动")}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
@@ -2927,7 +2971,7 @@
 
         <div class="hh-card">
           <div class="hh-card-head">
-            <span class="hh-card-title">机身按键与输入控制</span>
+            <span class="hh-card-title">机身按键</span>
             <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
           </div>
 
@@ -2941,7 +2985,7 @@
             </div>
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">接管机身键盘键</span>
+                <span class="cw-row-title">机身键盘键呼出屏幕键盘</span>
                 <span class="cw-row-sub">按下机身键盘键时呼出 Windows 触摸与手柄虚拟键盘</span>
               </div>
               ${renderSwitch("swInterceptOsk", interceptOsk)}
@@ -2972,7 +3016,7 @@
               </div>
               <div class="hotkey-list">
                 <div class="hotkey-row">
-                  <div class="cw-row-title">呼出前端主界面</div>
+                  <div class="cw-row-title">打开主界面</div>
                   <div class="comp-actions">
                     ${renderKeycaps(consoleButtons)}
                     <button id="btnRecordConsoleCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "console" ? "请按键..." : "录制"}</button>
@@ -3007,7 +3051,7 @@
               <div class="cw-group">
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">接管背键 F14–F16 快捷功能</span>
+                    <span class="cw-row-title">启用背键快捷热键 (F14–F16)</span>
                     <span class="cw-row-sub">开启后可将固件 F14/F15/F16 背键映射为切换悬浮窗、超分菜单或主界面</span>
                   </div>
                   ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
@@ -3060,7 +3104,7 @@
 
         <div class="hh-card">
           <div class="hh-card-head">
-            <span class="hh-card-title">界面外观与布局风格</span>
+            <span class="hh-card-title">外观与布局</span>
             <span class="hh-card-badge">主控台与侧栏实时同步</span>
           </div>
           <div class="style-studio-label">1. 首页布局形态</div>
@@ -3092,7 +3136,7 @@
 
         <div class="hh-card">
           <div class="hh-card-head">
-            <span class="hh-card-title">电源联动与系统运行偏好</span>
+            <span class="hh-card-title">电源与系统偏好</span>
           </div>
           <div class="cw-group">
             <div class="cw-row" style="min-height:46px;padding:9px 12px;">
@@ -3139,7 +3183,7 @@
 
             <div class="cw-row" style="min-height:46px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">按需临时提权穿透 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "标准权限"}</span></span>
+                <span class="cw-row-title">管理员权限运行 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "标准权限"}</span></span>
                 <span class="cw-row-sub">标准权限可流畅配合 Steam 大屏幕使用；游玩高权限游戏时可点右侧临时提权穿透</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px;">
@@ -3161,7 +3205,7 @@
 
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">系统优化与高级配置文件</span>
+                <span class="cw-row-title">配置文件与维护</span>
                 <span class="cw-row-sub">管理 Win11 窗口化 VRR、硬件服务与本地 JSON 配置</span>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
@@ -3190,7 +3234,7 @@
 
         <div class="hh-card">
           <div class="hh-card-head">
-            <span class="hh-card-title">底层驱动与硬件守护服务</span>
+            <span class="hh-card-title">硬件控制驱动</span>
             <span class="hh-card-badge ${hw.smuReady && hw.serviceRunning ? "live" : ""}">${hw.smuReady && hw.serviceRunning ? "直控已就绪" : "待启用"}</span>
           </div>
           <div class="cw-group">
@@ -3345,7 +3389,7 @@
           </div>
         </div>
 
-        <div class="hh-card about-brand-card">
+        <div class="hh-card about-brand-card ${state.mirrorDropdownOpen ? "has-open-menu" : ""}">
           <div class="about-brand-row">
             <div class="about-brand-left">
               <div class="about-brand-icon" aria-hidden="true">
@@ -3372,7 +3416,7 @@
             </div>
           </div>
 
-          <div class="cw-group" style="margin-top:10px;">
+          <div class="cw-group mirror-group" style="margin-top:10px;">
             <div class="cw-row mirror-picker-row" style="min-height:46px;padding:9px 12px;">
               <div class="cw-row-copy">
                 <span class="cw-row-title">下载加速线路</span>
@@ -3709,7 +3753,7 @@
           ${active && gamePerf ? `
             <div class="hh-card" style="padding:9px 11px;display:flex;flex-direction:column;gap:6px;">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-                <span class="hh-card-title">当前游戏专属硬件配置</span>
+                <span class="hh-card-title">游戏专属功耗与刷新率</span>
                 <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
                   <button class="pill-btn small" style="white-space:nowrap;" data-quick-game-scene="vn" data-focusable="true">10W 省电</button>
                   <button class="pill-btn small" style="white-space:nowrap;" data-quick-game-scene="act" data-focusable="true">25W 动作</button>
@@ -4356,7 +4400,7 @@
       return `
         <div class="qam-body">
           <div class="qam-section">
-            <div class="qam-section-title"><span>实时传感器指标</span></div>
+            <div class="qam-section-title"><span>实时硬件数据</span></div>
             <div class="qam-kpi-grid">
               <div class="qam-kpi-card">
                 <span class="pf-label">当前帧率</span>
@@ -4416,7 +4460,7 @@
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>OSD 渲染通道与样式</span>
+              <span>悬浮窗显示与样式</span>
               <span style="font-size:10.5px;color:${rtssRunning ? "var(--accent-green,#4ade80)" : "var(--text-muted)"};">${rtssRunning ? "RTSS 已就绪" : (rtssInstalled ? "RTSS 未启动" : "未装 RTSS")}</span>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;">
@@ -4484,7 +4528,7 @@
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>按键与电源联动</span>
+              <span>常用快捷开关</span>
             </div>
             <div class="cw-row qam-compact-row">
               <span class="cw-row-title">机身菜单键呼出侧栏</span>
@@ -4500,8 +4544,8 @@
             </div>
             ${!snap.isElevated ? `
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">提权穿透全屏游戏</span>
-              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权</button>
+              <span class="cw-row-title">管理员权限运行</span>
+              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">以管理员重启</button>
             </div>` : ""}
           </div>
 
@@ -4733,17 +4777,7 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
-      const topVerBtn = document.getElementById("btnTopAppVersion");
-      if (topVerBtn) {
-        const curVer = state.snapshot?.appVersion || "0.6.3";
-        const upd = state.snapshot?.latestUpdate;
-        const hasUpd = !!(upd && upd.hasUpdate);
-        topVerBtn.classList.toggle("has-update", hasUpd);
-        topVerBtn.textContent = hasUpd ? `↑ v${upd.latestVersion}` : `v${curVer}`;
-        topVerBtn.title = hasUpd
-          ? `发现新版本 v${upd.latestVersion}，点击前往「设置 → 更新与诊断」`
-          : `当前版本 v${curVer}，点击前往「设置 → 更新与诊断」`;
-      }
+      syncTopAppVersionChip();
     }
 
     const mainView = document.getElementById("mainView");
@@ -5031,7 +5065,7 @@
           <div class="hh-card">
             <div class="hh-card-head">
               <div>
-                <span class="hh-card-title">社区插件中心 · Decky 沙箱模式</span>
+                <span class="hh-card-title">社区插件</span>
                 <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；支持开源 Commit 锁包与 SHA-256 校验。</div>
               </div>
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -6748,13 +6782,15 @@
 
     document.getElementById("btnOptiGoSettingsComps")?.addEventListener("click", () => navigateToSettings("components"));
 
-    document.getElementById("btnMirrorSelect")?.addEventListener("click", () => {
+    document.getElementById("btnMirrorSelect")?.addEventListener("click", (e) => {
+      e.stopPropagation();
       state.mirrorDropdownOpen = !state.mirrorDropdownOpen;
       render();
     });
 
     document.querySelectorAll("[data-mirror-preset]").forEach((el) => {
-      el.addEventListener("click", async () => {
+      el.addEventListener("click", async (e) => {
+        e.stopPropagation();
         const presetId = el.dataset.mirrorPreset;
         const preset = MIRROR_PRESETS.find((p) => p.id === presetId);
         state.mirrorDropdownOpen = false;
@@ -6909,8 +6945,22 @@
     });
     document.getElementById("btnApplyAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateProgress) return;
+      const upd = state.snapshot?.latestUpdate;
+      const targetVer = upd?.latestVersion || "";
+      state.appUpdateProgress = { version: targetVer, percent: 0, status: "downloading" };
+      render();
+      showToast(
+        targetVer
+          ? `已在后台开始下载 v${targetVer}，下载期间可自由切换页面`
+          : "已在后台开始下载更新，下载期间可自由切换页面",
+        "info"
+      );
       try {
         const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        if (res && res.ok === false) {
+          state.appUpdateProgress = null;
+          render();
+        }
         showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
       } catch (err) {
         state.appUpdateProgress = null;
@@ -7884,7 +7934,7 @@
     }
     const next = { ...state.snapshot.settings };
     const labels = {
-      console: "呼出前端主界面",
+      console: "打开主界面",
       qam: "呼出快捷侧栏",
       osd: "切换帧率悬浮窗",
       mouse: "手柄鼠标模式",
@@ -8223,11 +8273,28 @@
     document.getElementById("btnModalCheckAppUpdate")?.addEventListener("click", () => runAppUpdateCheck(true));
     document.getElementById("btnModalApplyAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateProgress) return;
+      const upd = state.snapshot?.latestUpdate;
+      const targetVer = upd?.latestVersion || "";
+      state.appUpdateProgress = { version: targetVer, percent: 0, status: "downloading" };
+      syncTopAppVersionChip();
+      renderAppUpdateModalBody();
+      showToast(
+        targetVer
+          ? `已在后台开始下载 v${targetVer}，下载期间可自由切换页面`
+          : "已在后台开始下载更新，下载期间可自由切换页面",
+        "info"
+      );
       try {
         const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        if (res && res.ok === false) {
+          state.appUpdateProgress = null;
+          syncTopAppVersionChip();
+          renderAppUpdateModalBody();
+        }
         showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
       } catch (err) {
         state.appUpdateProgress = null;
+        syncTopAppVersionChip();
         showToast(err.message || "下载或应用更新失败", "error");
         renderAppUpdateModalBody();
       }
@@ -8303,6 +8370,13 @@
   window.addEventListener("wheel", () => {
     state.lastInputModality = "pointer";
   }, { passive: true, capture: true });
+
+  document.addEventListener("click", (e) => {
+    if (!state.mirrorDropdownOpen) return;
+    if (e.target?.closest?.(".custom-select-wrap")) return;
+    state.mirrorDropdownOpen = false;
+    render();
+  });
 
   const endRangeDrag = () => {
     if (!state.isDraggingRange) return;
