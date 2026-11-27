@@ -549,7 +549,7 @@ public sealed class HandheldToolboxService : IDisposable
             }
 
             // Dismiss any legacy osk.exe before driving Windows 11 native TabTip/Gamepad Keyboard.
-            TryCloseWindowByClass("OSKMainClass");
+            TryDismissLegacyOsk();
 
             bool shouldClose = forceClose ?? (fromUiClick
                 ? ShouldCloseOnUiClick()
@@ -583,7 +583,7 @@ public sealed class HandheldToolboxService : IDisposable
                 }
                 finally
                 {
-                    TryCloseWindowByClass("OSKMainClass");
+                    TryDismissLegacyOsk();
                     OskGuard.CompleteIntentionalClose(Environment.TickCount64, postCloseSuppressMs: 350);
                 }
 
@@ -610,7 +610,7 @@ public sealed class HandheldToolboxService : IDisposable
                 }
             }
 
-            TryCloseWindowByClass("OSKMainClass");
+            TryDismissLegacyOsk();
             QueryTabTipVisible();
             return "已呼出屏幕键盘";
         }
@@ -642,6 +642,61 @@ public sealed class HandheldToolboxService : IDisposable
             common64 = Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles);
         }
         return Path.Combine(common64, @"microsoft shared\ink\TabTip.exe");
+    }
+
+    public static bool IsLegacyOskProcessRunning()
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("osk");
+            bool any = procs.Length > 0;
+            foreach (var p in procs)
+            {
+                try { p.Dispose(); } catch { }
+            }
+            return any;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Dismisses legacy Windows osk.exe. Because osk.exe runs with uiAccess="true" (IL 0x3010 > High IL 0x3000),
+    /// PostMessageW(WM_CLOSE) is silently blocked by UIPI; terminating via Process.Kill() (PROCESS_TERMINATE)
+    /// succeeds cleanly when elevated and prevents dual-keyboard (osk.exe + TabTip) out-of-phase toggling.
+    /// </summary>
+    public static bool TryDismissLegacyOsk()
+    {
+        bool dismissed = TryCloseWindowByClass("OSKMainClass");
+        try
+        {
+            var procs = Process.GetProcessesByName("osk");
+            foreach (var proc in procs)
+            {
+                using (proc)
+                {
+                    try
+                    {
+                        if (!proc.HasExited)
+                        {
+                            proc.Kill(entireProcessTree: false);
+                            dismissed = true;
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore if running non-elevated without PROCESS_TERMINATE on uiAccess osk.exe
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore transient process enumeration failures
+        }
+        return dismissed;
     }
 
     private static bool TryCloseWindowByClass(string className)
