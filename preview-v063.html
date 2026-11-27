@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HaloDeck v0.6.3 · 1:1 真实交互重构预览器</title>
+  <style>
+    :root {
+      --shell-bg: #080d17;
+      --shell-bar: rgba(15, 23, 42, 0.92);
+      --shell-border: rgba(148, 163, 184, 0.22);
+      --shell-text: #f1f5f9;
+      --shell-muted: #94a3b8;
+      --shell-accent: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 12%, rgba(56, 189, 248, 0.12), transparent 45%),
+        radial-gradient(circle at 82% 88%, rgba(45, 212, 191, 0.10), transparent 45%),
+        var(--shell-bg);
+      color: var(--shell-text);
+      font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+    .preview-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 18px;
+      background: var(--shell-bar);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--shell-border);
+    }
+    .toolbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .toolbar-badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(56, 189, 248, 0.16);
+      border: 1px solid rgba(56, 189, 248, 0.42);
+      color: #7dd3fc;
+    }
+    .toolbar-title {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .toolbar-sub {
+      font-size: 11.5px;
+      color: var(--shell-muted);
+    }
+    .toolbar-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .seg {
+      display: inline-flex;
+      padding: 3px;
+      gap: 3px;
+      border-radius: 10px;
+      background: rgba(2, 6, 23, 0.65);
+      border: 1px solid var(--shell-border);
+    }
+    .seg button, .ctrl-btn {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--shell-muted);
+      padding: 5px 11px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .seg button:hover, .ctrl-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .seg button.active {
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      color: #ffffff;
+      box-shadow: 0 3px 10px rgba(14, 165, 233, 0.35);
+    }
+    .ctrl-btn {
+      border-color: var(--shell-border);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--shell-text);
+    }
+    .stage {
+      flex: 1;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 20px;
+      padding: 20px;
+      overflow: auto;
+    }
+    .frame-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .frame-card.hidden { display: none; }
+    .frame-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--shell-muted);
+      padding: 0 4px;
+    }
+    .frame-label strong { color: var(--shell-text); }
+    .frame-wrap {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+      background: #070b14;
+    }
+    .frame-wrap iframe {
+      display: block;
+      border: 0;
+      background: transparent;
+    }
+    .frame-console iframe {
+      width: 1200px;
+      height: 640px;
+    }
+    .frame-qam iframe {
+      width: 440px;
+      height: 720px;
+    }
+    body.capture-only {
+      background: transparent;
+    }
+    body.capture-only .preview-toolbar,
+    body.capture-only .frame-label {
+      display: none !important;
+    }
+    body.capture-only .stage {
+      padding: 0;
+      margin: 0;
+      justify-content: flex-start;
+    }
+    body.capture-only .frame-wrap {
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+  </style>
+</head>
+<body>
+  <header class="preview-toolbar">
+    <div class="toolbar-brand">
+      <span class="toolbar-badge">v0.6.3 1:1 真实前端</span>
+      <div>
+        <div class="toolbar-title">HaloDeck 真实 WebUI 交互预览器</div>
+        <div class="toolbar-sub">直接挂载 src/HaloDeck.App/WebUI/index.html · 主控台与 440px 侧栏共享同一份实机模拟状态</div>
+      </div>
+    </div>
+    <div class="toolbar-controls">
+      <div class="seg" role="group" aria-label="视图切换">
+        <button data-view="console" class="active">主控台 1200×640</button>
+        <button data-view="qam">快捷侧栏 440×720</button>
+        <button data-view="both">双端并排对比</button>
+      </div>
+      <div class="seg" role="group" aria-label="主题快速切换">
+        <button data-mock-theme="aurora" class="active">极光深色</button>
+        <button data-mock-theme="frost">凝霜浅色</button>
+      </div>
+      <div class="seg" role="group" aria-label="布局快速切换">
+        <button data-mock-layout="bento" class="active">大磁贴</button>
+        <button data-mock-layout="cockpit">仪表盘</button>
+      </div>
+      <button id="btnResetMock" class="ctrl-btn">重置模拟状态</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section id="cardConsole" class="frame-card">
+      <div class="frame-label">
+        <strong>主控台 Console · 1200 × 640</strong>
+        <span>src/HaloDeck.App/WebUI/index.html</span>
+      </div>
+      <div class="frame-wrap frame-console">
+        <iframe id="frameConsole" src="src/HaloDeck.App/WebUI/index.html" title="HaloDeck Console"></iframe>
+      </div>
+    </section>
+
+    <section id="cardQam" class="frame-card hidden">
+      <div class="frame-label">
+        <strong>快捷侧栏 QAM · 440 × 720</strong>
+        <span>src/HaloDeck.App/WebUI/index.html?mode=qam</span>
+      </div>
+      <div class="frame-wrap frame-qam">
+        <iframe id="frameQam" src="src/HaloDeck.App/WebUI/index.html?mode=qam" title="HaloDeck QAM"></iframe>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("capture") === "1") {
+        document.body.classList.add("capture-only");
+      }
+
+      // Generate crisp inline SVG data-URI posters so preview works 100% offline with zero broken images
+      function makePoster(title, subtitle, c1, c2, accent, includeText = true) {
+        const textBlock = includeText ? `
+          <text x="24" y="138" fill="#ffffff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="800">${title}</text>
+          <text x="24" y="166" fill="#cbd5e1" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">${subtitle}</text>` : "";
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="220" viewBox="0 0 420 220">
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="${c1}"/>
+              <stop offset="100%" stop-color="${c2}"/>
+            </linearGradient>
+            <radialGradient id="r" cx="80%" cy="22%" r="60%">
+              <stop offset="0%" stop-color="${accent}" stop-opacity="0.48"/>
+              <stop offset="100%" stop-color="${accent}" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="420" height="220" fill="url(#g)"/>
+          <rect width="420" height="220" fill="url(#r)"/>
+          <circle cx="355" cy="48" r="72" fill="none" stroke="${accent}" stroke-opacity="0.22" stroke-width="2"/>
+          <circle cx="355" cy="48" r="44" fill="none" stroke="${accent}" stroke-opacity="0.30" stroke-width="1.5"/>
+          <path d="M0 190 Q140 120 280 165 T420 130 L420 220 L0 220 Z" fill="${accent}" fill-opacity="0.12"/>
+          ${textBlock}
+        </svg>`;
+        return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      }
+
+      function createInitialMockState() {
+        const defaultGames = [
+          {
+            id: "steam_2384580",
+            title: "真·三国无双 起源",
+            platform: "Steam",
+            engine: "Katana Engine (DX12)",
+            targetRenderDirectory: "D:\\SteamLibrary\\steamapps\\common\\DWORIGINS",
+            executablePath: "D:\\SteamLibrary\\steamapps\\common\\DWORIGINS\\DWORIGINS.exe",
+            isCurrentlyRunning: true,
+            coverImageUrl: makePoster("真·三国无双 起源", "DYNASTY WARRIORS: ORIGINS", "#1b263b", "#0d1b2a", "#38bdf8", false),
+            heroImageUrl: makePoster("真·三国无双 起源", "FSR 4.1.2 INT8 · XeFG 2X", "#16243a", "#090f1a", "#2dd4bf", false),
+            nativeUpscalers: { hasAnyUpscaler: true, hasDlss: true, hasDlssG: true, hasXeSs: true, hasFsr3: true },
+            antiCheat: { riskLevel: "None", detected: "" },
+            injection: {
+              isInjected: true,
+              proxyDllName: "dxgi.dll",
+              appliedConfig: {
+                proxyDllName: "dxgi.dll",
+                srMode: "fsr4_int8",
+                fgType: "xefg",
+                fgInputMode: "auto",
+                enableOptiPatcher: true,
+                enableFakenvapi: true,
+                enableCustomDlls: true,
+                spoofDxgi: true,
+                framerateLimit: 116,
+                vsyncMode: "on",
+                xeFgMultiplier: 2,
+                xeFgDynamicMfg: false,
+                xeFgDynamicTargetFps: 0
+              }
+            }
+          },
+          {
+            id: "steam_2358720",
+            title: "黑神话：悟空",
+            platform: "Steam",
+            engine: "Unreal Engine 5 (DX12)",
+            targetRenderDirectory: "D:\\SteamLibrary\\steamapps\\common\\BlackMythWukong\\b1\\Binaries\\Win64",
+            executablePath: "D:\\SteamLibrary\\steamapps\\common\\BlackMythWukong\\b1\\Binaries\\Win64\\b1-Win64-Shipping.exe",
+            isCurrentlyRunning: false,
+            coverImageUrl: makePoster("黑神话：悟空", "BLACK MYTH: WUKONG", "#2b1d14", "#120d0a", "#f59e0b"),
+            heroImageUrl: makePoster("黑神话：悟空", "UE5 · DLSS-G 接管就绪", "#2b1d14", "#120d0a", "#f59e0b"),
+            nativeUpscalers: { hasAnyUpscaler: true, hasDlss: true, hasDlssG: true, hasXeSs: true, hasFsr3: true },
+            antiCheat: { riskLevel: "None", detected: "" },
+            injection: {
+              isInjected: true,
+              proxyDllName: "dxgi.dll",
+              appliedConfig: {
+                proxyDllName: "dxgi.dll",
+                srMode: "fsr4_int8_lite",
+                fgType: "xefg",
+                fgInputMode: "dlssg",
+                enableOptiPatcher: true,
+                enableFakenvapi: true,
+                spoofDxgi: true,
+                framerateLimit: 90,
+                vsyncMode: "on",
+                xeFgMultiplier: 3,
+                xeFgDynamicMfg: true,
+                xeFgDynamicTargetFps: 90
+              }
+            }
+          },
+          {
+            id: "steam_2246340",
+            title: "怪物猎人 荒野",
+            platform: "Steam",
+            engine: "RE Engine (DX12)",
+            targetRenderDirectory: "D:\\SteamLibrary\\steamapps\\common\\MonsterHunterWilds",
+            executablePath: "D:\\SteamLibrary\\steamapps\\common\\MonsterHunterWilds\\MonsterHunterWilds.exe",
+            isCurrentlyRunning: false,
+            coverImageUrl: makePoster("怪物猎人 荒野", "MONSTER HUNTER WILDS", "#1d2d28", "#0c1513", "#34d399"),
+            heroImageUrl: makePoster("怪物猎人 荒野", "RE Engine · DX12", "#1d2d28", "#0c1513", "#34d399"),
+            nativeUpscalers: { hasAnyUpscaler: true, hasDlss: true, hasDlssG: true, hasXeSs: false, hasFsr3: true },
+            antiCheat: { riskLevel: "None", detected: "" },
+            injection: { isInjected: false }
+          },
+          {
+            id: "steam_1091500",
+            title: "赛博朋克 2077",
+            platform: "Steam",
+            engine: "REDengine 4 (DX12)",
+            targetRenderDirectory: "D:\\SteamLibrary\\steamapps\\common\\Cyberpunk 2077\\bin\\x64",
+            executablePath: "D:\\SteamLibrary\\steamapps\\common\\Cyberpunk 2077\\bin\\x64\\Cyberpunk2077.exe",
+            isCurrentlyRunning: false,
+            coverImageUrl: makePoster("赛博朋克 2077", "CYBERPUNK 2077", "#2e1a36", "#140b1c", "#e879f9"),
+            heroImageUrl: makePoster("赛博朋克 2077", "REDengine 4 · 光追超分", "#2e1a36", "#140b1c", "#e879f9"),
+            nativeUpscalers: { hasAnyUpscaler: true, hasDlss: true, hasDlssG: true, hasXeSs: true, hasFsr3: true },
+            antiCheat: { riskLevel: "None", detected: "" },
+            injection: { isInjected: false }
+          }
+        ];
+
+        const presets = [
+          {
+            id: "strix-halo-quality",
+            name: "8060S 画质甜点 · 推荐",
+            subtitle: "FSR 4.1.2 INT8 · XeFG 2X",
+            recommendedFor: "兼顾细腻画质与顺滑帧率，适合 1080p 3A 大作",
+            config: { srMode: "fsr4_int8", fgType: "xefg", fgInputMode: "auto", enableOptiPatcher: true, enableFakenvapi: true, spoofDxgi: true, framerateLimit: 116, vsyncMode: "on", xeFgMultiplier: 2, xeFgDynamicMfg: false, xeFgDynamicTargetFps: 0 }
+          },
+          {
+            id: "strix-halo-perf",
+            name: "高帧续航模式",
+            subtitle: "FSR 4.1.2 Lite · XeFG 2X",
+            recommendedFor: "更低渲染负载与功耗，适合离电 25–35W 流畅游玩",
+            config: { srMode: "fsr4_int8_lite", fgType: "xefg", fgInputMode: "auto", enableOptiPatcher: true, enableFakenvapi: true, spoofDxgi: true, framerateLimit: 90, vsyncMode: "on", xeFgMultiplier: 2, xeFgDynamicMfg: false, xeFgDynamicTargetFps: 0 }
+          },
+          {
+            id: "optifg-compat",
+            name: "通用插帧兼容",
+            subtitle: "FSR 4.1.2 · OptiFG",
+            recommendedFor: "面向无原生 DLSS-G 接口的游戏提供通用帧生成",
+            config: { srMode: "fsr4_int8", fgType: "optifg", fgInputMode: "upscaler", enableOptiPatcher: true, enableFakenvapi: true, spoofDxgi: true, framerateLimit: 0, vsyncMode: "on", xeFgMultiplier: 2, xeFgDynamicMfg: false, xeFgDynamicTargetFps: 0 }
+          }
+        ];
+
+        const components = [
+          {
+            slot: "OptiScalerNightly",
+            displayName: "OptiScaler (Nightly v10+)",
+            repoSlug: "optiscaler/OptiScaler-nightly",
+            isInstalled: true,
+            installedVersion: "v0.9.9-pre10",
+            latestVersion: "v0.9.9-pre10",
+            hasUpdate: false,
+            description: "每日测试构建，完整支持 FSR 4.1.2 INT8 / Lite、XeFG 3X/4X 与最新游戏兼容。"
+          },
+          {
+            slot: "OptiScalerStable",
+            displayName: "OptiScaler (Stable v0.9.4)",
+            repoSlug: "optiscaler/OptiScaler",
+            isInstalled: true,
+            installedVersion: "v0.9.4",
+            latestVersion: "v0.9.4",
+            hasUpdate: false,
+            description: "稳定版超分与帧生成中间件，支持 DLSS / XeSS / FSR / OptiFG 转换。"
+          },
+          {
+            slot: "MfgUnlocker",
+            displayName: "MFG Unlocker (XeMFG 多帧解锁 · by dashdogy)",
+            repoSlug: "dashdogy/MFG-Unlocker",
+            isInstalled: true,
+            installedVersion: "v1.2.1",
+            latestVersion: "v1.3.0",
+            hasUpdate: true,
+            description: "解锁 AMD 8060S 上 Intel XeFG 3X/4X 多帧生成与 DMFG 动态变倍（单机游戏专用）。"
+          },
+          {
+            slot: "Fakenvapi",
+            displayName: "Fakenvapi (Anti-Lag 2 桥接 · by FakeMichau)",
+            repoSlug: "optiscaler/fakenvapi",
+            isInstalled: true,
+            installedVersion: "v1.3.8",
+            latestVersion: "v1.3.8",
+            hasUpdate: false,
+            description: "将游戏内 NVIDIA Reflex 映射为 AMD Anti-Lag 2 低延迟管线并辅助 DLSS-G 桥接。"
+          },
+          {
+            slot: "OptiPatcher",
+            displayName: "OptiPatcher (ASI 插件)",
+            repoSlug: "optiscaler/OptiPatcher",
+            isInstalled: true,
+            installedVersion: "v0.7.4",
+            latestVersion: "v0.7.4",
+            hasUpdate: false,
+            description: "免显卡伪装直接解锁游戏内 DLSS 与 DLSS-G 菜单开关，适合 AMD Strix Halo 平台。"
+          }
+        ];
+
+        const plugins = [
+          {
+            id: "halodeck.theme-studio",
+            name: "HaloTheme 皮肤工坊",
+            version: "1.2.0",
+            author: "HaloDeck Official",
+            description: "提供赛博霓虹、墨玉黑金、极地白昼等一键社区界面皮肤与强调色定制。",
+            enabled: true,
+            isValid: true,
+            consentAccepted: true,
+            hasBackend: false,
+            backendRunning: false,
+            mount: ["console", "qam"],
+            permissions: ["ui:theme", "storage"],
+            category: "theme",
+            isOfficialSource: true,
+            sourceName: "官方纯净源"
+          },
+          {
+            id: "halodeck.game-notes",
+            name: "掌机攻略便签",
+            version: "1.1.3",
+            author: "HaloDeck Official",
+            description: "按当前运行游戏自动切换笔记与按键备忘，游戏内呼出侧栏即可速查攻略。",
+            enabled: true,
+            isValid: true,
+            consentAccepted: true,
+            hasBackend: false,
+            backendRunning: false,
+            mount: ["console", "qam"],
+            permissions: ["games:read", "events:game", "storage"],
+            category: "utility",
+            isOfficialSource: true,
+            sourceName: "官方纯净源"
+          },
+          {
+            id: "halodeck.power-advisor",
+            name: "续航能耗分析器",
+            version: "0.9.5",
+            author: "HaloDeck Community",
+            description: "记录单局游戏平均 APU 功耗、帧率与温度曲线，辅助挑选高能效甜点瓦数。",
+            enabled: false,
+            isValid: true,
+            consentAccepted: true,
+            hasBackend: true,
+            backendRunning: false,
+            mount: ["console"],
+            permissions: ["telemetry:read", "storage", "backend"],
+            category: "monitor",
+            isOfficialSource: true,
+            sourceName: "官方纯净源"
+          }
+        ];
+
+        const fanCurves = [
+          { id: "quiet_50", name: "静音优先", points: [{ tempC: 40, fanPercent: 22 }, { tempC: 55, fanPercent: 32 }, { tempC: 68, fanPercent: 46 }, { tempC: 78, fanPercent: 62 }, { tempC: 88, fanPercent: 82 }] },
+          { id: "linear_60", name: "均衡温控", points: [{ tempC: 40, fanPercent: 28 }, { tempC: 55, fanPercent: 42 }, { tempC: 68, fanPercent: 58 }, { tempC: 78, fanPercent: 74 }, { tempC: 88, fanPercent: 92 }] },
+          { id: "cool_80", name: "强冷散热", points: [{ tempC: 40, fanPercent: 38 }, { tempC: 55, fanPercent: 56 }, { tempC: 68, fanPercent: 72 }, { tempC: 78, fanPercent: 88 }, { tempC: 88, fanPercent: 100 }] }
+        ];
+
+        const initTheme = params.get("theme") === "frost" ? "frost" : "aurora";
+        const initLayout = params.get("layout") === "cockpit" ? "cockpit" : "bento";
+
+        return {
+          runningGame: defaultGames[0],
+          activeInspectGame: defaultGames[0],
+          games: defaultGames,
+          presets,
+          components,
+          customExtensions: [],
+          settingsFilePath: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\settings.json",
+          logDirectory: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\logs",
+          componentsDirectory: "C:\\Users\\Player\\AppData\\Local\\HaloDeck\\components",
+          connectedControllers: 1,
+          isElevated: false,
+          appVersion: "0.6.3-rc.1",
+          latestUpdate: {
+            hasUpdate: true,
+            currentVersion: "0.6.3-rc.1",
+            latestVersion: "0.6.3",
+            isPrerelease: false,
+            title: "HaloDeck v0.6.3 正式版",
+            htmlUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.3",
+            downloadUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.3/HaloDeck-v0.6.3-win-x64.zip",
+            releaseNotes: "• 全新「设置」中心：左侧 5 组清晰导航（手柄与按键 / 外观与系统 / 组件与许可 / 更新与诊断 / 社区与支持）\n• 新增全局下载加速线路选择器，统一应用于应用更新、核心组件与社区插件\n• 优化快捷总控、游戏与超分、硬件与监控的视觉密度与信息层次"
+          },
+          memoryHealth: { lowCommitHeadroom: false, commitLimitGb: 48 },
+          vrrWindowedEnabled: true,
+          frozenGames: [],
+          gpdController: {
+            connected: true,
+            firmwareX: "405",
+            firmwareK: "109",
+            l4Mode: 1,
+            r4Mode: 1,
+            l4KeyCode: 0x800F,
+            r4KeyCode: 0x8010,
+            l4KeyLabel: "手柄 L3",
+            r4KeyLabel: "手柄 R3",
+            l4ComboCodes: [],
+            r4ComboCodes: [],
+            rumbleLevel: 1,
+            leftDeadzone: 0,
+            rightDeadzone: 0
+          },
+          plugins,
+          activePluginTheme: null,
+          settings: {
+            activeOptiScalerSlot: "OptiScalerNightly",
+            defaultPresetId: "strix-halo-quality",
+            uiTheme: initTheme,
+            uiLayout: initLayout,
+            backgroundAutoInjectEnabled: false,
+            launchConsoleFullscreen: false,
+            launchAtWindowsStartup: true,
+            runAsAdministrator: false,
+            customTdpPresets: [10, 15, 20, 25, 30, 45, 60],
+            currentTdpWatts: 40,
+            flatPowerLock: false,
+            unlockThreeStagePower: false,
+            slowPptWatts: 45,
+            fastPptWatts: 50,
+            powerLinkageEnabled: true,
+            batteryTdpWatts: 25,
+            acTdpWatts: 55,
+            fanMode: "curve",
+            manualFanPercent: 55,
+            activeFanCurveId: "linear_60",
+            fanCurves,
+            overlayLevel: 2,
+            overlayPosition: "top-center",
+            overlayOpacity: 0.88,
+            overlayRenderer: "auto_rtss",
+            gamepadMouseModeEnabled: false,
+            consoleGamepadCombo: { buttons: ["BACK", "LB"] },
+            qamGamepadCombo: { buttons: ["BACK", "RB"] },
+            osdGamepadCombo: { buttons: ["BACK", "Y"] },
+            insertGamepadCombo: { buttons: ["BACK", "START"] },
+            consoleHotkey: { modifiers: 6, virtualKey: 0x4F, displayText: "Ctrl + Shift + O" },
+            qamHotkey: { modifiers: 3, virtualKey: 0x4F, displayText: "Ctrl + Alt + O" },
+            osdHotkey: { modifiers: 3, virtualKey: 0x4D, displayText: "Ctrl + Alt + M" },
+            insertHotkey: { modifiers: 3, virtualKey: 0x49, displayText: "Ctrl + Alt + I" },
+            interceptPhysicalOskButton: true,
+            interceptPhysicalMenuButton: true,
+            interceptGuideMenuButton: true,
+            autoCheckUpdatesOnStartup: true,
+            enableBackButtonHotkeys: false,
+            muteGameGamepadInOverlay: false,
+            perGameProfiles: {
+              steam_2384580: {
+                gameId: "steam_2384580",
+                gameName: "真·三国无双 起源",
+                enabled: true,
+                tdpWatts: 38,
+                refreshRateHz: -1,
+                cpuMaxFreqMhz: 0
+              }
+            },
+            pluginStoreUrls: [],
+            pluginDownloadMirrorPrefix: "https://gh-proxy.com/",
+            pluginDeveloperMode: false
+          },
+          systemControl: {
+            screenWidth: 1920,
+            screenHeight: 1080,
+            refreshRateHz: 120,
+            isDynamicRefreshRate: true,
+            dynamicRefreshSupported: true,
+            dynamicCeilingHz: 120,
+            supportedRefreshRates: [60, 120],
+            supportedResolutions: ["1920x1080", "1600x900", "1280x720"],
+            brightnessPercent: 72,
+            brightnessSupported: true,
+            volumePercent: 48,
+            isMuted: false,
+            cpuBoostMode: "off",
+            cpuTopologyBadge: "单CCD 8核 · 32MB L3",
+            cpuName: "AMD Ryzen AI MAX+ 395",
+            currentFps: 98,
+            frameTimeMs: 10.2,
+            apuPowerWatts: 37.8,
+            systemDrawWatts: 49.4,
+            gpuUsagePercent: 92,
+            gfxClockMhz: 2480,
+            memClockMhz: 2000,
+            cpuUsagePercent: 38,
+            cpuClockMhz: 3150,
+            cpuTempC: 66,
+            gpuTempC: 63,
+            vramUsedMb: 9420,
+            vramTotalMb: 16384,
+            sharedVramUsedMb: 1430,
+            usedRamGb: 18.6,
+            totalRamGb: 64,
+            hasBattery: true,
+            batteryPercent: 84,
+            isOnAcPower: true,
+            isCharging: true,
+            estimatedChargerWatts: 65.0,
+            batteryEtaMinutes: 132,
+            adlAvailable: true,
+            rtssInstalled: true,
+            rtssRunning: true,
+            activeOverlayBackend: "rtss",
+            wifiRadioOff: false,
+            wifiRadioSupported: true,
+            apuWattsHistory: [31, 33, 35, 34, 36, 37, 38, 39, 37, 38, 36, 38, 39, 37, 38, 38, 37, 38],
+            tempHistory: [58, 60, 61, 62, 63, 64, 65, 65, 64, 65, 66, 66, 65, 66, 66, 65, 66, 66],
+            gpuUsageHistory: [84, 86, 89, 91, 90, 93, 94, 92, 91, 93, 94, 92, 91, 92, 93, 92, 91, 92],
+            cpuUsageHistory: [32, 35, 36, 39, 38, 41, 40, 38, 37, 39, 38, 37, 39, 40, 38, 37, 38, 38],
+            hardwareService: {
+              serviceRunning: true,
+              daemonVersion: 5,
+              smuReady: true,
+              ecReady: true,
+              fanRpm: 3180,
+              appliedFanPwm: 138,
+              hwStapmLimitWatts: 40,
+              hwSlowLimitWatts: 45,
+              hwFastLimitWatts: 50,
+              pmTableVersion: "StrixHalo v5",
+              gpdServiceExists: true,
+              gpdServiceRunning: false
+            }
+          }
+        };
+      }
+
+      let mockState = createInitialMockState();
+
+      function clone(obj) {
+        return JSON.parse(JSON.stringify(obj));
+      }
+
+      function getFrames() {
+        return [document.getElementById("frameConsole"), document.getElementById("frameQam")].filter(Boolean);
+      }
+
+      function broadcastEvent(eventName, data) {
+        getFrames().forEach((fr) => {
+          try {
+            fr.contentWindow?.postMessage({ __halodeckMockReply: true, payload: { type: "event", eventName, data } }, "*");
+          } catch {}
+        });
+      }
+
+      function broadcastSnapshot() {
+        syncToolbarButtons();
+        broadcastEvent("stateChanged", clone(mockState));
+      }
+
+      function syncToolbarButtons() {
+        const theme = mockState.settings.uiTheme;
+        const layout = mockState.settings.uiLayout;
+        document.querySelectorAll("[data-mock-theme]").forEach((b) => b.classList.toggle("active", b.dataset.mockTheme === theme));
+        document.querySelectorAll("[data-mock-layout]").forEach((b) => b.classList.toggle("active", b.dataset.mockLayout === layout));
+      }
+
+      async function handleMockRpc(method, payload = {}) {
+        const s = mockState.settings;
+        const sys = mockState.systemControl;
+        const hw = sys.hardwareService;
+
+        switch (method) {
+          case "getSnapshot":
+            return clone(mockState);
+          case "setUiTheme":
+            s.uiTheme = payload.theme === "frost" ? "frost" : "aurora";
+            broadcastSnapshot();
+            return { ok: true, theme: s.uiTheme };
+          case "setUiLayout":
+            s.uiLayout = payload.layout === "cockpit" ? "cockpit" : "bento";
+            broadcastSnapshot();
+            return { ok: true, layout: s.uiLayout };
+          case "setTdp": {
+            const w = Math.max(8, Math.min(120, Number(payload.watts) || 40));
+            s.currentTdpWatts = w;
+            hw.hwStapmLimitWatts = w;
+            hw.hwSlowLimitWatts = s.flatPowerLock ? w : Math.min(130, w + 5);
+            hw.hwFastLimitWatts = s.flatPowerLock ? w : Math.min(140, w + 10);
+            sys.apuPowerWatts = Math.max(8, Number((w * 0.94).toFixed(1)));
+            broadcastSnapshot();
+            return { ok: true, hardwareApplied: true, message: `目标 TDP 已应用至 ${w}W` };
+          }
+          case "savePowerConfig":
+            if (Array.isArray(payload.customTdpPresets)) s.customTdpPresets = payload.customTdpPresets;
+            if (typeof payload.flatPowerLock === "boolean") s.flatPowerLock = payload.flatPowerLock;
+            if (typeof payload.unlockThreeStagePower === "boolean") s.unlockThreeStagePower = payload.unlockThreeStagePower;
+            if (typeof payload.slowPptWatts === "number") s.slowPptWatts = payload.slowPptWatts;
+            if (typeof payload.fastPptWatts === "number") s.fastPptWatts = payload.fastPptWatts;
+            broadcastSnapshot();
+            return { ok: true };
+          case "setPowerLinkage":
+            if (typeof payload.enabled === "boolean") s.powerLinkageEnabled = payload.enabled;
+            if (typeof payload.batteryWatts === "number") s.batteryTdpWatts = payload.batteryWatts;
+            if (typeof payload.acWatts === "number") s.acTdpWatts = payload.acWatts;
+            broadcastSnapshot();
+            return { ok: true };
+          case "setFanMode":
+            if (payload.mode) s.fanMode = payload.mode;
+            if (typeof payload.manualPercent === "number") s.manualFanPercent = payload.manualPercent;
+            if (payload.curveId) s.activeFanCurveId = payload.curveId;
+            hw.fanRpm = s.fanMode === "manual" ? Math.round(1800 + s.manualFanPercent * 32) : 3180;
+            broadcastSnapshot();
+            return { ok: true, hardwareApplied: true, message: `风扇模式已切换` };
+          case "saveFanCurves":
+            if (Array.isArray(payload.curves)) s.fanCurves = payload.curves;
+            if (payload.activeCurveId) s.activeFanCurveId = payload.activeCurveId;
+            if (payload.activate) s.fanMode = "curve";
+            broadcastSnapshot();
+            return { ok: true };
+          case "setRefreshRate":
+            sys.refreshRateHz = Number(payload.hz) || 120;
+            sys.isDynamicRefreshRate = !!payload.dynamic;
+            broadcastSnapshot();
+            return clone(sys);
+          case "setResolution": {
+            const [w, h] = String(payload.resolution || "1920x1080").split("x").map(Number);
+            if (w && h) { sys.screenWidth = w; sys.screenHeight = h; }
+            broadcastSnapshot();
+            return clone(sys);
+          }
+          case "setBrightness":
+            sys.brightnessPercent = Math.max(5, Math.min(100, Number(payload.percent) || 70));
+            broadcastEvent("controlValuePatched", { kind: "brightness", brightnessPercent: sys.brightnessPercent });
+            return clone(sys);
+          case "setVolume":
+            sys.volumePercent = Math.max(0, Math.min(100, Number(payload.percent) || 50));
+            sys.isMuted = false;
+            broadcastEvent("controlValuePatched", { kind: "volume", volumePercent: sys.volumePercent, isMuted: false });
+            return clone(sys);
+          case "setMute":
+            sys.isMuted = !!payload.muted;
+            broadcastSnapshot();
+            return clone(sys);
+          case "setCpuBoost":
+            sys.cpuBoostMode = payload.mode || "off";
+            broadcastSnapshot();
+            return clone(sys);
+          case "setOverlayHud":
+            if (typeof payload.level === "number") s.overlayLevel = payload.level;
+            if (payload.position) s.overlayPosition = payload.position;
+            if (typeof payload.opacity === "number") s.overlayOpacity = payload.opacity;
+            if (payload.renderer) s.overlayRenderer = payload.renderer;
+            broadcastSnapshot();
+            return { ok: true, rtssRunning: true };
+          case "setGamepadMouseMode":
+            s.gamepadMouseModeEnabled = !!payload.enabled;
+            broadcastSnapshot();
+            return { ok: true };
+          case "saveGamePerfProfile":
+            s.perGameProfiles = s.perGameProfiles || {};
+            if (payload.gameId) s.perGameProfiles[payload.gameId] = payload;
+            broadcastSnapshot();
+            return { ok: true };
+          case "saveSettings":
+            mockState.settings = { ...mockState.settings, ...payload };
+            broadcastSnapshot();
+            return { ok: true };
+          case "updatePluginPreferences":
+            if (typeof payload.pluginDownloadMirrorPrefix === "string") {
+              s.pluginDownloadMirrorPrefix = payload.pluginDownloadMirrorPrefix;
+            }
+            if (typeof payload.pluginDeveloperMode === "boolean") {
+              s.pluginDeveloperMode = payload.pluginDeveloperMode;
+            }
+            broadcastSnapshot();
+            return { ok: true };
+          case "getGpdController":
+            return clone(mockState.gpdController);
+          case "saveGpdController":
+            if (payload.l4Key !== null && payload.l4Key !== undefined) {
+              mockState.gpdController.l4KeyCode = payload.l4Key;
+              mockState.gpdController.l4ComboCodes = [];
+              mockState.gpdController.l4KeyLabel = payload.l4Key === 0 ? "未映射 (NC)" : `0x${Number(payload.l4Key).toString(16).toUpperCase()}`;
+            }
+            if (payload.r4Key !== null && payload.r4Key !== undefined) {
+              mockState.gpdController.r4KeyCode = payload.r4Key;
+              mockState.gpdController.r4ComboCodes = [];
+              mockState.gpdController.r4KeyLabel = payload.r4Key === 0 ? "未映射 (NC)" : `0x${Number(payload.r4Key).toString(16).toUpperCase()}`;
+            }
+            if (typeof payload.rumble === "number") mockState.gpdController.rumbleLevel = payload.rumble;
+            if (typeof payload.leftDeadzone === "number") mockState.gpdController.leftDeadzone = payload.leftDeadzone;
+            if (typeof payload.rightDeadzone === "number") mockState.gpdController.rightDeadzone = payload.rightDeadzone;
+            broadcastSnapshot();
+            return { ...clone(mockState.gpdController), statusMessage: "已写入 GPD Win 5 手柄固件（预览模拟）" };
+          case "selectRunningFallback": {
+            const g = mockState.games.find((x) => x.id === payload.gameId);
+            if (g) mockState.activeInspectGame = g;
+            broadcastSnapshot();
+            return { ok: true };
+          }
+          case "injectGame":
+          case "injectAndRestartGame": {
+            const g = mockState.games.find((x) => x.id === payload.gameId) || mockState.activeInspectGame;
+            if (g) {
+              g.injection = { isInjected: true, proxyDllName: payload.config?.proxyDllName || "dxgi.dll", appliedConfig: clone(payload.config || {}) };
+            }
+            broadcastSnapshot();
+            return { ok: true, message: `已将推荐超分配置部署至《${g?.title || "目标游戏"}》` };
+          }
+          case "restoreGame": {
+            const g = mockState.games.find((x) => x.id === payload.gameId) || mockState.activeInspectGame;
+            if (g) g.injection = { isInjected: false };
+            broadcastSnapshot();
+            return { ok: true, message: `已还原《${g?.title || "目标游戏"}》为纯净原版` };
+          }
+          case "installComponent": {
+            const c = mockState.components.find((x) => x.slot === payload.slot);
+            if (c) {
+              c.isInstalled = true;
+              c.installedVersion = c.latestVersion || "latest";
+              c.hasUpdate = false;
+            }
+            broadcastSnapshot();
+            return { ok: true };
+          }
+          case "refreshComponents":
+            return clone(mockState.components);
+          case "checkAppUpdate":
+            await new Promise((r) => setTimeout(r, 450));
+            broadcastSnapshot();
+            return { ok: true, update: clone(mockState.latestUpdate), message: "发现新版本 v0.6.3 正式版" };
+          case "runMenuKeyDiagnostic":
+            await new Promise((r) => setTimeout(r, 1200));
+            return {
+              durationMs: 5000,
+              environment: {
+                gpdVendorHidConnected: true,
+                gpdVendorHidDevice: "GPD Win5 HID (0xFF00)",
+                registerHotKeyF13Ok: true,
+                xInputBackend: "XInput1_4Ex",
+                connectedXInputCount: 1,
+                gpdToolRunning: false,
+                selfElevated: false
+              },
+              events: [
+                { offsetMs: 620, channel: "VendorHID", summary: "GPD 0xFF00 Menu Key Down", rawHex: "01 00 40 00", wouldTriggerQam: true },
+                { offsetMs: 765, channel: "VendorHID", summary: "GPD 0xFF00 Menu Key Up", rawHex: "01 00 00 00", wouldTriggerQam: false },
+                { offsetMs: 770, channel: "HotKey", summary: "WM_HOTKEY VK_F13 (0x7C)", rawHex: "7C", wouldTriggerQam: true }
+              ],
+              copyableReport: "=== HaloDeck MenuKey Diagnostic ===\n0xFF00 HID: Connected\nF13 HotKey: Ready\n+620ms [VendorHID] Menu Key Down (RAW=01 00 40 00) -> Trigger QAM"
+            };
+          case "fetchPluginStore":
+            return {
+              sources: [{ storeName: "HaloDeck Official Store", sourceUrl: "https://cdn.jsdelivr.net/gh/Lokilankaaa/HaloDeck-Plugins@main/store.json", isOfficial: true, count: 3 }],
+              items: mockState.plugins.map((p) => ({
+                ...clone(p),
+                isInstalled: true,
+                hasUpdate: p.id === "halodeck.power-advisor",
+                zipUrl: `https://github.com/Lokilankaaa/HaloDeck-Plugins/releases/download/${p.version}/${p.id}.zip`,
+                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }))
+            };
+          case "listPlugins":
+            return clone(mockState.plugins);
+          case "setPluginEnabled": {
+            const p = mockState.plugins.find((x) => x.id === payload.pluginId);
+            if (p) { p.enabled = !!payload.enabled; p.consentAccepted = true; }
+            broadcastSnapshot();
+            return { ok: true };
+          }
+          case "toggleOfflineWifi":
+            sys.wifiRadioOff = !sys.wifiRadioOff;
+            broadcastSnapshot();
+            return { ok: true, wifiRadioOff: sys.wifiRadioOff, message: sys.wifiRadioOff ? "已关闭 Wi-Fi 无线电" : "已开启 Wi-Fi 无线电" };
+          case "runToolboxAction":
+            if (payload.action === "toggle_fridge") {
+              mockState.frozenGames = mockState.frozenGames.length ? [] : [{ pid: 10248, title: "真·三国无双 起源" }];
+              broadcastSnapshot();
+              return { ok: true, message: mockState.frozenGames.length ? "已将《真·三国无双 起源》挂起省电" : "已解冻恢复游戏运行" };
+            }
+            return { ok: true, message: `已执行快捷操作：${payload.action}` };
+          case "toggleQam":
+            setView("both");
+            return { ok: true };
+          case "showConsole":
+            setView("console");
+            if (payload.tab) {
+              broadcastEvent("navigateConsoleTab", { tab: payload.tab, subtab: payload.subtab });
+            }
+            return { ok: true };
+          case "openExternalUrl":
+            return { ok: true, url: payload.url, message: `预览模式：外部链接 ${payload.url}` };
+          case "openFolder":
+            return { opened: true, path: payload.path };
+          case "openSettingsJson":
+            return { ok: true, message: "预览模式：settings.json 位于 AppData\\Local\\HaloDeck" };
+          case "reloadSettingsJson":
+            broadcastSnapshot();
+            return { ok: true, message: "已重载本地配置" };
+          case "enableWindowedVrr":
+            mockState.vrrWindowedEnabled = true;
+            broadcastSnapshot();
+            return { ok: true, message: "已开启 Win11 窗口化 VRR 优化" };
+          case "installHardwareService":
+            hw.serviceRunning = true;
+            hw.smuReady = true;
+            hw.ecReady = true;
+            broadcastSnapshot();
+            return { ok: true, message: "HaloDeckHardwareSvc v5 运行正常" };
+          case "toggleGpdService":
+            hw.gpdServiceRunning = !payload.paused;
+            broadcastSnapshot();
+            return { ok: true, message: hw.gpdServiceRunning ? "已恢复 GPDTools 服务" : "已暂停 GPDTools 服务" };
+          default:
+            return { ok: true };
+        }
+      }
+
+      window.addEventListener("message", async (ev) => {
+        const d = ev.data;
+        if (!d || !d.__halodeckMockRpc || !d.payload) return;
+        const { id, method, payload } = d.payload;
+        try {
+          const result = await handleMockRpc(method, payload);
+          ev.source?.postMessage({ __halodeckMockReply: true, payload: { type: "response", id, ok: true, result } }, "*");
+        } catch (err) {
+          ev.source?.postMessage({ __halodeckMockReply: true, payload: { type: "response", id, ok: false, error: err?.message || String(err) } }, "*");
+        }
+      });
+
+      function setView(view) {
+        const c = document.getElementById("cardConsole");
+        const q = document.getElementById("cardQam");
+        c.classList.toggle("hidden", view === "qam");
+        q.classList.toggle("hidden", view === "console");
+        document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+      }
+
+      document.querySelectorAll("[data-view]").forEach((btn) => {
+        btn.addEventListener("click", () => setView(btn.dataset.view));
+      });
+      document.querySelectorAll("[data-mock-theme]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          mockState.settings.uiTheme = btn.dataset.mockTheme;
+          broadcastSnapshot();
+        });
+      });
+      document.querySelectorAll("[data-mock-layout]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          mockState.settings.uiLayout = btn.dataset.mockLayout;
+          broadcastSnapshot();
+        });
+      });
+      document.getElementById("btnResetMock")?.addEventListener("click", () => {
+        mockState = createInitialMockState();
+        broadcastSnapshot();
+      });
+
+      const initView = params.get("view") || "console";
+      setView(initView);
+      syncToolbarButtons();
+
+      // Optional URL navigation for automated screenshot verification
+      const initTab = params.get("tab");
+      const initSub = params.get("sub");
+      const initQamTab = params.get("qtab");
+      if (initTab) {
+        document.getElementById("frameConsole")?.addEventListener("load", () => {
+          setTimeout(() => {
+            broadcastEvent("navigateConsoleTab", { tab: initTab, subtab: initSub || undefined });
+          }, 180);
+        });
+      }
+      if (initQamTab) {
+        document.getElementById("frameQam")?.addEventListener("load", () => {
+          setTimeout(() => {
+            broadcastEvent("navigateQamTab", { tab: initQamTab });
+          }, 220);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
