@@ -186,8 +186,8 @@
         <button data-mock-scene="gaming">运行游戏中</button>
       </div>
       <div class="seg" role="group" aria-label="更新状态模拟">
-        <button data-mock-upd="0" class="active">已是最新</button>
-        <button data-mock-upd="1">模拟新版红点</button>
+        <button data-mock-upd="0" class="active">v0.6.3 最新</button>
+        <button data-mock-upd="1">模拟 ↑ v0.6.4</button>
       </div>
       <div class="seg" role="group" aria-label="主题快速切换">
         <button data-mock-theme="aurora" class="active">极光深色</button>
@@ -526,16 +526,16 @@
           dedicatedVramMb: 16384,
           connectedControllers: 1,
           isElevated: false,
-          appVersion: "0.6.3-rc.1",
+          appVersion: "0.6.3",
           latestUpdate: {
             hasUpdate: initHasUpd,
-            currentVersion: "0.6.3-rc.1",
-            latestVersion: initHasUpd ? "0.6.3" : "0.6.3-rc.1",
+            currentVersion: "0.6.3",
+            latestVersion: initHasUpd ? "0.6.4" : "0.6.3",
             isPrerelease: false,
-            title: "HaloDeck v0.6.3 正式版",
-            htmlUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.3",
-            downloadUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.3/HaloDeck-v0.6.3-win-x64.zip",
-            releaseNotes: "• 全新「设置」中心：左侧 5 组清晰导航（手柄与按键 / 外观与系统 / 组件与许可 / 更新与诊断 / 社区与支持）\n• 新增全局下载加速线路选择器，统一应用于应用更新、核心组件与社区插件\n• 优化快捷总控、游戏与超分、硬件与监控的视觉密度与信息层次"
+            title: "HaloDeck v0.6.4 正式版",
+            htmlUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/tag/v0.6.4",
+            downloadUrl: "https://github.com/Lokilankaaa/HaloDeck/releases/download/v0.6.4/HaloDeck-v0.6.4-win-x64.zip",
+            releaseNotes: "• 全新「设置」中心：左侧 5 组清晰导航（手柄与按键 / 外观与系统 / 组件与许可 / 更新与诊断 / 社区与支持）\n• 新增全局下载加速线路选择器，统一应用于应用更新、核心组件与社区插件\n• 快捷总控桌面待机升级为「快速启动」游戏卡片，一键启动或直达超分"
           },
           memoryHealth: { lowCommitHeadroom: false, commitLimitGb: 48 },
           vrrWindowedEnabled: true,
@@ -880,6 +880,26 @@
             broadcastSnapshot();
             return { ok: true };
           }
+          case "launchGame": {
+            const g = mockState.games.find((x) => x.id === payload.gameId) || mockState.games[0];
+            if (g) {
+              mockState.games.forEach((x) => { x.isCurrentlyRunning = x.id === g.id; });
+              mockState.runningGame = g;
+              mockState.activeInspectGame = g;
+              sys.currentFps = 98;
+              sys.apuPowerWatts = 37.8;
+              sys.systemDrawWatts = 49.4;
+              sys.gpuUsagePercent = 92;
+              sys.gfxClockMhz = 2480;
+              sys.cpuTempC = 66;
+              sys.gpuTempC = 63;
+            }
+            broadcastSnapshot();
+            return { ok: true };
+          }
+          case "scanGames":
+            broadcastSnapshot();
+            return clone(mockState.games);
           case "injectGame":
           case "injectAndRestartGame": {
             const g = mockState.games.find((x) => x.id === payload.gameId) || mockState.activeInspectGame;
@@ -1052,7 +1072,7 @@
         btn.addEventListener("click", () => {
           const hasUpd = btn.dataset.mockUpd === "1";
           mockState.latestUpdate.hasUpdate = hasUpd;
-          mockState.latestUpdate.latestVersion = hasUpd ? "0.6.3" : mockState.appVersion;
+          mockState.latestUpdate.latestVersion = hasUpd ? "0.6.4" : mockState.appVersion;
           broadcastSnapshot();
         });
       });

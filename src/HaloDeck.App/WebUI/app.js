@@ -11,7 +11,7 @@
   document.body.classList.toggle("mode-console", !IS_QAM);
 
   const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls", "plugins"];
-  const OPTI_SUB_TABS = ["tune", "library", "components"];
+  const OPTI_SUB_TABS = ["tune", "library"];
   const SETTINGS_SUB_TABS = ["gamepad", "system", "components", "about", "community"];
   const QAM_TABS = ["handheld", "opti", "osd", "controls", "plugins"];
 
@@ -1063,17 +1063,11 @@
     setEl("kpiBat", pfUi.badge);
     setEl("kpiBatSub", pfUi.kpiBatSub);
 
-    // Bento live telemetry strip & standby battery card
+    // Bento live telemetry strip
     setEl("bentoLiveFps", sys.currentFps > 0 ? `${sys.currentFps} FPS` : "桌面待命");
     setEl("bentoLiveTemp", `C ${sys.cpuTempC || "--"}° · G ${sys.gpuTempC || "--"}°`);
     setEl("bentoLiveGpu", `${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}MHz`);
     setEl("bentoLiveFan", hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM` : (hw.serviceRunning ? "自动温控" : "待授权"));
-    setEl("bentoStandbyBatPct", sys.hasBattery ? `${sys.batteryPercent}%` : "外接直供");
-    setEl("bentoStandbyEta", pfUi.etaVal);
-    setEl("bentoStandbyNetW", pfUi.batVal);
-    setEl("bentoStandbySvc", hw.serviceRunning && hw.smuReady ? `PawnIO v${hw.daemonVersion || 5}` : "标准用户态");
-    const standbyBar = document.getElementById("bentoStandbyBatBar");
-    if (standbyBar) standbyBar.style.width = `${sys.hasBattery ? Math.max(4, Math.min(100, sys.batteryPercent || 0)) : 100}%`;
 
     // QAM live tiles & monitor grid
     setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
@@ -2016,7 +2010,7 @@
               </div>
             </section>
 
-            <section class="hh-card bento-game-card ${active && gamePerf ? "" : "bento-power-status-card"}">
+            <section class="hh-card bento-game-card ${active && gamePerf ? "" : "bento-quicklaunch-card"}">
               ${active && gamePerf ? `
                 <div class="bento-game-card-top">
                   ${active.coverImageUrl
@@ -2056,37 +2050,46 @@
                     ], String(gamePerf.refreshRateHz || 0), "compact")}
                   </div>
                 </div>
-              ` : `
-                <div class="bento-standby-head">
-                  <div class="bento-standby-title-group">
-                    <span class="hh-card-title">电池续航与供电状态</span>
-                    <span class="hh-card-badge ${pfUi.modeClass || "live"}">${esc(pfUi.modeText || (sys.isOnAcPower ? "AC 直供" : "电池供电"))}</span>
+              ` : (() => {
+                const allGames = snap.games || [];
+                const topGames = allGames.slice(0, 3);
+                return `
+                  <div class="bento-ql-head">
+                    <div class="bento-standby-title-group">
+                      <span class="hh-card-title">快速启动</span>
+                      <span class="bento-inline-sub" style="margin-left:0;">${allGames.length > 0 ? `游戏库 ${allGames.length} 款` : "尚未扫描游戏"}</span>
+                    </div>
+                    <button id="btnHomeGoLibrary" class="bento-link-pill" data-focusable="true">全部游戏 →</button>
                   </div>
-                  <button id="btnHomeGoLibrary" class="bento-link-pill" data-focusable="true">前往游戏库 →</button>
-                </div>
-
-                <div class="bento-standby-bar-row">
-                  <div class="bento-standby-bar" aria-label="电池电量进度">
-                    <div id="bentoStandbyBatBar" class="bento-standby-bar-fill ${sys.isCharging ? "is-charging" : ""}" style="width:${sys.hasBattery ? Math.max(4, Math.min(100, sys.batteryPercent || 0)) : 100}%;"></div>
-                  </div>
-                  <strong id="bentoStandbyBatPct" class="bento-standby-pct">${sys.hasBattery ? `${sys.batteryPercent}%` : "外接直供"}</strong>
-                </div>
-
-                <div class="bento-standby-grid">
-                  <div class="bento-standby-cell">
-                    <span class="bento-tele-label">预计续航 / 充满</span>
-                    <strong id="bentoStandbyEta" class="bento-tele-val accent-teal">${esc(pfUi.etaVal)}</strong>
-                  </div>
-                  <div class="bento-standby-cell">
-                    <span class="bento-tele-label">电池净充放</span>
-                    <strong id="bentoStandbyNetW" class="bento-tele-val">${esc(pfUi.batVal)}</strong>
-                  </div>
-                  <div class="bento-standby-cell">
-                    <span class="bento-tele-label">守护服务直控</span>
-                    <strong id="bentoStandbySvc" class="bento-tele-val">${hw.serviceRunning && hw.smuReady ? `PawnIO v${hw.daemonVersion || 5}` : "标准用户态"}</strong>
-                  </div>
-                </div>
-              `}
+                  ${topGames.length === 0 ? `
+                    <div class="bento-ql-empty">
+                      <span class="bento-game-desc">暂未发现本地游戏，点击右侧扫描 Steam 与本地游戏库</span>
+                      <button id="btnHomeScanGames" class="btn btn-sm btn-primary" data-focusable="true">扫描 Steam 游戏库</button>
+                    </div>
+                  ` : `
+                    <div class="bento-ql-list">
+                      ${topGames.map((g) => {
+                        const isInj = !!g.injection?.isInjected;
+                        return `
+                          <div class="bento-ql-row">
+                            ${g.coverImageUrl
+                              ? `<img class="bento-ql-thumb" src="${esc(g.coverImageUrl)}" alt="" onerror="this.style.display='none'" />`
+                              : `<div class="bento-ql-thumb placeholder">🎮</div>`}
+                            <div class="bento-ql-meta">
+                              <strong class="bento-ql-title">${esc(g.title)}</strong>
+                              <span class="pill-badge ${isInj ? "blue" : ""}">${isInj ? "已注入" : "原生"}</span>
+                            </div>
+                            <div class="bento-ql-actions">
+                              <button class="btn btn-sm btn-primary" data-ql-launch="${esc(g.id)}" data-focusable="true">启动</button>
+                              <button class="btn btn-sm" data-open-game="${esc(g.id)}" data-focusable="true">超分 ▸</button>
+                            </div>
+                          </div>
+                        `;
+                      }).join("")}
+                    </div>
+                  `}
+                `;
+              })()}
             </section>
           </div>
 
@@ -2352,15 +2355,10 @@
 
               <div class="cw-row" style="min-height:46px;padding:9px 12px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">SMU 功耗策略</span>
-                  <span class="cw-row-sub">${flatLock ? `稳态锁定 SPL = sPPT = fPPT = ${curTdp}W` : `常规平滑：SPL ${curTdp}W · sPPT ${slowPpt}W · fPPT ${fastPpt}W`}</span>
+                  <span class="cw-row-title">独立三段功耗调节 (SPL / sPPT / fPPT)</span>
+                  <span class="cw-row-sub">${unlockThreeStage ? `独立精调：SPL ${curTdp}W · sPPT ${slowPpt}W · fPPT ${fastPpt}W` : `默认联动：SPL ${curTdp}W · sPPT ${slowPpt}W · fPPT ${fastPpt}W`}</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-                  <span style="font-size:11px;color:var(--text-secondary);">稳态锁</span>
-                  ${renderSwitch("swFlatLock", flatLock)}
-                  <span style="font-size:11px;color:var(--text-secondary);">三段精调</span>
-                  ${renderSwitch("swUnlockThreeStage", unlockThreeStage)}
-                </div>
+                ${renderSwitch("swUnlockThreeStage", unlockThreeStage)}
               </div>
 
               ${unlockThreeStage ? `
@@ -2519,13 +2517,6 @@
                   { value: "0.88", label: "88%" },
                   { value: "1", label: "100%" }
                 ], String(opacity >= 0.95 ? 1 : opacity >= 0.82 ? 0.88 : opacity >= 0.65 ? 0.75 : 0.55), "compact")}
-              </div>
-              <div class="cw-row" style="min-height:42px;padding:7px 12px;">
-                <div class="cw-row-copy">
-                  <span class="cw-row-title">管理员权限穿透 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "标准权限"}</span></span>
-                  <span class="cw-row-sub">标准权限即可良好兼容 Steam 大屏幕；游玩提权游戏时可临时提权确保侧栏与悬浮窗置顶显示</span>
-                </div>
-                ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : `<span class="hh-card-badge live">已提权</span>`}
               </div>
             </div>
           </div>
@@ -2762,17 +2753,17 @@
 
         <div class="hh-card">
           <div class="hh-card-head">
-            <span class="hh-card-title">机身按键与输入辅助</span>
+            <span class="hh-card-title">机身按键与输入控制</span>
             <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
           </div>
 
           <div class="cw-group">
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">手柄桌面鼠标模式</span>
-                <span class="cw-row-sub">左摇杆移动光标 · A 左键 · B 右键 · 右摇杆上下滚动页面</span>
+                <span class="cw-row-title">机身菜单键呼出侧栏</span>
+                <span class="cw-row-sub">短按机身快捷菜单键直接呼出或收起 HaloDeck 快捷侧栏，保留长按与 Steam 组合键原生功能</span>
               </div>
-              ${renderSwitch("swMouseMode", !!settings.gamepadMouseModeEnabled)}
+              ${renderSwitch("swPhysicalMenuQam", interceptMenuBtn || interceptGuideBtn)}
             </div>
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
@@ -2783,38 +2774,17 @@
             </div>
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">接管机身快捷菜单键 (0xFF00 / F13)</span>
-                <span class="cw-row-sub">通过 GPD 0xFF00 HID 与 F13 通道，短按机身菜单键直接呼出快捷侧栏</span>
-              </div>
-              ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
-            </div>
-            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-              <div class="cw-row-copy">
-                <span class="cw-row-title">接管手柄菜单 / Guide 键 (0x0400)</span>
-                <span class="cw-row-sub">单独短按呼出快捷侧栏，保留长按与 Steam 组合键的原生功能</span>
-              </div>
-              ${renderSwitch("swInterceptGuideBtn", interceptGuideBtn)}
-            </div>
-            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-              <div class="cw-row-copy">
                 <span class="cw-row-title">侧栏开启时屏蔽游戏后台手柄</span>
                 <span class="cw-row-sub">操作快捷侧栏时隔离游戏端手柄响应，避免菜单与游戏画面同时误触</span>
               </div>
               ${renderSwitch("swMuteGameGamepad", !!settings.muteGameGamepadInOverlay)}
-            </div>
-            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-              <div class="cw-row-copy">
-                <span class="cw-row-title">接管背键 F14–F16 快捷功能</span>
-                <span class="cw-row-sub">开启后可将固件 F14/F15/F16 背键映射为切换悬浮窗、超分菜单或主界面</span>
-              </div>
-              ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
             </div>
           </div>
         </div>
 
         <div class="cw-group settings-disclosure-card">
           <button id="btnToggleControlsAdv" class="cw-disclosure-btn" data-focusable="true">
-            <span>组合快捷键、键盘热键与摇杆死区</span>
+            <span>高级：组合快捷键、键盘热键、死区与 F14–F16</span>
             <span style="display:inline-flex;align-items:center;gap:8px;">
               <span class="cw-disclosure-summary">死区 L ${draft.leftDeadzone} / R ${draft.rightDeadzone} · ${state.controlsAdvancedOpen ? "收起" : "展开"}</span>
               ${svgIcon("chevron")}
@@ -2861,6 +2831,13 @@
                 </div>
               </div>
               <div class="cw-group">
+                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">接管背键 F14–F16 快捷功能</span>
+                    <span class="cw-row-sub">开启后可将固件 F14/F15/F16 背键映射为切换悬浮窗、超分菜单或主界面</span>
+                  </div>
+                  ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
+                </div>
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <div class="cw-row-copy">
                     <span class="cw-row-title">左 / 右摇杆中心死区 (-10..10)</span>
@@ -3272,14 +3249,6 @@
 
             <div class="cw-row" style="min-height:42px;padding:8px 12px;">
               <div class="cw-row-copy">
-                <span class="cw-row-title">启动自动检测更新</span>
-                <span class="cw-row-sub">打开 HaloDeck 时后台静默检查新版本，有更新时在顶栏轻提示</span>
-              </div>
-              ${renderSwitch("swAutoCheckUpdates", autoCheckOn)}
-            </div>
-
-            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-              <div class="cw-row-copy">
                 <span class="cw-row-title">反馈问题（GitHub Issues）</span>
                 <span class="cw-row-sub">自动复制脱敏环境诊断摘要并前往 GitHub 提交工单，加速定位问题</span>
               </div>
@@ -3484,9 +3453,6 @@
                 </span>
               </button>
             `).join("")}
-          </div>
-          <div class="settings-nav-footer">
-            <span class="settings-nav-ver">v${esc(curVer)}</span>
           </div>
         </aside>
         <section class="settings-pane">
@@ -3812,7 +3778,7 @@
                   ${renderSwitch("swOptiPatcher", !!cfg.enableOptiPatcher)}
                 </div>
                 <div class="cw-row">
-                  <span class="cw-row-title">DXGI 显卡身份伪装 (10GB)</span>
+                  <span class="cw-row-title">DXGI 显卡身份伪装（真实显存直通）</span>
                   ${renderSwitch("swSpoofDxgi", !!cfg.spoofDxgi)}
                 </div>
               </div>
@@ -4024,17 +3990,14 @@
   function renderOptiContainerView() {
     const subContent = state.optiSubTab === "library"
       ? renderLibraryView()
-      : state.optiSubTab === "components"
-        ? renderComponentsView()
-        : renderTuneView();
+      : renderTuneView();
 
     return `
       <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:2px;">
           <div class="sub-nav-bar" role="tablist" aria-label="游戏与超分子功能">
-            <button class="sub-tab-btn ${state.optiSubTab === "tune" ? "active" : ""}" data-opti-sub="tune" data-focusable="true">游戏配置与超分</button>
+            <button class="sub-tab-btn ${state.optiSubTab !== "library" ? "active" : ""}" data-opti-sub="tune" data-focusable="true">游戏配置与超分</button>
             <button class="sub-tab-btn ${state.optiSubTab === "library" ? "active" : ""}" data-opti-sub="library" data-focusable="true">游戏海报库</button>
-            <button class="sub-tab-btn ${state.optiSubTab === "components" ? "active" : ""}" data-opti-sub="components" data-focusable="true">核心组件</button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:11.5px;color:var(--text-muted);">专属功耗 · 刷新率 · FSR 4.1.2 · XeFG 一站式配置</span>
@@ -4620,10 +4583,16 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
-      const settingsUpdateDot = document.getElementById("topSettingsUpdateDot");
-      if (settingsUpdateDot) {
-        const hasUpd = !!(state.snapshot?.latestUpdate && state.snapshot.latestUpdate.hasUpdate);
-        settingsUpdateDot.classList.toggle("hidden", !hasUpd);
+      const topVerBtn = document.getElementById("btnTopAppVersion");
+      if (topVerBtn) {
+        const curVer = state.snapshot?.appVersion || "0.6.3";
+        const upd = state.snapshot?.latestUpdate;
+        const hasUpd = !!(upd && upd.hasUpdate);
+        topVerBtn.classList.toggle("has-update", hasUpd);
+        topVerBtn.textContent = hasUpd ? `↑ v${upd.latestVersion}` : `v${curVer}`;
+        topVerBtn.title = hasUpd
+          ? `发现新版本 v${upd.latestVersion}，点击前往「设置 → 更新与诊断」`
+          : `当前版本 v${curVer}，点击前往「设置 → 更新与诊断」`;
       }
     }
 
@@ -6399,6 +6368,24 @@
       state.focusIndex = 0;
       render();
     });
+    document.getElementById("btnHomeScanGames")?.addEventListener("click", async () => {
+      showToast("正在扫描 Steam 与本地游戏库...");
+      await rpc("scanGames");
+      showToast("游戏库扫描完成", "success");
+    });
+    document.querySelectorAll("[data-ql-launch]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const gameId = el.dataset.qlLaunch;
+        const g = (state.snapshot?.games || []).find((x) => x.id === gameId);
+        if (!gameId) return;
+        try {
+          await rpc("launchGame", { gameId });
+          showToast(`正在启动 ${g?.title || "游戏"}`, "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    });
 
     // Monitor & OSD events
     document.getElementById("btnCycleOsdPos")?.addEventListener("click", async () => {
@@ -6517,6 +6504,14 @@
       const next = !s.muteGameGamepadInOverlay;
       await rpc("saveSettings", { ...s, muteGameGamepadInOverlay: next });
       showToast(next ? "已开启侧栏期间屏蔽游戏后台手柄输入" : "已关闭游戏后台手柄屏蔽（更兼容《剑星》等游戏）", "info");
+    });
+    document.getElementById("swPhysicalMenuQam")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const curOn = (s.interceptPhysicalMenuButton !== false) || (s.interceptGuideMenuButton !== false);
+      const next = !curOn;
+      await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next, interceptGuideMenuButton: next });
+      showToast(next ? "已开启机身菜单键短按呼出快捷侧栏" : "已关闭机身菜单键呼出侧栏", "info");
     });
     document.getElementById("swInterceptMenuBtn")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
@@ -8112,7 +8107,7 @@
     }
   }
 
-  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => openAppUpdateModal());
+  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => navigateToSettings("about"));
   document.getElementById("btnOpenQam")?.addEventListener("click", () => rpc("toggleQam"));
   document.getElementById("btnMinimize")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));
