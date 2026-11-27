@@ -15,7 +15,10 @@ internal static class Win32Interop
     public const int WM_SYSKEYDOWN = 0x0104;
     public const int WM_SYSKEYUP = 0x0105;
     public const uint WM_CLOSE = 0x0010;
+    public const uint WM_QUIT = 0x0012;
     public const uint WM_SYSCOMMAND = 0x0112;
+    public const uint WM_APP = 0x8000;
+    public const uint WM_APP_REINSTALL_KBD_HOOK = WM_APP + 0x41;
     public const nint SC_CLOSE = 0xF060;
     public const uint LLKHF_INJECTED = 0x10;
 
@@ -646,6 +649,43 @@ internal static class Win32Interop
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PostMessageW(nint hWnd, uint Msg, nint wParam, nint lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public nint hwnd;
+        public uint message;
+        public nint wParam;
+        public nint lParam;
+        public uint time;
+        public POINT pt;
+        public uint lPrivate;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    public static extern nint DispatchMessageW(ref MSG lpMsg);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessageW(uint idThread, uint Msg, nint wParam, nint lParam);
 
     public static void SendSyntheticChordBreak()
     {

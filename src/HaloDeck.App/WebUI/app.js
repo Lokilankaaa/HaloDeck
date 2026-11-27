@@ -3345,7 +3345,7 @@
           </div>
         </div>
 
-        <div class="hh-card about-brand-card">
+        <div class="hh-card about-brand-card ${state.mirrorDropdownOpen ? "has-open-menu" : ""}">
           <div class="about-brand-row">
             <div class="about-brand-left">
               <div class="about-brand-icon" aria-hidden="true">
@@ -3372,7 +3372,7 @@
             </div>
           </div>
 
-          <div class="cw-group" style="margin-top:10px;">
+          <div class="cw-group mirror-group" style="margin-top:10px;">
             <div class="cw-row mirror-picker-row" style="min-height:46px;padding:9px 12px;">
               <div class="cw-row-copy">
                 <span class="cw-row-title">下载加速线路</span>
@@ -6748,13 +6748,15 @@
 
     document.getElementById("btnOptiGoSettingsComps")?.addEventListener("click", () => navigateToSettings("components"));
 
-    document.getElementById("btnMirrorSelect")?.addEventListener("click", () => {
+    document.getElementById("btnMirrorSelect")?.addEventListener("click", (e) => {
+      e.stopPropagation();
       state.mirrorDropdownOpen = !state.mirrorDropdownOpen;
       render();
     });
 
     document.querySelectorAll("[data-mirror-preset]").forEach((el) => {
-      el.addEventListener("click", async () => {
+      el.addEventListener("click", async (e) => {
+        e.stopPropagation();
         const presetId = el.dataset.mirrorPreset;
         const preset = MIRROR_PRESETS.find((p) => p.id === presetId);
         state.mirrorDropdownOpen = false;
@@ -8303,6 +8305,13 @@
   window.addEventListener("wheel", () => {
     state.lastInputModality = "pointer";
   }, { passive: true, capture: true });
+
+  document.addEventListener("click", (e) => {
+    if (!state.mirrorDropdownOpen) return;
+    if (e.target?.closest?.(".custom-select-wrap")) return;
+    state.mirrorDropdownOpen = false;
+    render();
+  });
 
   const endRangeDrag = () => {
     if (!state.isDraggingRange) return;
