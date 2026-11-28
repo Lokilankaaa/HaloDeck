@@ -1011,6 +1011,11 @@ public sealed class WebUiBridge : IDisposable
                 "addPluginStoreUrl" => AddPluginStoreUrl(payload),
                 "removePluginStoreUrl" => RemovePluginStoreUrl(payload),
                 "updatePluginPreferences" => UpdatePluginPreferences(payload),
+                "setDownloadMirror" => SetDownloadMirror(payload),
+                "getDiagnosticReport" => BuildDiagnosticReport(),
+                "openLogsDirectory" => OpenLogsDirectory(),
+                "openUserDataDirectory" => OpenUserDataDirectory(),
+                "openComponentsDirectory" => OpenComponentsDirectory(),
                 "openExternalUrl" => OpenExternalUrl(payload),
                 "checkAppUpdate" => await CheckAppUpdateAsync(payload),
                 "downloadAndApplyAppUpdate" => await DownloadAndApplyAppUpdateAsync(payload),
@@ -1047,6 +1052,10 @@ public sealed class WebUiBridge : IDisposable
             customExtensions = _componentManager.GetCustomExtensions(_settings.DisabledCustomDlls),
             settings = _settings,
             settingsFilePath = _settingsStore.SettingsFilePath,
+            userDataDirectory = HaloDeckPaths.ResolveAppDataRoot(),
+            logDirectory = HaloDeckPaths.ResolveLogsDirectory(),
+            componentsDirectory = _componentManager.ComponentsRoot,
+            dedicatedVramMb = DxgiVramDetector.TryDetectDedicatedVramMb(),
             proxyOptions = InjectionEngine.SupportedProxyNames,
             connectedControllers = _inputHub.ConnectedControllerCount,
             isElevated = Win32Interop.IsCurrentProcessElevated(),
@@ -1370,14 +1379,18 @@ public sealed class WebUiBridge : IDisposable
             throw new ArgumentException($"未知组件槽位: {slotStr}");
         }
 
-        var progress = new Progress<double>(pct =>
+        string mirrorPrefix = _settings.PluginDownloadMirrorPrefix;
+        return await Task.Run(async () =>
         {
-            BroadcastEvent("componentProgress", new { slot = slot.ToString(), percent = Math.Round(pct, 1) });
-        });
+            var progress = new ThrottledProgress(pct =>
+            {
+                BroadcastEvent("componentProgress", new { slot = slot.ToString(), percent = Math.Round(pct, 1) });
+            });
 
-        var info = await _componentManager.InstallOrUpdateAsync(slot, progress, _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
-        BroadcastStateSnapshot();
-        return info;
+            var info = await _componentManager.InstallOrUpdateAsync(slot, progress, mirrorPrefix).ConfigureAwait(false);
+            BroadcastStateSnapshot();
+            return info;
+        }).ConfigureAwait(false);
     }
 
     private async Task<ComponentInfo?> ImportComponentFileAsync(JsonElement payload)
@@ -3234,95 +3247,102 @@ public sealed class WebUiBridge : IDisposable
     {
         bool includePrerelease = payload.TryGetProperty("includePrerelease", out var pp) &&
                                  pp.ValueKind == JsonValueKind.True;
+        string mirrorPrefix = _settings.PluginDownloadMirrorPrefix;
 
-        await _appUpdateGate.WaitAsync().ConfigureAwait(false);
-        try
+        return await Task.Run<object>(async () =>
         {
-            var info = _latestUpdateInfo;
-            if (info is null || !info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
-            {
-                info = await _appUpdater.CheckForUpdateAsync(
-                    CurrentAppVersion,
-                    includePrerelease,
-                    mirrorPrefix: _settings.PluginDownloadMirrorPrefix).ConfigureAwait(false);
-                _latestUpdateInfo = info;
-            }
-            if (!info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
-            {
-                return new { ok = false, message = "当前已是最新版本或未找到便携包附件" };
-            }
-
-            string targetDir = AppContext.BaseDirectory;
-            // Verify target directory is writable before downloading ~70MB
+            await _appUpdateGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                string probe = Path.Combine(targetDir, $".update_probe_{Guid.NewGuid():N}");
-                File.WriteAllText(probe, "ok");
-                File.Delete(probe);
+                var info = _latestUpdateInfo;
+                if (info is null || !info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+                {
+                    info = await _appUpdater.CheckForUpdateAsync(
+                        CurrentAppVersion,
+                        includePrerelease,
+                        mirrorPrefix: mirrorPrefix).ConfigureAwait(false);
+                    _latestUpdateInfo = info;
+                }
+                if (!info.HasUpdate || string.IsNullOrWhiteSpace(info.DownloadUrl))
+                {
+                    BroadcastEvent("appUpdateProgress", new { version = "", percent = 0.0, status = "idle" });
+                    return new { ok = false, message = "当前已是最新版本或未找到便携包附件" };
+                }
+
+                string targetDir = Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                // Verify target directory is writable before downloading ~70MB
+                try
+                {
+                    string probe = Path.Combine(targetDir, $".update_probe_{Guid.NewGuid():N}");
+                    File.WriteAllText(probe, "ok");
+                    File.Delete(probe);
+                }
+                catch
+                {
+                    throw new InvalidOperationException("当前安装目录无写入权限，请点击「查看更新说明」前往 GitHub 手动下载覆盖");
+                }
+
+                BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 0.0, status = "downloading" });
+                var progress = new ThrottledProgress(pct =>
+                {
+                    BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = Math.Round(pct, 1), status = "downloading" });
+                });
+
+                var staged = await _appUpdater.DownloadAndStageUpdateAsync(
+                    info,
+                    mirrorPrefix: mirrorPrefix,
+                    progress: progress).ConfigureAwait(false);
+
+                BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 100.0, status = "applying" });
+
+                string updaterScript = AppUpdateService.WritePortableUpdaterScript(staged, targetDir, Environment.ProcessId);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{updaterScript}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+
+                SuppressHardwareCleanupOnDispose = true;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(350).ConfigureAwait(false);
+                    if (RequestExitForRelaunch is { } exitHandler)
+                    {
+                        exitHandler.Invoke();
+                    }
+                    else
+                    {
+                        await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
+                    }
+                });
+
+                return new
+                {
+                    ok = true,
+                    version = info.LatestVersion,
+                    verifiedSha256 = staged.VerifiedSha256,
+                    message = $"v{info.LatestVersion} 校验通过，正在重启并原地更新..."
+                };
             }
             catch
             {
-                throw new InvalidOperationException("当前安装目录无写入权限，请点击「查看更新说明」前往 GitHub 手动下载覆盖");
+                BroadcastEvent("appUpdateProgress", new { version = "", percent = 0.0, status = "idle" });
+                throw;
             }
-
-            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 0.0, status = "downloading" });
-            var progress = new Progress<double>(pct =>
+            finally
             {
-                BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = Math.Round(pct, 1), status = "downloading" });
-            });
-
-            var staged = await _appUpdater.DownloadAndStageUpdateAsync(
-                info,
-                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
-                progress: progress).ConfigureAwait(false);
-
-            BroadcastEvent("appUpdateProgress", new { version = info.LatestVersion, percent = 100.0, status = "applying" });
-
-            string updaterScript = AppUpdateService.WritePortableUpdaterScript(staged, targetDir, Environment.ProcessId);
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{updaterScript}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-
-            SuppressHardwareCleanupOnDispose = true;
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(350).ConfigureAwait(false);
-                await _dispatcher.InvokeAsync(() => System.Windows.Application.Current?.Shutdown());
-            });
-
-            return new
-            {
-                ok = true,
-                version = info.LatestVersion,
-                verifiedSha256 = staged.VerifiedSha256,
-                message = $"v{info.LatestVersion} 校验通过，正在重启并原地更新..."
-            };
-        }
-        catch
-        {
-            BroadcastEvent("appUpdateProgress", new { version = "", percent = 0.0, status = "idle" });
-            throw;
-        }
-        finally
-        {
-            _appUpdateGate.Release();
-        }
+                _appUpdateGate.Release();
+            }
+        }).ConfigureAwait(false);
     }
 
     private object UpdatePluginPreferences(JsonElement payload)
     {
         if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
         {
-            string raw = (mp.GetString() ?? "").Trim();
-            if (!string.IsNullOrEmpty(raw) && !PluginRegistryClient.IsAllowedHttpsUrl(raw))
-            {
-                throw new ArgumentException("GitHub 下载镜像前缀必须留空或为合法的 https:// 地址");
-            }
-            _settings.PluginDownloadMirrorPrefix = raw;
+            _settings.PluginDownloadMirrorPrefix = PluginRegistryClient.NormalizeMirrorPrefix(mp.GetString());
         }
         if (payload.TryGetProperty("pluginDeveloperMode", out var dm) && (dm.ValueKind == JsonValueKind.True || dm.ValueKind == JsonValueKind.False))
         {
@@ -3337,6 +3357,129 @@ public sealed class WebUiBridge : IDisposable
             pluginDeveloperMode = _settings.PluginDeveloperMode
         };
     }
+
+    private object SetDownloadMirror(JsonElement payload)
+    {
+        string raw = string.Empty;
+        if (payload.ValueKind == JsonValueKind.Object)
+        {
+            if (payload.TryGetProperty("prefix", out var p) && p.ValueKind == JsonValueKind.String)
+            {
+                raw = p.GetString() ?? string.Empty;
+            }
+            else if (payload.TryGetProperty("preset", out var pr) && pr.ValueKind == JsonValueKind.String)
+            {
+                raw = pr.GetString() ?? string.Empty;
+            }
+            else if (payload.TryGetProperty("pluginDownloadMirrorPrefix", out var mp) && mp.ValueKind == JsonValueKind.String)
+            {
+                raw = mp.GetString() ?? string.Empty;
+            }
+        }
+
+        string normalized = PluginRegistryClient.NormalizeMirrorPrefix(raw);
+        _settings.PluginDownloadMirrorPrefix = normalized;
+        _settingsStore.Save(_settings);
+        BroadcastStateSnapshot();
+        return new
+        {
+            ok = true,
+            pluginDownloadMirrorPrefix = normalized
+        };
+    }
+
+    private object BuildDiagnosticReport()
+    {
+        var sys = _latestSystemState ?? _systemControl.GetState(targetPid: ResolveTargetRenderPid());
+        var hw = sys.HardwareService;
+        var gpd = _gpdController.CachedConfig;
+        int dedicatedVramMb = DxgiVramDetector.TryDetectDedicatedVramMb();
+        if (dedicatedVramMb <= 0)
+        {
+            dedicatedVramMb = sys.VramTotalMb;
+        }
+
+        string userDataDir = HaloDeckPaths.ResolveAppDataRoot();
+        string logsDir = HaloDeckPaths.ResolveLogsDirectory();
+
+        var input = new DiagnosticReportInput
+        {
+            AppVersion = CurrentAppVersion,
+            IsElevated = Win32Interop.IsCurrentProcessElevated(),
+            OsVersion = Environment.OSVersion.VersionString,
+            CpuName = sys.CpuName ?? string.Empty,
+            DedicatedVramMb = dedicatedVramMb,
+            TotalRamGb = sys.TotalRamGb,
+            ScreenWidth = sys.ScreenWidth,
+            ScreenHeight = sys.ScreenHeight,
+            RefreshRateHz = sys.RefreshRateHz,
+            IsDynamicRefreshRate = sys.IsDynamicRefreshRate,
+            HardwareServiceRunning = hw.ServiceRunning,
+            HardwareDaemonVersion = hw.DaemonVersion,
+            SmuReady = hw.SmuReady,
+            EcReady = hw.EcReady,
+            CurrentTdpWatts = _settings.CurrentTdpWatts,
+            HwStapmLimitWatts = hw.HwStapmLimitWatts,
+            FanMode = _settings.FanMode,
+            FanRpm = hw.FanRpm,
+            GpdConnected = gpd?.Connected ?? false,
+            GpdFirmwareX = gpd?.FirmwareX ?? string.Empty,
+            GpdFirmwareK = gpd?.FirmwareK ?? string.Empty,
+            InterceptPhysicalMenuButton = _settings.InterceptPhysicalMenuButton,
+            InterceptGuideMenuButton = _settings.InterceptGuideMenuButton,
+            ActiveOptiScalerSlot = _settings.ActiveOptiScalerSlot,
+            DownloadMirrorPrefix = _settings.PluginDownloadMirrorPrefix,
+            UserDataDirectory = userDataDir,
+            LogsDirectory = logsDir,
+            Components = _componentManager.GetComponents()
+                .Select(c => new DiagnosticComponentEntry
+                {
+                    Name = c.DisplayName,
+                    Installed = c.IsInstalled,
+                    Version = c.InstalledVersion ?? string.Empty
+                })
+                .ToList(),
+            Plugins = ListPluginsWithStatus()
+                .Select(p => new DiagnosticPluginEntry
+                {
+                    Id = p.Id,
+                    Name = p.Name,
+                    Version = p.Version,
+                    Enabled = p.Enabled,
+                    IsValid = p.IsValid
+                })
+                .ToList(),
+            UpdateLogTail = DiagnosticReportBuilder.ReadUpdateLogTail()
+        };
+
+        string report = DiagnosticReportBuilder.Build(input);
+        return new
+        {
+            ok = true,
+            report,
+            dedicatedVramMb,
+            logsDirectory = logsDir,
+            userDataDirectory = userDataDir
+        };
+    }
+
+    private static object OpenDirectorySafe(string directoryPath)
+    {
+        Directory.CreateDirectory(directoryPath);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"\"{directoryPath}\"",
+            UseShellExecute = true
+        });
+        return new { ok = true, opened = true, path = directoryPath };
+    }
+
+    private object OpenLogsDirectory() => OpenDirectorySafe(HaloDeckPaths.ResolveLogsDirectory());
+
+    private object OpenUserDataDirectory() => OpenDirectorySafe(HaloDeckPaths.ResolveAppDataRoot());
+
+    private object OpenComponentsDirectory() => OpenDirectorySafe(_componentManager.ComponentsRoot);
 
     private object SetPluginEnabled(JsonElement payload)
     {
@@ -3473,128 +3616,143 @@ public sealed class WebUiBridge : IDisposable
         string label = payload.TryGetProperty("name", out var np) && np.ValueKind == JsonValueKind.String
             ? (np.GetString() ?? url)
             : url;
+        string mirrorPrefix = _settings.PluginDownloadMirrorPrefix;
 
-        await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
-        try
+        return await Task.Run<object>(async () =>
         {
-            BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
-            var progress = new Progress<double>(pct =>
+            await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
-            });
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
+                var progress = new ThrottledProgress(pct =>
+                {
+                    BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
+                });
 
-            var installed = await _pluginRegistry.DownloadAndInstallAsync(
-                _pluginStore,
-                url,
-                sha256,
-                progress,
-                mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
-                beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
+                var installed = await _pluginRegistry.DownloadAndInstallAsync(
+                    _pluginStore,
+                    url,
+                    sha256,
+                    progress,
+                    mirrorPrefix: mirrorPrefix,
+                    beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
 
-            _pluginHost.StopPlugin(installed.Id);
-            BroadcastEvent("pluginDownloadProgress", new { label, percent = 100.0, status = "done" });
-            BroadcastStateSnapshot();
-            return new
+                _pluginHost.StopPlugin(installed.Id);
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = 100.0, status = "done" });
+                BroadcastStateSnapshot();
+                return new
+                {
+                    ok = true,
+                    plugin = installed,
+                    message = installed.Enabled
+                        ? $"已更新插件「{installed.Name}」至 v{installed.Version}"
+                        : $"已安装插件「{installed.Name}」v{installed.Version}，请在「已安装」页确认权限后启用"
+                };
+            }
+            catch
             {
-                ok = true,
-                plugin = installed,
-                message = installed.Enabled
-                    ? $"已更新插件「{installed.Name}」至 v{installed.Version}"
-                    : $"已安装插件「{installed.Name}」v{installed.Version}，请在「已安装」页确认权限后启用"
-            };
-        }
-        finally
-        {
-            _pluginInstallGate.Release();
-        }
+                BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "done" });
+                throw;
+            }
+            finally
+            {
+                _pluginInstallGate.Release();
+            }
+        }).ConfigureAwait(false);
     }
 
     private async Task<object> UpdateAllPluginsAsync()
     {
-        var catalogs = await _pluginRegistry.FetchAllCatalogsAsync(_settings.PluginStoreUrls).ConfigureAwait(false);
-        var officialRevoked = new HashSet<string>(
-            catalogs.Where(c => c.IsOfficial && c.RevokedIds is { Count: > 0 }).SelectMany(c => c.RevokedIds),
-            StringComparer.OrdinalIgnoreCase);
+        var storeUrls = _settings.PluginStoreUrls.ToList();
+        string mirrorPrefix = _settings.PluginDownloadMirrorPrefix;
 
-        var installedMap = _pluginStore.ListPlugins()
-            .Where(p => p.IsValid)
-            .ToDictionary(p => p.Id, p => p, StringComparer.OrdinalIgnoreCase);
-
-        var targets = new List<PluginStoreCatalogItem>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var cat in catalogs)
+        return await Task.Run<object>(async () =>
         {
-            foreach (var p in cat.Plugins)
+            var catalogs = await _pluginRegistry.FetchAllCatalogsAsync(storeUrls).ConfigureAwait(false);
+            var officialRevoked = new HashSet<string>(
+                catalogs.Where(c => c.IsOfficial && c.RevokedIds is { Count: > 0 }).SelectMany(c => c.RevokedIds),
+                StringComparer.OrdinalIgnoreCase);
+
+            var installedMap = _pluginStore.ListPlugins()
+                .Where(p => p.IsValid)
+                .ToDictionary(p => p.Id, p => p, StringComparer.OrdinalIgnoreCase);
+
+            var targets = new List<PluginStoreCatalogItem>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var cat in catalogs)
             {
-                if (!seen.Add(p.Id)) continue;
-                if (officialRevoked.Contains(p.Id)) continue;
-                if (installedMap.TryGetValue(p.Id, out var inst) &&
-                    PluginRegistryClient.IsNewerVersion(p.Version, inst.Version))
+                foreach (var p in cat.Plugins)
                 {
-                    targets.Add(p);
-                }
-            }
-        }
-
-        if (targets.Count == 0)
-        {
-            return new { ok = true, updatedCount = 0, failedCount = 0, escalatedIds = Array.Empty<string>(), message = "所有已安装插件均已是最新版本" };
-        }
-
-        int updatedCount = 0;
-        int failedCount = 0;
-        var escalatedIds = new List<string>();
-        var errors = new List<string>();
-
-        await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            for (int i = 0; i < targets.Count; i++)
-            {
-                var item = targets[i];
-                string label = $"({i + 1}/{targets.Count}) {item.Name}";
-                BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
-                try
-                {
-                    var progress = new Progress<double>(pct =>
+                    if (!seen.Add(p.Id)) continue;
+                    if (officialRevoked.Contains(p.Id)) continue;
+                    if (installedMap.TryGetValue(p.Id, out var inst) &&
+                        PluginRegistryClient.IsNewerVersion(p.Version, inst.Version))
                     {
-                        BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
-                    });
-                    var installed = await _pluginRegistry.DownloadAndInstallAsync(
-                        _pluginStore,
-                        item.ZipUrl,
-                        item.Sha256,
-                        progress,
-                        mirrorPrefix: _settings.PluginDownloadMirrorPrefix,
-                        beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
-                    _pluginHost.StopPlugin(installed.Id);
-                    updatedCount++;
-                    if (!installed.ConsentAccepted)
-                    {
-                        escalatedIds.Add(installed.Id);
+                        targets.Add(p);
                     }
                 }
-                catch (Exception ex)
-                {
-                    failedCount++;
-                    errors.Add($"{item.Name}: {ex.Message}");
-                }
             }
-            BroadcastEvent("pluginDownloadProgress", new { label = "更新完成", percent = 100.0, status = "done" });
-            BroadcastStateSnapshot();
-        }
-        finally
-        {
-            _pluginInstallGate.Release();
-        }
 
-        string msg = failedCount == 0
-            ? (escalatedIds.Count > 0
-                ? $"已更新 {updatedCount} 个插件（其中 {escalatedIds.Count} 个因新增权限已自动暂停，请在「已安装」页重新确认）"
-                : $"已全部更新完成（共 {updatedCount} 个插件）")
-            : $"更新完成：成功 {updatedCount} 个，失败 {failedCount} 个（{string.Join("；", errors.Take(2))}）";
+            if (targets.Count == 0)
+            {
+                return new { ok = true, updatedCount = 0, failedCount = 0, escalatedIds = Array.Empty<string>(), message = "所有已安装插件均已是最新版本" };
+            }
 
-        return new { ok = failedCount == 0, updatedCount, failedCount, escalatedIds, errors, message = msg };
+            int updatedCount = 0;
+            int failedCount = 0;
+            var escalatedIds = new List<string>();
+            var errors = new List<string>();
+
+            await _pluginInstallGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    var item = targets[i];
+                    string label = $"({i + 1}/{targets.Count}) {item.Name}";
+                    BroadcastEvent("pluginDownloadProgress", new { label, percent = 0.0, status = "downloading" });
+                    try
+                    {
+                        var progress = new ThrottledProgress(pct =>
+                        {
+                            BroadcastEvent("pluginDownloadProgress", new { label, percent = Math.Round(pct, 1), status = "downloading" });
+                        });
+                        var installed = await _pluginRegistry.DownloadAndInstallAsync(
+                            _pluginStore,
+                            item.ZipUrl,
+                            item.Sha256,
+                            progress,
+                            mirrorPrefix: mirrorPrefix,
+                            beforeOverwrite: id => _pluginHost.StopPlugin(id)).ConfigureAwait(false);
+                        _pluginHost.StopPlugin(installed.Id);
+                        updatedCount++;
+                        if (!installed.ConsentAccepted)
+                        {
+                            escalatedIds.Add(installed.Id);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedCount++;
+                        errors.Add($"{item.Name}: {ex.Message}");
+                    }
+                }
+                BroadcastEvent("pluginDownloadProgress", new { label = "更新完成", percent = 100.0, status = "done" });
+                BroadcastStateSnapshot();
+            }
+            finally
+            {
+                _pluginInstallGate.Release();
+            }
+
+            string msg = failedCount == 0
+                ? (escalatedIds.Count > 0
+                    ? $"已更新 {updatedCount} 个插件（其中 {escalatedIds.Count} 个因新增权限已自动暂停，请在「已安装」页重新确认）"
+                    : $"已全部更新完成（共 {updatedCount} 个插件）")
+                : $"更新完成：成功 {updatedCount} 个，失败 {failedCount} 个（{string.Join("；", errors.Take(2))}）";
+
+            return new { ok = failedCount == 0, updatedCount, failedCount, escalatedIds, errors, message = msg };
+        }).ConfigureAwait(false);
     }
 
     private object AddPluginStoreUrl(JsonElement payload)

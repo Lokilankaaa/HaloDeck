@@ -435,6 +435,20 @@ public sealed class AppUpdateService : IDisposable
             string exePath = Path.Combine(payloadDir, "HaloDeck.exe");
             if (!File.Exists(exePath))
             {
+                // Support zips packaged with a single top-level wrapper folder
+                string[] subDirs = Directory.GetDirectories(payloadDir);
+                if (subDirs.Length == 1)
+                {
+                    string nestedExe = Path.Combine(subDirs[0], "HaloDeck.exe");
+                    if (File.Exists(nestedExe))
+                    {
+                        payloadDir = subDirs[0];
+                        exePath = nestedExe;
+                    }
+                }
+            }
+            if (!File.Exists(exePath))
+            {
                 throw new InvalidOperationException("更新包结构异常：解压后未找到 HaloDeck.exe");
             }
 
@@ -454,12 +468,17 @@ public sealed class AppUpdateService : IDisposable
         }
     }
 
-    public static string WritePortableUpdaterScript(StagedAppUpdate staged, string targetAppDir, int currentPid)
+    public static string WritePortableUpdaterScript(
+        StagedAppUpdate staged,
+        string targetAppDir,
+        int currentPid,
+        bool launchAfterApply = true)
     {
         string scriptPath = Path.Combine(staged.StageRoot, "apply-update.ps1");
-        string escapedPayload = staged.PayloadDir.Replace("'", "''");
-        string escapedTarget = targetAppDir.TrimEnd('\\', '/').Replace("'", "''");
-        string escapedStage = staged.StageRoot.Replace("'", "''");
+        string escapedPayload = staged.PayloadDir.TrimEnd('\\', '/').Replace("'", "''");
+        string escapedTarget = Path.GetFullPath(targetAppDir).TrimEnd('\\', '/').Replace("'", "''");
+        string escapedStage = staged.StageRoot.TrimEnd('\\', '/').Replace("'", "''");
+        string launchFlag = launchAfterApply ? "$true" : "$false";
 
         string script = $$"""
             $ErrorActionPreference = 'Continue'
@@ -467,44 +486,245 @@ public sealed class AppUpdateService : IDisposable
             $payload = '{{escapedPayload}}'
             $target = '{{escapedTarget}}'
             $stageRoot = '{{escapedStage}}'
+            $launchAfterApply = {{launchFlag}}
 
-            for ($i = 0; $i -lt 50; $i++) {
+            $logDir = Join-Path (Join-Path $env:LOCALAPPDATA 'HaloDeck') 'logs'
+            $logPath = Join-Path $logDir 'last-update.log'
+            function Write-UpdateLog([string]$msg) {
+                try {
+                    if (-not [System.IO.Directory]::Exists($logDir)) {
+                        [System.IO.Directory]::CreateDirectory($logDir) | Out-Null
+                    }
+                    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')] $msg`r`n"
+                    [System.IO.File]::AppendAllText($logPath, $line, [System.Text.Encoding]::UTF8)
+                } catch {}
+            }
+
+            Write-UpdateLog "Updater started (PID=$targetPid, payload=$payload, target=$target)"
+
+            for ($i = 0; $i -lt 75; $i++) {
                 $p = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
                 if (-not $p) { break }
                 Start-Sleep -Milliseconds 200
             }
 
-            Start-Sleep -Milliseconds 300
+            Start-Sleep -Milliseconds 400
             $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-            $lockedDir = Join-Path $target ".old_locked_$stamp"
+            $lockedDir = [System.IO.Path]::Combine($target, ".old_locked_$stamp")
+            $payloadExe = [System.IO.Path]::Combine($payload, 'HaloDeck.exe')
+            $targetExe = [System.IO.Path]::Combine($target, 'HaloDeck.exe')
 
-            Get-ChildItem -Path $payload -Recurse -File | ForEach-Object {
-                $rel = $_.FullName.Substring($payload.Length).TrimStart('\')
-                $dest = Join-Path $target $rel
-                $destParent = Split-Path -Parent $dest
-                if (-not (Test-Path $destParent)) { New-Item -ItemType Directory -Force -Path $destParent | Out-Null }
+            if (-not [System.IO.File]::Exists($payloadExe) -or ([System.IO.FileInfo]$payloadExe).Length -le 0) {
+                Write-UpdateLog "ABORT: staged payload HaloDeck.exe missing or empty: $payloadExe"
+                if ($launchAfterApply -and [System.IO.File]::Exists($targetExe)) {
+                    try { Start-Process -FilePath $targetExe -WorkingDirectory $target } catch {}
+                }
+                exit 1
+            }
+
+            # Best-effort cleanup of stale .old_locked_* folders from previous runs
+            try {
+                foreach ($oldDir in [System.IO.Directory]::GetDirectories($target, '.old_locked_*')) {
+                    try { [System.IO.Directory]::Delete($oldDir, $true) } catch {}
+                }
+            } catch {}
+
+            function Clear-ReadOnlyAttr([string]$filePath) {
                 try {
-                    Copy-Item -Path $_.FullName -Destination $dest -Force -ErrorAction Stop
-                } catch {
-                    if (Test-Path $dest) {
-                        $moved = Join-Path $lockedDir $rel
-                        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $moved) | Out-Null
-                        try { Move-Item -Path $dest -Destination $moved -Force -ErrorAction Stop } catch {}
-                        try { Copy-Item -Path $_.FullName -Destination $dest -Force -ErrorAction Stop } catch {}
+                    if ([System.IO.File]::Exists($filePath)) {
+                        $attr = [System.IO.File]::GetAttributes($filePath)
+                        if (($attr -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+                            [System.IO.File]::SetAttributes($filePath, ($attr -band (-bnot [System.IO.FileAttributes]::ReadOnly)))
+                        }
+                    }
+                } catch {}
+            }
+
+            function Replace-FileSafely([string]$src, [string]$dest, [string]$rel) {
+                if (-not [System.IO.File]::Exists($src)) {
+                    Write-UpdateLog "SKIP missing source: $src"
+                    return $false
+                }
+
+                $srcLen = ([System.IO.FileInfo]$src).Length
+                $destParent = [System.IO.Path]::GetDirectoryName($dest)
+                if (-not [System.IO.Directory]::Exists($destParent)) {
+                    [System.IO.Directory]::CreateDirectory($destParent) | Out-Null
+                }
+
+                # 1. Stage-first inside destination folder before touching $dest
+                $tmp = "$dest.hd_upd_tmp"
+                $stagedOk = $false
+                for ($s = 0; $s -lt 5; $s++) {
+                    try {
+                        Clear-ReadOnlyAttr $tmp
+                        [System.IO.File]::Copy($src, $tmp, $true)
+                        if ([System.IO.File]::Exists($tmp) -and ([System.IO.FileInfo]$tmp).Length -eq $srcLen) {
+                            $stagedOk = $true
+                            break
+                        }
+                    } catch {
+                        Write-UpdateLog "Stage retry #$s failed for ${rel}: $($_.Exception.Message)"
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+
+                if (-not $stagedOk) {
+                    try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } } catch {}
+                    Write-UpdateLog "FAILED staging $rel; existing destination left untouched"
+                    return $false
+                }
+
+                Clear-ReadOnlyAttr $dest
+
+                # 2. Atomic swap / overwrite with retries and mandatory rollback if locked-move fails
+                for ($attempt = 0; $attempt -lt 6; $attempt++) {
+                    try {
+                        if (-not [System.IO.File]::Exists($dest)) {
+                            [System.IO.File]::Move($tmp, $dest)
+                            if ([System.IO.File]::Exists($dest) -and ([System.IO.FileInfo]$dest).Length -eq $srcLen) {
+                                return $true
+                            }
+                        } else {
+                            try {
+                                [System.IO.File]::Copy($tmp, $dest, $true)
+                                if ([System.IO.File]::Exists($dest) -and ([System.IO.FileInfo]$dest).Length -eq $srcLen) {
+                                    try { [System.IO.File]::Delete($tmp) } catch {}
+                                    return $true
+                                }
+                            } catch {
+                                # Destination is actively locked (e.g. HaloDeckHardwareSvc holding HaloDeck.exe):
+                                # park it in .old_locked_<stamp>, promote $tmp -> $dest, or rollback immediately on failure.
+                                $moved = [System.IO.Path]::Combine($lockedDir, $rel)
+                                $movedParent = [System.IO.Path]::GetDirectoryName($moved)
+                                if (-not [System.IO.Directory]::Exists($movedParent)) {
+                                    [System.IO.Directory]::CreateDirectory($movedParent) | Out-Null
+                                }
+                                if ([System.IO.File]::Exists($moved)) {
+                                    try { [System.IO.File]::Delete($moved) } catch {}
+                                }
+
+                                $movedOut = $false
+                                try {
+                                    [System.IO.File]::Move($dest, $moved)
+                                    $movedOut = $true
+                                } catch {
+                                    Write-UpdateLog "Move-out locked $rel attempt #$attempt failed: $($_.Exception.Message)"
+                                }
+
+                                if ($movedOut) {
+                                    $promoted = $false
+                                    for ($m = 0; $m -lt 4; $m++) {
+                                        try {
+                                            if ([System.IO.File]::Exists($dest)) {
+                                                [System.IO.File]::Delete($dest)
+                                            }
+                                            [System.IO.File]::Move($tmp, $dest)
+                                            if ([System.IO.File]::Exists($dest) -and ([System.IO.FileInfo]$dest).Length -eq $srcLen) {
+                                                $promoted = $true
+                                                break
+                                            }
+                                        } catch {
+                                            Write-UpdateLog "Promote retry #$m failed for ${rel}: $($_.Exception.Message)"
+                                        }
+                                        Start-Sleep -Milliseconds 150
+                                    }
+
+                                    if ($promoted) {
+                                        Write-UpdateLog "Replaced locked file $rel (parked old copy in .old_locked_$stamp)"
+                                        return $true
+                                    }
+
+                                    # Mandatory rollback so $dest is NEVER left missing
+                                    if ((-not [System.IO.File]::Exists($dest)) -and [System.IO.File]::Exists($moved)) {
+                                        for ($rb = 0; $rb -lt 4; $rb++) {
+                                            try {
+                                                [System.IO.File]::Move($moved, $dest)
+                                                Write-UpdateLog "ROLLBACK restored $rel after swap failure"
+                                                break
+                                            } catch {
+                                                Start-Sleep -Milliseconds 150
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-UpdateLog "Replace attempt #$attempt exception for ${rel}: $($_.Exception.Message)"
+                    }
+
+                    Start-Sleep -Milliseconds (200 + $attempt * 100)
+                }
+
+                try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } } catch {}
+                Write-UpdateLog "FAILED replacing $rel after all retries"
+                return $false
+            }
+
+            $allFiles = [System.IO.Directory]::GetFiles($payload, '*', [System.IO.SearchOption]::AllDirectories) |
+                Sort-Object { $_.Equals($payloadExe, [System.StringComparison]::OrdinalIgnoreCase) }
+
+            $failures = 0
+            foreach ($srcFile in $allFiles) {
+                $rel = $srcFile.Substring($payload.Length).TrimStart('\', '/')
+                $dest = [System.IO.Path]::Combine($target, $rel)
+                if (-not (Replace-FileSafely $srcFile $dest $rel)) {
+                    $failures++
+                }
+            }
+
+            # Clean up any leftover temp staging files in $target
+            try {
+                foreach ($stray in [System.IO.Directory]::GetFiles($target, '*.hd_upd_tmp', [System.IO.SearchOption]::AllDirectories)) {
+                    try { [System.IO.File]::Delete($stray) } catch {}
+                }
+            } catch {}
+
+            # Post-apply invariant: target HaloDeck.exe MUST exist; try direct recovery, then rollback from .old_locked_*
+            if (-not [System.IO.File]::Exists($targetExe)) {
+                Write-UpdateLog "WARNING: HaloDeck.exe missing after apply pass; attempting recovery"
+                for ($r = 0; $r -lt 3; $r++) {
+                    if (Replace-FileSafely $payloadExe $targetExe 'HaloDeck.exe') { break }
+                    Start-Sleep -Milliseconds 300
+                }
+            }
+
+            if ((-not [System.IO.File]::Exists($targetExe)) -and [System.IO.Directory]::Exists($lockedDir)) {
+                Write-UpdateLog "EMERGENCY ROLLBACK: restoring missing files from $lockedDir"
+                foreach ($oldFile in [System.IO.Directory]::GetFiles($lockedDir, '*', [System.IO.SearchOption]::AllDirectories)) {
+                    $relOld = $oldFile.Substring($lockedDir.Length).TrimStart('\', '/')
+                    $restoreDest = [System.IO.Path]::Combine($target, $relOld)
+                    if (-not [System.IO.File]::Exists($restoreDest)) {
+                        try {
+                            $rp = [System.IO.Path]::GetDirectoryName($restoreDest)
+                            if (-not [System.IO.Directory]::Exists($rp)) {
+                                [System.IO.Directory]::CreateDirectory($rp) | Out-Null
+                            }
+                            [System.IO.File]::Move($oldFile, $restoreDest)
+                        } catch {}
                     }
                 }
             }
 
-            $exe = Join-Path $target 'HaloDeck.exe'
-            if (Test-Path $exe) {
-                Start-Process -FilePath $exe -WorkingDirectory $target
+            $exeReady = [System.IO.File]::Exists($targetExe)
+            Write-UpdateLog "Updater finished (exeReady=$exeReady, failures=$failures)"
+
+            if ($launchAfterApply -and $exeReady) {
+                Start-Process -FilePath $targetExe -WorkingDirectory $target
             }
 
-            Start-Sleep -Seconds 2
-            Remove-Item -Path $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if ($exeReady) {
+                Start-Sleep -Seconds 2
+                try {
+                    if ([System.IO.Directory]::Exists($stageRoot)) {
+                        [System.IO.Directory]::Delete($stageRoot, $true)
+                    }
+                } catch {}
+            }
             """;
 
-        File.WriteAllText(scriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(scriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
         return scriptPath;
     }
 

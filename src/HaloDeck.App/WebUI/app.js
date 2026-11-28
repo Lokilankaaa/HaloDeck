@@ -11,8 +11,24 @@
   document.body.classList.toggle("mode-console", !IS_QAM);
 
   const CONSOLE_TABS = ["handheld", "opti", "monitor", "controls", "plugins"];
-  const OPTI_SUB_TABS = ["tune", "library", "components"];
+  const OPTI_SUB_TABS = ["tune", "library"];
+  const SETTINGS_SUB_TABS = ["gamepad", "system", "components", "about", "community"];
   const QAM_TABS = ["handheld", "opti", "osd", "controls", "plugins"];
+
+  const MIRROR_PRESETS = [
+    { id: "direct", label: "GitHub 官方直连", desc: "默认直连 github.com，适合海外或代理网络环境", prefix: "" },
+    { id: "ghproxy", label: "GH-Proxy · gh-proxy.com", desc: "国内常用 GitHub Releases 与组件加速节点", prefix: "https://gh-proxy.com/" },
+    { id: "ghfast", label: "GHFast · ghfast.top", desc: "国内备用 GitHub 下载加速镜像节点", prefix: "https://ghfast.top/" },
+    { id: "custom", label: "自定义镜像前缀...", desc: "使用自建或自定义 HTTPS 代理前缀", prefix: null }
+  ];
+
+  const COMPONENT_LICENSE_META = {
+    OptiScalerNightly: { license: "MIT", author: "OptiScaler Team", url: "https://github.com/optiscaler/OptiScaler" },
+    OptiScalerStable: { license: "MIT", author: "OptiScaler Team", url: "https://github.com/optiscaler/OptiScaler" },
+    OptiPatcher: { license: "MIT", author: "OptiScaler Team", url: "https://github.com/optiscaler/OptiPatcher" },
+    Fakenvapi: { license: "MIT", author: "FakeMichau", url: "https://github.com/optiscaler/fakenvapi" },
+    MfgUnlocker: { license: "MIT", author: "dashdogy", url: "https://github.com/dashdogy/MFG-Unlocker" }
+  };
 
   const DEFAULT_CONFIG = {
     proxyDllName: "auto",
@@ -73,7 +89,7 @@
     { value: 0x0068, label: "F13 (呼出侧栏)" },
     { value: 0x0069, label: "F14 (切换帧率窗)" },
     { value: 0x006A, label: "F15 (超分菜单)" },
-    { value: 0x006B, label: "F16 (呼出前端主界面)" },
+    { value: 0x006B, label: "F16 (打开主界面)" },
     { value: 0x0049, label: "Insert (超分菜单)" }
   ];
 
@@ -245,6 +261,7 @@
   const state = {
     tab: "handheld",
     optiSubTab: "tune",
+    settingsSubTab: "gamepad",
     qamTab: "handheld",
     qamOptiSubView: "tune",
     libraryLayout: "posters",
@@ -258,6 +275,9 @@
     fanNodesOpen: false,
     cpuAdvancedOpen: false,
     controlsAdvancedOpen: false,
+    mirrorDropdownOpen: false,
+    mirrorCustomOpen: false,
+    mirrorCustomDraft: "",
     searchQuery: "",
     libraryFilter: "all",
     activePluginId: null,
@@ -315,6 +335,25 @@
   };
 
   // ---------------- WebView2 JSON-RPC ----------------
+  // Browser preview iframe bridge (only active when WebView2 host is absent)
+  if ((!window.chrome || !window.chrome.webview) && window.parent && window.parent !== window) {
+    const mockListeners = [];
+    window.addEventListener("message", (ev) => {
+      if (ev.data && ev.data.__halodeckMockReply) {
+        mockListeners.forEach((fn) => fn({ data: ev.data.payload }));
+      }
+    });
+    window.chrome = window.chrome || {};
+    window.chrome.webview = {
+      postMessage(msg) {
+        window.parent.postMessage({ __halodeckMockRpc: true, payload: msg }, "*");
+      },
+      addEventListener(type, fn) {
+        if (type === "message") mockListeners.push(fn);
+      }
+    };
+  }
+
   let reqSeq = 0;
   const pendingRpc = new Map();
 
@@ -354,12 +393,22 @@
         state.activePluginId = null;
         if (data.tab === "plugins" && data.subtab) {
           state.pluginsSubTab = data.subtab;
+        } else if (data.tab === "controls" && data.subtab && SETTINGS_SUB_TABS.includes(data.subtab)) {
+          state.settingsSubTab = data.subtab;
         }
         state.focusIndex = 0;
         render();
         if (state.tab === "plugins" && state.pluginsSubTab === "store" && !state.pluginStoreData) {
           ensurePluginStoreLoaded(false);
         }
+      }
+    } else if (name === "navigateQamTab" && data && IS_QAM) {
+      if (data.tab && QAM_TABS.includes(data.tab)) {
+        state.qamTab = data.tab;
+        state.activePluginId = null;
+        state.qamOptiSubView = "tune";
+        state.focusIndex = 0;
+        render();
       }
     } else if (name === "powerSettingsPatched" && data) {
       if (state.snapshot?.settings) {
@@ -411,7 +460,7 @@
       }
     } else if (name === "componentProgress" && data?.slot) {
       state.progressBySlot[data.slot] = data.percent;
-      if (state.tab === "opti" && state.optiSubTab === "components") render();
+      if ((state.tab === "opti" && state.optiSubTab === "components") || (state.tab === "controls" && state.settingsSubTab === "components")) render();
     } else if (name === "gamepadStatus") {
       const count = typeof data?.connectedCount === "number" ? data.connectedCount : data?.connected;
       if (typeof count === "number") updateControllerChip(count);
@@ -444,23 +493,39 @@
       }
     } else if (name === "appUpdateProgress" && data) {
       state.appUpdateProgress = data.status === "idle" ? null : { version: data.version || "", percent: data.percent || 0, status: data.status || "downloading" };
+      syncTopAppVersionChip();
       const btn = document.getElementById("btnApplyAppUpdate");
       const modalBtn = document.getElementById("btnModalApplyAppUpdate");
       const modalProg = document.getElementById("appUpdateModalProg");
-      const text = data.status === "applying"
-        ? "校验通过，正在重启更新..."
-        : `下载中 ${Math.round(data.percent || 0)}%`;
-      if (btn) {
-        btn.textContent = text;
-        btn.disabled = true;
-      }
-      if (modalBtn) {
-        modalBtn.textContent = text;
-        modalBtn.disabled = true;
-      }
-      if (modalProg) {
-        modalProg.classList.remove("hidden");
-        modalProg.textContent = text;
+      if (data.status === "idle") {
+        const latestVer = state.snapshot?.latestUpdate?.latestVersion;
+        if (btn) {
+          btn.textContent = latestVer ? `一键更新 v${latestVer}` : "一键更新";
+          btn.disabled = false;
+        }
+        if (modalBtn) {
+          modalBtn.textContent = latestVer ? `一键更新 v${latestVer}` : "一键更新";
+          modalBtn.disabled = false;
+        }
+        if (modalProg) {
+          modalProg.classList.add("hidden");
+        }
+      } else {
+        const text = data.status === "applying"
+          ? "校验通过，正在重启更新..."
+          : `下载中 ${Math.round(data.percent || 0)}%`;
+        if (btn) {
+          btn.textContent = text;
+          btn.disabled = true;
+        }
+        if (modalBtn) {
+          modalBtn.textContent = text;
+          modalBtn.disabled = true;
+        }
+        if (modalProg) {
+          modalProg.classList.remove("hidden");
+          modalProg.textContent = text;
+        }
       }
     } else if (name === "toast" && data?.message) {
       showToast(data.message, data.kind || "info");
@@ -468,6 +533,34 @@
   }
 
   // ---------------- Formatters & Live Telemetry ----------------
+  function syncTopAppVersionChip() {
+    if (IS_QAM) return;
+    const topVerBtn = document.getElementById("btnTopAppVersion");
+    if (!topVerBtn) return;
+    const curVer = state.snapshot?.appVersion || "0.6.3";
+    const upd = state.snapshot?.latestUpdate;
+    const hasUpd = !!(upd && upd.hasUpdate);
+    const prog = state.appUpdateProgress;
+    if (prog) {
+      topVerBtn.classList.add("has-update");
+      const targetVer = prog.version || upd?.latestVersion || "";
+      if (prog.status === "applying") {
+        topVerBtn.textContent = "更新中…";
+        topVerBtn.title = `正在校验并重启应用${targetVer ? ` v${targetVer}` : ""}，点击前往「设置 → 更新与诊断」`;
+      } else {
+        const pct = Math.max(0, Math.min(100, Math.round(prog.percent || 0)));
+        topVerBtn.textContent = `↓ ${pct}%`;
+        topVerBtn.title = `正在后台下载${targetVer ? ` v${targetVer}` : "更新"}（${pct}%），下载期间可自由切换页面，点击返回「设置 → 更新与诊断」`;
+      }
+      return;
+    }
+    topVerBtn.classList.toggle("has-update", hasUpd);
+    topVerBtn.textContent = hasUpd ? `↑ v${upd.latestVersion}` : `v${curVer}`;
+    topVerBtn.title = hasUpd
+      ? `发现新版本 v${upd.latestVersion}，点击前往「设置 → 更新与诊断」`
+      : `当前版本 v${curVer}，点击前往「设置 → 更新与诊断」`;
+  }
+
   function formatRefreshTag(sys) {
     if (!sys) return "--Hz";
     if (sys.isDynamicRefreshRate) {
@@ -1014,6 +1107,12 @@
     setEl("kpiBat", pfUi.badge);
     setEl("kpiBatSub", pfUi.kpiBatSub);
 
+    // Bento live telemetry strip
+    setEl("bentoLiveFps", sys.currentFps > 0 ? `${sys.currentFps} FPS` : "桌面待命");
+    setEl("bentoLiveTemp", `C ${sys.cpuTempC || "--"}° · G ${sys.gpuTempC || "--"}°`);
+    setEl("bentoLiveGpu", `${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}MHz`);
+    setEl("bentoLiveFan", hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM` : (hw.serviceRunning ? "自动温控" : "待授权"));
+
     // QAM live tiles & monitor grid
     setEl("qamStripApu", sys.apuPowerWatts != null ? `${sys.apuPowerWatts.toFixed(1)}W / ${state.snapshot?.settings?.currentTdpWatts || 40}W` : "--W");
     setEl("qamStripBat", formatPowerBadge(sys));
@@ -1354,6 +1453,180 @@
     return comps.some((c) => c.slot === "MfgUnlocker" && c.isInstalled);
   }
 
+  function getMissingComponentsForConfig(cfg) {
+    const comps = state.snapshot?.components || [];
+    const activeSlot = state.snapshot?.settings?.activeOptiScalerSlot || "OptiScalerNightly";
+    const isInstalled = (slot) => comps.some((c) => c.slot === slot && c.isInstalled);
+
+    const hasNightly = isInstalled("OptiScalerNightly");
+    const hasStable = isInstalled("OptiScalerStable");
+    const hasAnyOpti = hasNightly || hasStable;
+
+    const xeFgMult = Math.min(4, Math.max(2, Number(cfg?.xeFgMultiplier) || 2));
+    const xeFgDmfg = !!cfg?.xeFgDynamicMfg;
+    const needsMfgUnlocker = cfg?.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
+
+    const items = [];
+    const installSlots = [];
+    let needsNightlySwitch = false;
+    let hasMissingCore = false;
+
+    const addInstall = (slot, severity, name, desc) => {
+      items.push({ kind: "install", severity, slot, name, desc });
+      if (!installSlots.includes(slot)) installSlots.push(slot);
+    };
+
+    if (!hasAnyOpti) {
+      hasMissingCore = true;
+      const targetCoreSlot = needsMfgUnlocker
+        ? "OptiScalerNightly"
+        : (activeSlot === "OptiScalerStable" ? "OptiScalerStable" : "OptiScalerNightly");
+      addInstall(
+        targetCoreSlot,
+        "required",
+        "OptiScaler 超分内核",
+        "新装机需先下载主内核后才能部署 FSR 4 / XeFG"
+      );
+      if (needsMfgUnlocker && activeSlot === "OptiScalerStable") {
+        needsNightlySwitch = true;
+      }
+    } else if (needsMfgUnlocker && !hasNightly) {
+      needsNightlySwitch = true;
+      addInstall(
+        "OptiScalerNightly",
+        "feature",
+        "OptiScaler Nightly v10+",
+        "XeFG 3X / 4X 多帧与动态多帧 (DMFG) 需安装 Nightly v10+ 主内核"
+      );
+    } else if (needsMfgUnlocker && activeSlot === "OptiScalerStable") {
+      needsNightlySwitch = true;
+      items.push({
+        kind: "switch_kernel",
+        severity: "feature",
+        slot: "OptiScalerNightly",
+        name: "切换至 Nightly v10+ 内核",
+        desc: "XeFG 3X / 4X 多帧与动态多帧 (DMFG) 需使用 Nightly v10+ 主内核"
+      });
+    }
+
+    if (needsMfgUnlocker && !isInstalled("MfgUnlocker")) {
+      addInstall(
+        "MfgUnlocker",
+        "feature",
+        "MFG Unlocker (by dashdogy)",
+        "解锁 XeFG 3X / 4X 多帧与动态多帧 (DMFG)"
+      );
+    }
+
+    if (cfg?.enableOptiPatcher && !isInstalled("OptiPatcher")) {
+      addInstall(
+        "OptiPatcher",
+        "recommended",
+        "OptiPatcher",
+        "免显卡伪装直接解锁游戏内置 DLSS / DLSS-G 选项"
+      );
+    }
+
+    if (cfg?.enableFakenvapi && !isInstalled("Fakenvapi")) {
+      addInstall(
+        "Fakenvapi",
+        "recommended",
+        "Fakenvapi",
+        "提供 AMD Anti-Lag 2 低延迟与 Reflex 桥接"
+      );
+    }
+
+    return { items, installSlots, needsNightlySwitch, hasMissingCore };
+  }
+
+  function renderMissingComponentsCard(cfg, compact = false) {
+    const missing = getMissingComponentsForConfig(cfg);
+    if (!missing.items.length) return "";
+
+    const installing = !!state.installingMissingComps;
+    const isRequired = missing.hasMissingCore;
+    const primaryLabel = installing
+      ? (compact ? "补齐中..." : "正在补齐安装...")
+      : (missing.installSlots.length > 0
+        ? (compact ? "一键补齐" : "一键补齐安装")
+        : "切换至 Nightly");
+
+    if (compact) {
+      const namesLine = missing.items.map((item) => item.name).join(" · ");
+      return `
+        <div class="comp-missing-card is-qam ${isRequired ? "is-required" : "is-warn"}">
+          <div class="comp-missing-head">
+            <div class="comp-missing-title-wrap">
+              <span class="comp-missing-dot" aria-hidden="true"></span>
+              <strong class="comp-missing-title">${isRequired ? "缺少超分主内核，暂无法注入" : `当前方案缺少 ${missing.items.length} 项组件`}</strong>
+            </div>
+          </div>
+          <div class="comp-missing-qam-names">${esc(namesLine)}</div>
+          <div class="comp-missing-actions">
+            <button id="btnInstallMissingComps" class="btn btn-sm btn-primary" style="flex:1;" data-focusable="true" ${installing || state.busy ? "disabled" : ""}>${primaryLabel}</button>
+            <button id="btnQamGoMissingComps" class="btn btn-sm" data-focusable="true">前往安装</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="comp-missing-card ${isRequired ? "is-required" : "is-warn"}">
+        <div class="comp-missing-head">
+          <div class="comp-missing-title-wrap">
+            <span class="comp-missing-dot" aria-hidden="true"></span>
+            <strong class="comp-missing-title">${isRequired ? "尚未安装超分主内核，暂无法注入" : `当前方案缺少 ${missing.items.length} 项所需组件`}</strong>
+          </div>
+          <div class="comp-missing-actions">
+            <button id="btnInstallMissingComps" class="btn btn-sm btn-primary" data-focusable="true" ${installing || state.busy ? "disabled" : ""}>${primaryLabel}</button>
+            <button id="btnGoMissingComps" class="btn btn-sm" data-focusable="true">前往组件与许可 ▸</button>
+          </div>
+        </div>
+        <div class="comp-missing-list">
+          ${missing.items.map((item) => `
+            <div class="comp-missing-item">
+              <span class="comp-missing-name">${esc(item.name)}</span>
+              <span class="comp-missing-desc">${esc(item.desc)}</span>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  async function installMissingComponentsForCurrentConfig() {
+    if (state.installingMissingComps || state.busy) return;
+    const missing = getMissingComponentsForConfig(state.config);
+    if (!missing.items.length) return;
+
+    state.installingMissingComps = true;
+    render();
+    try {
+      for (let i = 0; i < missing.installSlots.length; i += 1) {
+        const slot = missing.installSlots[i];
+        showToast(`正在下载并安装 ${slot} (${i + 1}/${missing.installSlots.length})...`, "info");
+        await rpc("installComponent", { slot });
+      }
+      if (missing.needsNightlySwitch && state.snapshot?.settings) {
+        await rpc("saveSettings", {
+          ...state.snapshot.settings,
+          activeOptiScalerSlot: "OptiScalerNightly"
+        });
+      }
+      const snap = await rpc("getSnapshot");
+      if (snap) applySnapshot(snap);
+      showToast(
+        missing.installSlots.length > 0 ? "所需超分组件已全部补齐就绪" : "已切换至 OptiScaler Nightly v10+ 内核",
+        "success"
+      );
+    } catch (err) {
+      showToast(err?.message || "补齐安装组件失败，请检查下载加速线路后重试", "error");
+    } finally {
+      state.installingMissingComps = false;
+      render();
+    }
+  }
+
   function syncSrModeConfig(srMode) {
     state.selectedPresetId = "custom";
     state._userModifiedConfig = true;
@@ -1643,7 +1916,7 @@
             <!-- Col 1: Power Engine, CPU Boost & Live 60s Power/Temp Sparkline -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">功耗引擎与核心睿频</span>
+                <span class="hh-card-title">功耗与睿频</span>
                 <span id="consoleTdpBadge" class="hh-card-badge live">${hw.hwStapmLimitWatts != null ? `PM实读 ${hw.hwStapmLimitWatts.toFixed(0)}W` : `目标 ${curTdp}W`}</span>
               </div>
 
@@ -1703,7 +1976,7 @@
             <!-- Col 2: Display, Audio, OSD & Live Dual-Fan Curve Preview -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">显示 · 声光 · 双风扇温控</span>
+                <span class="hh-card-title">显示、音量与风扇</span>
                 <span id="dispRefreshSub" class="ck-muted">${esc(formatRefreshTag(sys))}</span>
               </div>
 
@@ -1803,7 +2076,7 @@
             <!-- Col 3: Running Game Status & 2x4 Quick Actions -->
             <section class="hh-card ck-panel">
               <div class="hh-card-head" style="margin-bottom:0;">
-                <span class="hh-card-title">前台游戏与掌机工具箱</span>
+                <span class="hh-card-title">游戏与快捷操作</span>
                 <span class="hh-card-badge ${active ? "live" : ""}">${active ? "游戏运行中" : "桌面待命"}</span>
               </div>
 
@@ -1934,9 +2207,28 @@
                   ${renderSwitch("swFlatLock", flatLock)}
                 </div>
               </div>
+
+              <div class="bento-telemetry-strip">
+                <div class="bento-tele-cell">
+                  <span class="bento-tele-label">实时帧率</span>
+                  <strong id="bentoLiveFps" class="bento-tele-val accent-blue">${sys.currentFps > 0 ? `${sys.currentFps} FPS` : "桌面待命"}</strong>
+                </div>
+                <div class="bento-tele-cell">
+                  <span class="bento-tele-label">核心温度</span>
+                  <strong id="bentoLiveTemp" class="bento-tele-val">C ${sys.cpuTempC || "--"}° · G ${sys.gpuTempC || "--"}°</strong>
+                </div>
+                <div class="bento-tele-cell">
+                  <span class="bento-tele-label">8060S 核显</span>
+                  <strong id="bentoLiveGpu" class="bento-tele-val">${sys.gpuUsagePercent || 0}% · ${sys.gfxClockMhz || 0}MHz</strong>
+                </div>
+                <div class="bento-tele-cell">
+                  <span class="bento-tele-label">双风扇转速</span>
+                  <strong id="bentoLiveFan" class="bento-tele-val">${hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM` : (hw.serviceRunning ? "自动温控" : "待授权")}</strong>
+                </div>
+              </div>
             </section>
 
-            <section class="hh-card bento-game-card">
+            <section class="hh-card bento-game-card ${active && gamePerf ? "" : "bento-quicklaunch-card"}">
               ${active && gamePerf ? `
                 <div class="bento-game-card-top">
                   ${active.coverImageUrl
@@ -1947,9 +2239,12 @@
                       <strong class="bento-game-fulltitle">${esc(active.title)}</strong>
                       <span class="hh-card-badge live">正在运行</span>
                     </div>
+                    <span class="bento-game-desc">${active.injection?.isInjected
+                      ? `已启用超分：${formatConfigSummary(active.injection.appliedConfig || state.config, true)}`
+                      : `${active.platform} · ${active.engine || "原生渲染"}`}</span>
                     <span class="bento-game-desc">${gamePerf.enabled
-                      ? `已绑定专属方案：${gamePerf.tdpWatts}W${gamePerf.refreshRateHz === -1 ? " · 动态刷新率" : (gamePerf.refreshRateHz > 0 ? ` · ${gamePerf.refreshRateHz}Hz` : "")}，退游恢复全局`
-                      : "调整下方瓦数或刷新率即可为当前游戏自动保存专属方案"}</span>
+                      ? `专属硬件档已开启（${gamePerf.tdpWatts}W${gamePerf.refreshRateHz === -1 ? " · 动态刷新率" : (gamePerf.refreshRateHz > 0 ? ` · ${gamePerf.refreshRateHz}Hz` : "")}），退出自动恢复全局`
+                      : "开启右侧开关或调整瓦数，即可自动保存当前游戏专属性能档"}</span>
                   </div>
                   <div class="bento-game-top-actions">
                     <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">超分与插帧 ▸</button>
@@ -1959,6 +2254,7 @@
 
                 <div class="bento-game-card-controls">
                   <div class="bento-game-ctrl-left">
+                    <span class="bento-ctrl-tag">专属档位</span>
                     <div class="bento-inline-stepper">
                       <button id="btnGamePerfTdpDec" class="step-btn" data-focusable="true">−</button>
                       <span>${gamePerf.tdpWatts || curTdp}W</span>
@@ -1972,15 +2268,46 @@
                     ], String(gamePerf.refreshRateHz || 0), "compact")}
                   </div>
                 </div>
-              ` : `
-                <div class="bento-game-empty">
-                  <div>
-                    <strong class="hh-card-title">桌面待命 · 当前未运行游戏</strong>
-                    <span class="bento-game-desc" style="display:block;margin-top:4px;">进入游戏后此处自动识别并可绑定该游戏独立功耗与刷新率${savedProfileCount > 0 ? `（已保存 ${savedProfileCount} 款游戏专属方案）` : "；也可前往「游戏与超分」提前配置 FSR 4 超分"}</span>
+              ` : (() => {
+                const allGames = snap.games || [];
+                const topGames = allGames.slice(0, 3);
+                return `
+                  <div class="bento-ql-head">
+                    <div class="bento-standby-title-group">
+                      <span class="hh-card-title">快速启动</span>
+                      <span class="bento-inline-sub" style="margin-left:0;">${allGames.length > 0 ? `游戏库 ${allGames.length} 款` : "尚未扫描游戏"}</span>
+                    </div>
+                    <button id="btnHomeGoLibrary" class="bento-link-pill" data-focusable="true">全部游戏 →</button>
                   </div>
-                  <button id="btnHomeGoOpti" class="pill-btn small active" data-focusable="true">游戏与超分 ▸</button>
-                </div>
-              `}
+                  ${topGames.length === 0 ? `
+                    <div class="bento-ql-empty">
+                      <span class="bento-game-desc">暂未发现本地游戏，点击右侧扫描 Steam 与本地游戏库</span>
+                      <button id="btnHomeScanGames" class="btn btn-sm btn-primary" data-focusable="true">扫描 Steam 游戏库</button>
+                    </div>
+                  ` : `
+                    <div class="bento-ql-list">
+                      ${topGames.map((g) => {
+                        const isInj = !!g.injection?.isInjected;
+                        return `
+                          <div class="bento-ql-row">
+                            ${g.coverImageUrl
+                              ? `<img class="bento-ql-thumb" src="${esc(g.coverImageUrl)}" alt="" onerror="this.style.display='none'" />`
+                              : `<div class="bento-ql-thumb placeholder">🎮</div>`}
+                            <div class="bento-ql-meta">
+                              <strong class="bento-ql-title">${esc(g.title)}</strong>
+                              <span class="pill-badge ${isInj ? "blue" : ""}">${isInj ? "已注入" : "原生"}</span>
+                            </div>
+                            <div class="bento-ql-actions">
+                              <button class="btn btn-sm btn-primary" data-ql-launch="${esc(g.id)}" data-focusable="true">启动</button>
+                              <button class="btn btn-sm" data-open-game="${esc(g.id)}" data-focusable="true">超分 ▸</button>
+                            </div>
+                          </div>
+                        `;
+                      }).join("")}
+                    </div>
+                  `}
+                `;
+              })()}
             </section>
           </div>
 
@@ -2152,7 +2479,7 @@
         <div class="mon-top-grid">
           <div class="hh-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">双风扇智能温控与 5 点曲线</span>
+              <span class="hh-card-title">风扇温控曲线</span>
               <span id="fanRpmBadge" class="hh-card-badge ${hw.ecReady ? "live" : ""}">${hw.ecReady && hw.fanRpm > 0 ? `${hw.fanRpm} RPM · PWM ${pwmPctNow}%` : "EC 待命"}</span>
             </div>
 
@@ -2225,17 +2552,17 @@
             `}
           </div>
 
-          <div class="hh-card">
+          <div class="hh-card mon-cpu-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">CPU 睿频模式与三段功耗策略</span>
+              <span class="hh-card-title">CPU 睿频与功耗上限</span>
               <span class="hh-card-badge">${esc(sys.cpuTopologyBadge || "单CCD 8核 · 32MB L3")}</span>
             </div>
 
             <div class="cw-group">
-              <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row" style="min-height:46px;padding:9px 12px;">
                 <div class="cw-row-copy">
                   <span class="cw-row-title">CPU 睿频模式</span>
-                  <span class="cw-row-sub">掌机推荐关闭睿频，省电降温并将封装功耗优先分配给 8060S 核显</span>
+                  <span class="cw-row-sub">掌机游玩建议关闭睿频，降低发热并将功耗预算优先分配给 8060S 核显</span>
                 </div>
                 ${renderSegmented("data-cpu-boost", [
                   { value: "off", label: "关闭睿频" },
@@ -2244,28 +2571,16 @@
                 ], sys.cpuBoostMode || "off", "compact")}
               </div>
 
-              <div class="cw-row" style="min-height:40px;padding:8px 12px;">
+              <div class="cw-row" style="min-height:46px;padding:9px 12px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">拔插电源自动切功耗</span>
-                  <span class="cw-row-sub">电池续航 ${settings.batteryTdpWatts || 25}W · 外接电源 ${settings.acTdpWatts || 55}W</span>
+                  <span class="cw-row-title">独立三段功耗调节 (SPL / sPPT / fPPT)</span>
+                  <span class="cw-row-sub">${unlockThreeStage ? `独立精调：SPL ${curTdp}W · sPPT ${slowPpt}W · fPPT ${fastPpt}W` : `默认联动：SPL ${curTdp}W · sPPT ${slowPpt}W · fPPT ${fastPpt}W`}</span>
                 </div>
-                ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
-              </div>
-
-              <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                <div class="cw-row-copy">
-                  <span class="cw-row-title">SMU 功耗策略 (${flatLock ? `稳态锁定 ${curTdp}W` : `SPL ${curTdp}W / fPPT ${fastPpt}W`})</span>
-                </div>
-                <div style="display:flex;align-items:center;gap:8px;">
-                  <span style="font-size:11px;color:var(--text-secondary);">稳态功耗锁</span>
-                  ${renderSwitch("swFlatLock", flatLock)}
-                  <span style="font-size:11px;color:var(--text-secondary);">独立三段调节</span>
-                  ${renderSwitch("swUnlockThreeStage", unlockThreeStage)}
-                </div>
+                ${renderSwitch("swUnlockThreeStage", unlockThreeStage)}
               </div>
 
               ${unlockThreeStage ? `
-                <div class="cw-disclosure-body" style="padding:8px 12px;">
+                <div class="cw-disclosure-body" style="padding:9px 12px;">
                   <div class="tdp-three-stage">
                     <div class="stage-row">
                       <span>sPPT 慢速升压</span>
@@ -2288,6 +2603,25 @@
                   </div>
                 </div>
               ` : ""}
+            </div>
+
+            <div class="mon-smu-readback">
+              <div class="mon-smu-pill">
+                <span>PM 实读 SPL</span>
+                <strong>${hw.hwStapmLimitWatts != null ? `${hw.hwStapmLimitWatts.toFixed(0)}W` : `${curTdp}W`}</strong>
+              </div>
+              <div class="mon-smu-pill">
+                <span>慢速 sPPT</span>
+                <strong>${hw.hwSlowLimitWatts != null ? `${hw.hwSlowLimitWatts.toFixed(0)}W` : `${slowPpt}W`}</strong>
+              </div>
+              <div class="mon-smu-pill">
+                <span>瞬时 fPPT</span>
+                <strong>${hw.hwFastLimitWatts != null ? `${hw.hwFastLimitWatts.toFixed(0)}W` : `${fastPpt}W`}</strong>
+              </div>
+              <div class="mon-smu-pill">
+                <span>硬件通道</span>
+                <strong>${hw.serviceRunning ? `PawnIO v${daemonVer || 5}` : "待授权"}</strong>
+              </div>
             </div>
           </div>
         </div>
@@ -2356,7 +2690,7 @@
         <div class="mon-top-grid">
           <div class="hh-card">
             <div class="hh-card-head">
-              <span class="hh-card-title">OSD 性能悬浮窗样式设置</span>
+              <span class="hh-card-title">悬浮窗样式</span>
               <span class="hh-card-badge ${level > 0 ? "live" : ""}">${level === 0 ? "已关闭" : `档位 ${level}${activeBackend === "rtss" ? " · RTSS" : ""}`}</span>
             </div>
             <div class="osd-level-pills" style="margin-bottom:8px;">
@@ -2373,7 +2707,7 @@
             <div class="cw-group">
               <div class="cw-row" style="min-height:42px;padding:7px 12px;">
                 <div class="cw-row-copy">
-                  <span class="cw-row-title">渲染通道（全屏穿透）</span>
+                  <span class="cw-row-title">悬浮窗显示方式</span>
                   <span class="cw-row-sub">${rtssRunning ? "RTSS 运行中 · 支持独占全屏穿透" : (rtssInstalled ? "已安装 RTSS（未启动）· 点击下方模式自动启动" : "未安装 RTSS · 点击穿透模式将自动安装并启动")}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
@@ -2401,13 +2735,6 @@
                   { value: "0.88", label: "88%" },
                   { value: "1", label: "100%" }
                 ], String(opacity >= 0.95 ? 1 : opacity >= 0.82 ? 0.88 : opacity >= 0.65 ? 0.75 : 0.55), "compact")}
-              </div>
-              <div class="cw-row" style="min-height:42px;padding:7px 12px;">
-                <div class="cw-row-copy">
-                  <span class="cw-row-title">管理员游戏侧栏 / OSD 穿透 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
-                  <span class="cw-row-sub">平时保持普通权限即可兼容 Steam 大屏幕；仅游玩《终末地》《异环》等提权游戏出现侧栏/OSD 穿透异常时按需点击提权</span>
-                </div>
-                ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : `<span class="hh-card-badge live">已提权</span>`}
               </div>
             </div>
           </div>
@@ -2469,6 +2796,72 @@
     );
   }
 
+  function resolveMirrorInfo(prefix) {
+    const clean = String(prefix || "").trim();
+    if (!clean) return { id: "direct", label: "GitHub 官方直连", shortLabel: "GitHub 官方直连", prefix: "" };
+    const matched = MIRROR_PRESETS.find((p) => p.prefix && p.prefix.toLowerCase() === clean.toLowerCase());
+    if (matched) return { id: matched.id, label: matched.label, shortLabel: matched.label, prefix: matched.prefix };
+    const host = clean.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    return { id: "custom", label: `自定义镜像 · ${host || clean}`, shortLabel: host || clean, prefix: clean };
+  }
+
+  function getParentDirPath(filePath, fallback = "%LocalAppData%\\HaloDeck") {
+    const raw = String(filePath || "").trim();
+    if (!raw) return fallback;
+    const idx = Math.max(raw.lastIndexOf("\\"), raw.lastIndexOf("/"));
+    return idx > 0 ? raw.slice(0, idx) : fallback;
+  }
+
+  function navigateToSettings(subTab = "gamepad") {
+    state.tab = "controls";
+    state.settingsSubTab = SETTINGS_SUB_TABS.includes(subTab) ? subTab : "gamepad";
+    state.activePluginId = null;
+    state.mirrorDropdownOpen = false;
+    state.focusIndex = 0;
+    render();
+  }
+
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+
+  function buildDiagnosticSummaryText() {
+    const snap = state.snapshot || {};
+    const sys = snap.systemControl || {};
+    const hw = sys.hardwareService || {};
+    const settings = snap.settings || {};
+    const gpd = snap.gpdController || {};
+    const comps = snap.components || [];
+    const plugins = snap.plugins || [];
+    const installedComps = comps.filter((c) => c.isInstalled).map((c) => `${c.slot}@${c.installedVersion || "ok"}`);
+    const enabledPlugins = plugins.filter((p) => p.enabled && p.isValid).map((p) => `${p.id}@${p.version || "?"}`);
+    const mirror = resolveMirrorInfo(settings.pluginDownloadMirrorPrefix);
+    const vramMb = snap.dedicatedVramMb > 0 ? snap.dedicatedVramMb : (sys.vramTotalMb || 16384);
+    const vramTotalGb = (vramMb / 1024).toFixed(0);
+    return [
+      "=== HaloDeck 环境诊断报告 ===",
+      `版本与权限: HaloDeck v${snap.appVersion || "0.6.3"} (${snap.isElevated ? "管理员权限" : "标准用户权限"})`,
+      `硬件守护与驱动: HaloDeckHardwareSvc running=${!!hw.serviceRunning} v${hw.daemonVersion || 0} | PawnIO/SMU=${!!hw.smuReady} | EC=${!!hw.ecReady}`,
+      `功耗与散热: TDP=${settings.currentTdpWatts || 40}W (PM SPL=${hw.hwStapmLimitWatts ?? "--"}W) | Fan=${settings.fanMode || "auto"} (${hw.fanRpm || 0} RPM)`,
+      `显示与显存: ${sys.screenWidth || 1920}x${sys.screenHeight || 1080}@${sys.refreshRateHz || 120}Hz${sys.isDynamicRefreshRate ? " DRR" : ""} | VRAM=${vramTotalGb}GB | RAM=${sys.totalRamGb || "--"}GB`,
+      `手柄与菜单键: connected=${!!gpd.connected} FW=X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"} | 0xFF00/F13=${settings.interceptPhysicalMenuButton !== false} | Guide=${settings.interceptGuideMenuButton !== false}`,
+      `核心组件 (${installedComps.length}/${comps.length}, 默认 ${settings.activeOptiScalerSlot || "OptiScalerNightly"}): ${installedComps.join(", ") || "无"}`,
+      `社区插件 (${enabledPlugins.length}/${plugins.length} 已启用): ${enabledPlugins.join(", ") || "无"}`,
+      `全局下载线路: ${mirror.prefix || "GitHub 官方直连"}`
+    ].join("\n");
+  }
+
   function renderControlsView() {
     const snap = state.snapshot || {};
     const sys = snap.systemControl || {};
@@ -2476,196 +2869,158 @@
     const settings = snap.settings || {};
     const gpd = snap.gpdController || {};
     const draft = state.gpdDraft;
+    const sub = SETTINGS_SUB_TABS.includes(state.settingsSubTab) ? state.settingsSubTab : "gamepad";
 
     ensureGpdControllerLoaded();
 
-    const consoleButtons = Array.isArray(settings.consoleGamepadCombo?.buttons) ? settings.consoleGamepadCombo.buttons : ["BACK", "LB"];
-    const qamButtons = Array.isArray(settings.qamGamepadCombo?.buttons) ? settings.qamGamepadCombo.buttons : ["BACK", "RB"];
-    const osdButtons = Array.isArray(settings.osdGamepadCombo?.buttons) ? settings.osdGamepadCombo.buttons : ["BACK", "Y"];
-    const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
-    const interceptOsk = settings.interceptPhysicalOskButton !== false;
-    const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
-    const interceptGuideBtn = settings.interceptGuideMenuButton !== false;
-    const dirtyGpd = hasPendingGpdChanges(gpd, draft);
+    const curVer = snap.appVersion || "0.6.3";
+    const upd = snap.latestUpdate;
+    const hasUpd = !!(upd && upd.hasUpdate);
+    const mirrorInfo = resolveMirrorInfo(settings.pluginDownloadMirrorPrefix);
+    const comps = snap.components || [];
+    const customExts = snap.customExtensions || [];
+    const plugins = snap.plugins || [];
+    const activeSlot = settings.activeOptiScalerSlot || "OptiScalerNightly";
+    const userDataDir = snap.userDataDirectory || getParentDirPath(snap.settingsFilePath, "C:\\Users\\***\\AppData\\Local\\HaloDeck");
+    const logsDir = snap.logDirectory || `${userDataDir}\\logs`;
 
-    const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
-    const curLayout = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
-    const curTdp = settings.currentTdpWatts || 40;
-    const customPresets = (settings.customTdpPresets && settings.customTdpPresets.length)
-      ? settings.customTdpPresets
-      : [10, 15, 20, 25, 30, 45, 60];
-    const hasCurrentPreset = customPresets.includes(curTdp);
+    const navIcons = {
+      gamepad: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="5"></rect><path d="M7 12h4M9 10v4"></path><circle cx="15.5" cy="11" r="0.9" fill="currentColor"></circle><circle cx="17.5" cy="13" r="0.9" fill="currentColor"></circle></svg>`,
+      system: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
+      components: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>`,
+      about: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>`,
+      community: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>`
+    };
 
-    return `
-      <div class="page-scroll">
-        <div class="controls-layout">
-          <!-- Left: GPD Back Buttons, Rumble, Mouse & Physical OSK Key -->
-          <div class="hh-col">
-            <div class="hh-card">
-              <div class="hh-card-head">
-                <span class="hh-card-title">手柄背键与震动 (L4 / R4)</span>
-                <div style="display:flex;align-items:center;gap:6px;">
-                  <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测到手柄"}</span>
-                  <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 映射并恢复原厂震动与死区">恢复原厂</button>
-                  <button id="btnReadGpd" class="btn btn-sm" data-focusable="true" ${state.gpdSaving ? "disabled" : ""}>刷新</button>
-                </div>
+    const navItems = [
+      { id: "gamepad", label: "手柄与按键", desc: "背键 · 震动 · 菜单键" },
+      { id: "system", label: "外观与系统", desc: "布局 · 主题 · 电源偏好" },
+      { id: "components", label: "组件与许可", desc: "驱动 · 超分内核 · MIT" },
+      { id: "about", label: "更新与诊断", desc: "版本 · 镜像 · 按键抓包", dot: hasUpd },
+      { id: "community", label: "社区与支持", desc: "开源仓库 · 作者主页" }
+    ];
+
+    let paneHtml = "";
+
+    if (sub === "gamepad") {
+      const consoleButtons = Array.isArray(settings.consoleGamepadCombo?.buttons) ? settings.consoleGamepadCombo.buttons : ["BACK", "LB"];
+      const qamButtons = Array.isArray(settings.qamGamepadCombo?.buttons) ? settings.qamGamepadCombo.buttons : ["BACK", "RB"];
+      const osdButtons = Array.isArray(settings.osdGamepadCombo?.buttons) ? settings.osdGamepadCombo.buttons : ["BACK", "Y"];
+      const insButtons = Array.isArray(settings.insertGamepadCombo?.buttons) ? settings.insertGamepadCombo.buttons : ["BACK", "START"];
+      const interceptOsk = settings.interceptPhysicalOskButton !== false;
+      const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
+      const interceptGuideBtn = settings.interceptGuideMenuButton !== false;
+      const dirtyGpd = hasPendingGpdChanges(gpd, draft);
+
+      paneHtml = `
+        <div class="settings-section-head">
+          <div>
+            <h2>手柄与按键</h2>
+            <p>自定义实体背键映射、马达震动强度与机身快捷键行为</p>
+          </div>
+          <span class="hh-card-badge ${gpd.connected ? "live" : ""}">${gpd.connected ? `已连接 · FW X${gpd.firmwareX || "?"}${gpd.firmwareK ? ` / K${gpd.firmwareK}` : ""}` : "未检测到手柄"}</span>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">L4 / R4 实体背键与马达震动</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btnResetGpdFactory" class="btn btn-sm" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""} title="清空 L4/R4 映射并恢复原厂震动与死区">恢复原厂</button>
+              <button id="btnReadGpd" class="btn btn-sm" data-focusable="true" ${state.gpdSaving ? "disabled" : ""}>刷新读取</button>
+              <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""}>${state.gpdSaving ? "写入中..." : (dirtyGpd ? "应用修改到手柄" : "应用到手柄")}</button>
+            </div>
+          </div>
+
+          <div class="settings-backkey-grid">
+            <div class="backkey-slot-row">
+              <div class="backkey-slot-meta">
+                <strong>L4 左背键</strong>
+                <span>硬件当前：${esc(gpd.l4KeyLabel || "未映射")}</span>
               </div>
-
-              <div class="backkey-slot-list">
-                <div class="backkey-slot-row">
-                  <div class="backkey-slot-meta">
-                    <strong>L4 左背键</strong>
-                    <span>全键盘 / 手柄键 / 实时录制 / 自由组合</span>
-                  </div>
-                  <div class="comp-actions">
-                    <span id="l4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.l4Key, draft.l4Combo))}</span>
-                    <button id="btnPickL4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
-                  </div>
-                </div>
-                <div class="backkey-slot-row">
-                  <div class="backkey-slot-meta">
-                    <strong>R4 右背键</strong>
-                    <span>全键盘 / 手柄键 / 实时录制 / 自由组合</span>
-                  </div>
-                  <div class="comp-actions">
-                    <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))}</span>
-                    <button id="btnPickR4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="cw-row" style="padding:10px 0 6px;">
-                <span class="cw-row-title">马达震动</span>
-                ${renderSegmented("data-gpd-rumble", [
-                  { value: "0", label: "关闭" },
-                  { value: "1", label: "弱" },
-                  { value: "2", label: "强" }
-                ], String(draft.rumble), "compact")}
-              </div>
-
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid var(--border);">
-                <span style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">硬件当前：L4 [${esc(gpd.l4KeyLabel || "未知")}] · R4 [${esc(gpd.r4KeyLabel || "未知")}]</span>
-                <button id="btnSaveGpd" class="btn btn-sm btn-primary" data-focusable="true" ${!gpd.connected || state.gpdSaving ? "disabled" : ""}>${state.gpdSaving ? "写入中..." : (dirtyGpd ? "应用修改到手柄" : "应用到手柄")}</button>
+              <div class="comp-actions">
+                <span id="l4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.l4Key, draft.l4Combo))}</span>
+                <button id="btnPickL4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
               </div>
             </div>
-
-            <div class="hh-card">
-              <div class="hh-card-head">
-                <span class="hh-card-title">输入辅助与快捷呼出</span>
-                <div style="display:flex;align-items:center;gap:6px;">
-                  <button id="btnResetGamepadCombos" class="btn btn-sm" data-focusable="true" title="恢复默认手柄组合键与键盘热键">恢复默认</button>
-                  <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
-                </div>
+            <div class="backkey-slot-row">
+              <div class="backkey-slot-meta">
+                <strong>R4 右背键</strong>
+                <span>硬件当前：${esc(gpd.r4KeyLabel || "未映射")}</span>
               </div>
-
-              <div class="cw-group">
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">手柄桌面鼠标模式</span>
-                    <span class="cw-row-sub">左摇杆光标 · A左键 · B右键 · 右摇杆滚轮</span>
-                  </div>
-                  ${renderSwitch("swMouseMode", !!settings.gamepadMouseModeEnabled)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">接管机身键盘键</span>
-                    <span class="cw-row-sub">呼出 Win11 触摸/手柄键盘，替代老旧传统键盘</span>
-                  </div>
-                  ${renderSwitch("swInterceptOsk", interceptOsk)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">接管机身快捷菜单键 (Vendor HID / F13)</span>
-                    <span class="cw-row-sub">直连 GPD 0xFF00 HID + F13 + RawInput，兼容全批次 Win 5 固件短按呼出侧栏</span>
-                  </div>
-                  ${renderSwitch("swInterceptMenuBtn", interceptMenuBtn)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">接管手柄菜单 / Guide 键 (0x0400)</span>
-                    <span class="cw-row-sub">兼容原厂 GPDTool 双通道，单独短按呼出侧栏（不拦截 Steam 组合键与长按）</span>
-                  </div>
-                  ${renderSwitch("swInterceptGuideBtn", interceptGuideBtn)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">侧栏开启时屏蔽游戏后台手柄</span>
-                    <span class="cw-row-sub">防《仁王 3》等后台串键；如《剑星》切回失灵请保持关闭</span>
-                  </div>
-                  ${renderSwitch("swMuteGameGamepad", !!settings.muteGameGamepadInOverlay)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">接管背键 F14–F16 呼出 HaloDeck</span>
-                    <span class="cw-row-sub">默认关闭以防 L4/R4 原生固件 F14/F15 误触 OSD/超分菜单</span>
-                  </div>
-                  ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
-                </div>
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">实体菜单键信号抓包诊断</span>
-                    <span class="cw-row-sub">5 秒实时抓取 GPD 0xFF00 HID / RawInput / XInputEx / 钩子原始字节，支持一键复制排查</span>
-                  </div>
-                  <button id="btnMenuKeyDiag" class="btn btn-sm ${state.menuKeyDiagRunning ? "btn-primary" : ""}" data-focusable="true" ${state.menuKeyDiagRunning ? "disabled" : ""}>
-                    ${state.menuKeyDiagRunning ? `抓包中 (${state.menuKeyDiagSecLeft || 5}s)... 请按菜单键` : "开始 5 秒抓包"}
-                  </button>
-                </div>
+              <div class="comp-actions">
+                <span id="r4SlotBadge" class="pill-badge">${esc(resolveBackSlotLabel(draft.r4Key, draft.r4Combo))}</span>
+                <button id="btnPickR4" class="btn btn-sm" data-focusable="true">修改 ▸</button>
               </div>
+            </div>
+          </div>
 
-              ${(() => {
-                const rep = state.menuKeyDiagReport;
-                if (!rep && !state.menuKeyDiagRunning) return "";
-                if (state.menuKeyDiagRunning && !rep) {
-                  return `
-                    <div class="diag-capture-panel" id="menuKeyDiagPanel">
-                      <div class="diag-capture-head">
-                        <span class="diag-capture-title">正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft || 5}s）...</span>
-                      </div>
-                      <div class="diag-empty-hint">请在 5 秒内短按一次机身快捷菜单键（或 L4/R4），抓包期间已自动暂停侧栏弹出以免遮挡。</div>
-                    </div>
-                  `;
-                }
-                const env = rep.environment || {};
-                const evs = rep.events || [];
-                return `
-                  <div class="diag-capture-panel" id="menuKeyDiagPanel">
-                    <div class="diag-capture-head">
-                      <span class="diag-capture-title">抓包诊断结果 · 捕获 ${evs.length} 条事件 (${rep.durationMs || 5000} ms)</span>
-                      <div style="display:flex;gap:6px;">
-                        <button id="btnCopyMenuKeyDiag" class="btn btn-sm btn-primary" data-focusable="true">复制诊断报告</button>
-                        <button id="btnClearMenuKeyDiag" class="btn btn-sm" data-focusable="true">收起</button>
-                      </div>
-                    </div>
-                    <div class="diag-capture-chips">
-                      <span class="diag-chip ${env.gpdVendorHidConnected ? "ok" : "warn"}">0xFF00 HID: ${env.gpdVendorHidConnected ? esc(env.gpdVendorHidDevice || "已连接") : "未连接"}</span>
-                      <span class="diag-chip ${env.registerHotKeyF13Ok ? "ok" : "warn"}">HotKey(F13): ${env.registerHotKeyF13Ok ? "就绪" : `占用(${env.registerHotKeyF13Error || 0})`}</span>
-                      <span class="diag-chip">XInput: ${esc(env.xInputBackend || "unknown")} (${env.connectedXInputCount ?? 0})</span>
-                      <span class="diag-chip ${env.gpdToolRunning ? "warn" : "ok"}">GPDTool: ${env.gpdToolRunning ? (env.gpdToolElevated ? "运行中(管理员)" : "运行中") : "未运行"}</span>
-                      <span class="diag-chip">${env.selfElevated ? "HaloDeck: 管理员" : "HaloDeck: 普通权限"}</span>
-                    </div>
-                    <div class="diag-capture-log">
-                      ${evs.length === 0
-                        ? `<div class="diag-empty-hint">5 秒内未检测到任何信号；请确认按键时未处于长按/锁键盘状态，并将以上状态与「复制诊断报告」发给开发者排查。</div>`
-                        : evs.slice(0, 60).map((ev) => `
-                            <div class="diag-log-row">
-                              <span class="diag-log-offset">+${ev.offsetMs}ms</span>
-                              <span class="diag-log-chan">${esc(ev.channel)}</span>
-                              <span>${esc(ev.summary)}${ev.rawHex ? ` · RAW=${esc(ev.rawHex)}` : ""}</span>
-                              ${ev.wouldTriggerQam ? `<span class="diag-log-trigger">可触发侧栏</span>` : ""}
-                            </div>
-                          `).join("")}
-                    </div>
-                  </div>
-                `;
-              })()}
+          <div class="cw-group" style="margin-top:10px;">
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">马达震动强度</span>
+                <span class="cw-row-sub">写入手柄主板固件，游戏内实时生效</span>
+              </div>
+              ${renderSegmented("data-gpd-rumble", [
+                { value: "0", label: "关闭" },
+                { value: "1", label: "柔和" },
+                { value: "2", label: "强劲" }
+              ], String(draft.rumble), "compact")}
+            </div>
+          </div>
+        </div>
 
-              <div class="hotkey-list" style="margin-top:8px;">
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">机身按键</span>
+            <button id="btnTestOsk" class="btn btn-sm btn-primary" data-focusable="true">呼出屏幕键盘</button>
+          </div>
+
+          <div class="cw-group">
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">机身菜单键呼出侧栏</span>
+                <span class="cw-row-sub">短按机身快捷菜单键直接呼出或收起 HaloDeck 快捷侧栏，保留长按与 Steam 组合键原生功能</span>
+              </div>
+              ${renderSwitch("swPhysicalMenuQam", interceptMenuBtn || interceptGuideBtn)}
+            </div>
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">机身键盘键呼出屏幕键盘</span>
+                <span class="cw-row-sub">按下机身键盘键时呼出 Windows 触摸与手柄虚拟键盘</span>
+              </div>
+              ${renderSwitch("swInterceptOsk", interceptOsk)}
+            </div>
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">侧栏开启时屏蔽游戏后台手柄</span>
+                <span class="cw-row-sub">操作快捷侧栏时隔离游戏端手柄响应，避免菜单与游戏画面同时误触</span>
+              </div>
+              ${renderSwitch("swMuteGameGamepad", !!settings.muteGameGamepadInOverlay)}
+            </div>
+          </div>
+        </div>
+
+        <div class="cw-group settings-disclosure-card">
+          <button id="btnToggleControlsAdv" class="cw-disclosure-btn" data-focusable="true">
+            <span>高级：组合快捷键、键盘热键、死区与 F14–F16</span>
+            <span style="display:inline-flex;align-items:center;gap:8px;">
+              <span class="cw-disclosure-summary">死区 L ${draft.leftDeadzone} / R ${draft.rightDeadzone} · ${state.controlsAdvancedOpen ? "收起" : "展开"}</span>
+              ${svgIcon("chevron")}
+            </span>
+          </button>
+          ${state.controlsAdvancedOpen ? `
+            <div class="cw-disclosure-body" style="padding:10px 12px;display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <span class="cw-row-sub">自定义手柄组合键快速呼出主界面、侧栏、悬浮窗与超分菜单</span>
+                <button id="btnResetGamepadCombos" class="btn btn-sm" data-focusable="true">恢复默认组合键</button>
+              </div>
+              <div class="hotkey-list">
                 <div class="hotkey-row">
-                  <div class="cw-row-title">呼出前端主界面</div>
+                  <div class="cw-row-title">打开主界面</div>
                   <div class="comp-actions">
                     ${renderKeycaps(consoleButtons)}
                     <button id="btnRecordConsoleCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "console" ? "请按键..." : "录制"}</button>
-                    <button id="btnClearConsoleCombo" class="btn btn-sm" data-focusable="true" ${consoleButtons.length === 0 ? "disabled" : ""}>取消</button>
+                    <button id="btnClearConsoleCombo" class="btn btn-sm" data-focusable="true" ${consoleButtons.length === 0 ? "disabled" : ""}>清除</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
@@ -2673,189 +3028,656 @@
                   <div class="comp-actions">
                     ${renderKeycaps(qamButtons)}
                     <button id="btnRecordQamCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "qam" ? "请按键..." : "录制"}</button>
-                    <button id="btnClearQamCombo" class="btn btn-sm" data-focusable="true" ${qamButtons.length === 0 ? "disabled" : ""}>取消</button>
+                    <button id="btnClearQamCombo" class="btn btn-sm" data-focusable="true" ${qamButtons.length === 0 ? "disabled" : ""}>清除</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
-                  <div class="cw-row-title">切换帧率悬浮窗</div>
+                  <div class="cw-row-title">切换性能悬浮窗</div>
                   <div class="comp-actions">
                     ${renderKeycaps(osdButtons)}
                     <button id="btnRecordOsdCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "osd" ? "请按键..." : "录制"}</button>
-                    <button id="btnClearOsdCombo" class="btn btn-sm" data-focusable="true" ${osdButtons.length === 0 ? "disabled" : ""}>取消</button>
+                    <button id="btnClearOsdCombo" class="btn btn-sm" data-focusable="true" ${osdButtons.length === 0 ? "disabled" : ""}>清除</button>
                   </div>
                 </div>
                 <div class="hotkey-row">
-                  <div class="cw-row-title">呼出超分菜单</div>
+                  <div class="cw-row-title">呼出游戏内超分菜单</div>
                   <div class="comp-actions">
                     ${renderKeycaps(insButtons)}
                     <button id="btnRecordInsCombo" class="btn btn-sm" data-focusable="true">${state.recordingTarget === "insert" ? "请按键..." : "录制"}</button>
-                    <button id="btnClearInsCombo" class="btn btn-sm" data-focusable="true" ${insButtons.length === 0 ? "disabled" : ""}>取消</button>
+                    <button id="btnClearInsCombo" class="btn btn-sm" data-focusable="true" ${insButtons.length === 0 ? "disabled" : ""}>清除</button>
                   </div>
                 </div>
               </div>
-
-              <button id="btnToggleControlsAdv" class="btn btn-sm" style="width:100%;margin-top:8px;" data-focusable="true">
-                ${state.controlsAdvancedOpen ? "收起摇杆死区与键盘热键 ▴" : "展开摇杆死区与键盘热键 ▾"}
-              </button>
-
-              ${state.controlsAdvancedOpen ? `
-                <div class="cw-group" style="margin-top:8px;">
-                  <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                    <span class="cw-row-title">左 / 右摇杆中心死区 (-10..10)</span>
-                    <div style="display:flex;align-items:center;gap:5px;">
-                      <button id="btnGpdLdzDec" class="step-btn" data-focusable="true">L−</button>
-                      <span style="font-size:11.5px;min-width:30px;text-align:center;">${draft.leftDeadzone}</span>
-                      <button id="btnGpdLdzInc" class="step-btn" data-focusable="true">L+</button>
-                      <button id="btnGpdRdzDec" class="step-btn" data-focusable="true">R−</button>
-                      <span style="font-size:11.5px;min-width:30px;text-align:center;">${draft.rightDeadzone}</span>
-                      <button id="btnGpdRdzInc" class="step-btn" data-focusable="true">R+</button>
-                    </div>
-                  </div>
-                  <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                    <span class="cw-row-title">键盘全局热键</span>
-                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                      <button id="btnHotkeyConsole" class="btn btn-sm" data-focusable="true">主界面: ${esc(settings.consoleHotkey?.displayText || "Ctrl+Shift+O")}</button>
-                      <button id="btnHotkeyQam" class="btn btn-sm" data-focusable="true">侧栏: ${esc(settings.qamHotkey?.displayText || "Ctrl+Alt+O")}</button>
-                      <button id="btnHotkeyOsd" class="btn btn-sm" data-focusable="true">OSD: ${esc(settings.osdHotkey?.displayText || "Ctrl+Alt+M")}</button>
-                      <button id="btnHotkeyIns" class="btn btn-sm" data-focusable="true">菜单: ${esc(settings.insertHotkey?.displayText || "Ctrl+Alt+I")}</button>
-                    </div>
-                  </div>
-                </div>
-              ` : ""}
-            </div>
-          </div>
-
-          <!-- Right: Appearance & Layout Studio + System / Power Preferences -->
-          <div class="hh-col">
-            <div class="hh-card">
-              <div class="hh-card-head">
-                <span class="hh-card-title">界面外观与布局风格</span>
-                <span class="hh-card-badge">主控与侧栏实时同步</span>
-              </div>
-
-              <div class="style-studio-label">1. 选择功能布局形态</div>
-              <div class="layout-choice-grid">
-                ${UI_LAYOUTS.map((l) => `
-                  <button class="layout-choice-card ${curLayout === l.id ? "active" : ""}" data-ui-layout="${l.id}" data-focusable="true">
-                    <div class="layout-choice-head">
-                      <strong>${esc(l.label)}</strong>
-                      <span class="hh-card-badge ${curLayout === l.id ? "live" : ""}">${curLayout === l.id ? "当前使用" : "点击切换"}</span>
-                    </div>
-                    <span class="layout-choice-desc">${esc(l.desc)}</span>
-                  </button>
-                `).join("")}
-              </div>
-
-              <div class="style-studio-label" style="margin-top:10px;">2. 选择主题配色</div>
-              <div class="theme-choice-grid">
-                ${UI_THEMES.map((t) => `
-                  <button class="theme-choice-card skin-swatch-btn ${curTheme === t.id ? "active" : ""}" data-ui-theme="${t.id}" data-focusable="true">
-                    <span class="skin-dot ${t.id}"></span>
-                    <div class="theme-choice-copy">
-                      <strong>${esc(t.label)}</strong>
-                      <span>${esc(t.desc)}</span>
-                    </div>
-                  </button>
-                `).join("")}
-              </div>
-            </div>
-
-            <div class="hh-card">
-              <div class="hh-card-head">
-                <span class="hh-card-title">全局系统与电源偏好</span>
-                <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 5}` : "用户态"}</span>
-              </div>
-
               <div class="cw-group">
-                <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
                   <div class="cw-row-copy">
-                    <span class="cw-row-title">插拔电自动切换 TDP</span>
-                    <span class="cw-row-sub">离电 ${settings.batteryTdpWatts || 25}W · 插电 ${settings.acTdpWatts || 55}W</span>
+                    <span class="cw-row-title">启用背键快捷热键 (F14–F16)</span>
+                    <span class="cw-row-sub">开启后可将固件 F14/F15/F16 背键映射为切换悬浮窗、超分菜单或主界面</span>
+                  </div>
+                  ${renderSwitch("swBackButtonHotkeys", !!settings.enableBackButtonHotkeys)}
+                </div>
+                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
+                  <div class="cw-row-copy">
+                    <span class="cw-row-title">左 / 右摇杆中心死区 (-10..10)</span>
+                    <span class="cw-row-sub">调整后点击上方「应用修改到手柄」写入固件</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:5px;">
-                    <button id="btnBatTdpDec" class="step-btn" data-focusable="true" title="离电 -1W">电−</button>
-                    <button id="btnBatTdpInc" class="step-btn" data-focusable="true" title="离电 +1W">电+</button>
-                    <button id="btnAcTdpDec" class="step-btn" data-focusable="true" title="插电 -1W">AC−</button>
-                    <button id="btnAcTdpInc" class="step-btn" data-focusable="true" title="插电 +1W">AC+</button>
-                    ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
+                    <button id="btnGpdLdzDec" class="step-btn" data-focusable="true">L−</button>
+                    <span style="font-size:11.5px;min-width:26px;text-align:center;font-weight:700;">${draft.leftDeadzone}</span>
+                    <button id="btnGpdLdzInc" class="step-btn" data-focusable="true">L+</button>
+                    <button id="btnGpdRdzDec" class="step-btn" data-focusable="true">R−</button>
+                    <span style="font-size:11.5px;min-width:26px;text-align:center;font-weight:700;">${draft.rightDeadzone}</span>
+                    <button id="btnGpdRdzInc" class="step-btn" data-focusable="true">R+</button>
                   </div>
                 </div>
-
                 <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                  <span class="cw-row-title">快捷瓦数档位收藏 (当前 ${curTdp}W)</span>
-                  <div style="display:flex;gap:6px;">
-                    ${!hasCurrentPreset
-                      ? `<button id="btnAddTdpPreset" class="pill-btn small active" data-focusable="true">+ 收藏 ${curTdp}W 档</button>`
-                      : (customPresets.length > 1 ? `<button id="btnDelTdpPreset" class="pill-btn small" data-focusable="true">− 移除 ${curTdp}W 档</button>` : `<span class="cw-row-sub">已收藏</span>`)}
+                  <span class="cw-row-title">键盘全局热键</span>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                    <button id="btnHotkeyConsole" class="btn btn-sm" data-focusable="true">主界面: ${esc(settings.consoleHotkey?.displayText || "Ctrl+Shift+O")}</button>
+                    <button id="btnHotkeyQam" class="btn btn-sm" data-focusable="true">侧栏: ${esc(settings.qamHotkey?.displayText || "Ctrl+Alt+O")}</button>
+                    <button id="btnHotkeyOsd" class="btn btn-sm" data-focusable="true">OSD: ${esc(settings.osdHotkey?.displayText || "Ctrl+Alt+M")}</button>
+                    <button id="btnHotkeyIns" class="btn btn-sm" data-focusable="true">菜单: ${esc(settings.insertHotkey?.displayText || "Ctrl+Alt+I")}</button>
                   </div>
                 </div>
+              </div>
+            </div>
+          ` : ""}
+        </div>
+      `;
+    } else if (sub === "system") {
+      const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
+      const curLayout = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
+      const curTdp = settings.currentTdpWatts || 40;
+      const customPresets = (settings.customTdpPresets && settings.customTdpPresets.length)
+        ? settings.customTdpPresets
+        : [10, 15, 20, 25, 30, 45, 60];
+      const hasCurrentPreset = customPresets.includes(curTdp);
 
-                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                  <span class="cw-row-title">开机自动启动（最小化驻留托盘）</span>
-                  ${renderSwitch("setStartup", !!settings.launchAtWindowsStartup)}
+      paneHtml = `
+        <div class="settings-section-head">
+          <div>
+            <h2>外观与系统</h2>
+            <p>切换掌机大磁贴与桌面仪表盘布局、深浅配色以及全局启动和电源策略</p>
+          </div>
+          <span class="hh-card-badge ${hw.serviceRunning ? "live" : ""}">${hw.serviceRunning ? `PawnIO v${hw.daemonVersion || 5}` : "标准用户态"}</span>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">外观与布局</span>
+            <span class="hh-card-badge">主控台与侧栏实时同步</span>
+          </div>
+          <div class="style-studio-label">1. 首页布局形态</div>
+          <div class="layout-choice-grid">
+            ${UI_LAYOUTS.map((l) => `
+              <button class="layout-choice-card ${curLayout === l.id ? "active" : ""}" data-ui-layout="${l.id}" data-focusable="true">
+                <div class="layout-choice-head">
+                  <strong>${esc(l.label)}</strong>
+                  <span class="hh-card-badge ${curLayout === l.id ? "live" : ""}">${curLayout === l.id ? "当前使用" : "点击切换"}</span>
                 </div>
+                <span class="layout-choice-desc">${esc(l.desc)}</span>
+              </button>
+            `).join("")}
+          </div>
 
-                <div class="cw-row" style="min-height:44px;padding:8px 12px;">
-                  <div class="cw-row-copy">
-                    <span class="cw-row-title">管理员提权穿透（按需启用） <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "普通权限"}</span></span>
-                    <span class="cw-row-sub">默认普通权限打开以防 Steam 大屏幕串线；仅游玩《终末地》《异环》等提权游戏时点右侧「临时提权重启」</span>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:6px;">
-                    ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : ""}
-                    ${renderSwitch("swRunAsAdmin", !!settings.runAsAdministrator)}
-                  </div>
+          <div class="style-studio-label" style="margin-top:11px;">2. 主题配色方案</div>
+          <div class="theme-choice-grid">
+            ${UI_THEMES.map((t) => `
+              <button class="theme-choice-card skin-swatch-btn ${curTheme === t.id ? "active" : ""}" data-ui-theme="${t.id}" data-focusable="true">
+                <span class="skin-dot ${t.id}"></span>
+                <div class="theme-choice-copy">
+                  <strong>${esc(t.label)}</strong>
+                  <span>${esc(t.desc)}</span>
                 </div>
+              </button>
+            `).join("")}
+          </div>
+        </div>
 
-                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                  <span class="cw-row-title">启动时默认全屏掌机模式</span>
-                  ${renderSwitch("setFullscreenBoot", !!settings.launchConsoleFullscreen)}
-                </div>
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">电源与系统偏好</span>
+          </div>
+          <div class="cw-group">
+            <div class="cw-row" style="min-height:46px;padding:9px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">插拔电自动切换 TDP</span>
+                <span class="cw-row-sub">离电续航 ${settings.batteryTdpWatts || 25}W · 外接电源 ${settings.acTdpWatts || 55}W</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:5px;">
+                <button id="btnBatTdpDec" class="step-btn" data-focusable="true" title="离电 −1W">电−</button>
+                <button id="btnBatTdpInc" class="step-btn" data-focusable="true" title="离电 +1W">电+</button>
+                <button id="btnAcTdpDec" class="step-btn" data-focusable="true" title="插电 −1W">AC−</button>
+                <button id="btnAcTdpInc" class="step-btn" data-focusable="true" title="插电 +1W">AC+</button>
+                ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
+              </div>
+            </div>
 
-                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                  <span class="cw-row-title">后台自动注入 OptiScaler</span>
-                  <div style="display:flex;align-items:center;gap:6px;">
-                    <button id="btnRunAutoInject" class="btn btn-sm" data-focusable="true">立即扫描</button>
-                    ${renderSwitch("setAutoInject", !!settings.backgroundAutoInjectEnabled)}
-                  </div>
-                </div>
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">快捷瓦数档位收藏（当前 ${curTdp}W）</span>
+                <span class="cw-row-sub">常用档位：${customPresets.map((w) => `${w}W`).join(" · ")}</span>
+              </div>
+              <div style="display:flex;gap:6px;">
+                ${!hasCurrentPreset
+                  ? `<button id="btnAddTdpPreset" class="pill-btn small active" data-focusable="true">+ 收藏 ${curTdp}W</button>`
+                  : (customPresets.length > 1 ? `<button id="btnDelTdpPreset" class="pill-btn small" data-focusable="true">− 移除 ${curTdp}W</button>` : `<span class="hh-card-badge">已收藏</span>`)}
+              </div>
+            </div>
 
-                ${(() => {
-                  const curVer = snap.appVersion || "0.6.2";
-                  const upd = snap.latestUpdate;
-                  const hasUpd = !!(upd && upd.hasUpdate);
-                  const prog = state.appUpdateProgress;
-                  const badgeHtml = hasUpd
-                    ? `<span class="hh-card-badge live" style="margin-left:4px;">可更新至 v${esc(upd.latestVersion)}${upd.isPrerelease ? " RC" : ""}</span>`
-                    : (upd ? `<span class="hh-card-badge" style="margin-left:4px;">已是最新</span>` : "");
-                  return `
-                    <div class="cw-row" style="min-height:46px;padding:8px 12px;">
-                      <div class="cw-row-copy">
-                        <span class="cw-row-title">HaloDeck 版本与在线更新 <span class="hh-card-badge" style="margin-left:4px;">v${esc(curVer)}</span>${badgeHtml}</span>
-                        <span class="cw-row-sub">${hasUpd ? `发现新版 v${esc(upd.latestVersion)}（下载自动校验 SHA-256，保留全部本地配置与游戏档案）` : "支持从 GitHub Releases 检查正式版或测试版并一键原地更新"}</span>
-                      </div>
-                      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-                        <button id="btnTogglePrereleaseCheck" class="pill-btn small ${state.appUpdateIncludePrerelease ? "active" : ""}" data-focusable="true" title="开启后也会检查 -rc / -beta 预发布测试版">${state.appUpdateIncludePrerelease ? "含测试版" : "仅正式版"}</button>
-                        <button id="btnCheckAppUpdate" class="btn btn-sm" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "检查更新"}</button>
-                        ${hasUpd && upd.downloadUrl ? `<button id="btnApplyAppUpdate" class="btn btn-sm btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? (prog.status === "applying" ? "正在更新..." : `下载中 ${Math.round(prog.percent || 0)}%`) : `更新 v${esc(upd.latestVersion)}`}</button>` : ""}
-                        ${hasUpd && upd.htmlUrl ? `<button id="btnOpenUpdateNotes" class="btn btn-sm" data-focusable="true">更新日志</button>` : ""}
-                      </div>
-                    </div>
-                  `;
-                })()}
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">开机静默自启</span>
+                <span class="cw-row-sub">随 Windows 登录自动启动并最小化驻留系统托盘</span>
+              </div>
+              ${renderSwitch("setStartup", !!settings.launchAtWindowsStartup)}
+            </div>
 
-                <div class="cw-row" style="min-height:40px;padding:8px 12px;">
-                  <span class="cw-row-title">系统服务与配置文件</span>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                    <button id="btnSysEnableVrr" class="pill-btn small ${snap.vrrWindowedEnabled ? "active" : ""}" data-focusable="true">${snap.vrrWindowedEnabled ? "窗口化VRR已开" : "开启窗口化VRR"}</button>
-                    ${hw.gpdServiceExists ? `<button id="btnToggleGpdSvc" class="pill-btn small" data-focusable="true">${hw.gpdServiceRunning ? "暂停GPDTools" : "恢复GPDTools"}</button>` : ""}
-                    <button id="btnOpenSettingsJson" class="pill-btn small" data-focusable="true">编辑 JSON</button>
-                    <button id="btnReloadSettingsJson" class="pill-btn small" data-focusable="true">重载</button>
-                  </div>
-                </div>
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">启动时默认全屏掌机模式</span>
+                <span class="cw-row-sub">呼出主控台时直接以全屏大视图呈现，便于手柄直达</span>
+              </div>
+              ${renderSwitch("setFullscreenBoot", !!settings.launchConsoleFullscreen)}
+            </div>
+
+            <div class="cw-row" style="min-height:46px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">管理员权限运行 <span class="hh-card-badge ${snap.isElevated ? "live" : ""}" style="margin-left:4px;">${snap.isElevated ? "当前管理员" : "标准权限"}</span></span>
+                <span class="cw-row-sub">标准权限可流畅配合 Steam 大屏幕使用；游玩高权限游戏时可点右侧临时提权穿透</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                ${!snap.isElevated ? `<button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权重启</button>` : ""}
+                ${renderSwitch("swRunAsAdmin", !!settings.runAsAdministrator)}
+              </div>
+            </div>
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">后台自动注入 OptiScaler</span>
+                <span class="cw-row-sub">检测游戏库中的受支持作品并按推荐超分配置自动部署</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <button id="btnRunAutoInject" class="btn btn-sm" data-focusable="true">立即扫描</button>
+                ${renderSwitch("setAutoInject", !!settings.backgroundAutoInjectEnabled)}
+              </div>
+            </div>
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">配置文件与维护</span>
+                <span class="cw-row-sub">管理 Win11 窗口化 VRR、硬件服务与本地 JSON 配置</span>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                <button id="btnSysEnableVrr" class="pill-btn small ${snap.vrrWindowedEnabled ? "active" : ""}" data-focusable="true">${snap.vrrWindowedEnabled ? "窗口化 VRR 已开" : "开启窗口化 VRR"}</button>
+                ${hw.gpdServiceExists ? `<button id="btnToggleGpdSvc" class="pill-btn small" data-focusable="true">${hw.gpdServiceRunning ? "暂停 GPDTools" : "恢复 GPDTools"}</button>` : ""}
+                <button id="btnOpenSettingsJson" class="pill-btn small" data-focusable="true">编辑 JSON</button>
+                <button id="btnReloadSettingsJson" class="pill-btn small" data-focusable="true">重载配置</button>
               </div>
             </div>
           </div>
         </div>
+      `;
+    } else if (sub === "components") {
+      const hasOptiInstalled = comps.some((c) => (c.slot === "OptiScalerNightly" || c.slot === "OptiScalerStable") && c.isInstalled);
+      paneHtml = `
+        <div class="settings-section-head">
+          <div>
+            <h2>组件与许可</h2>
+            <p>查看 HaloDeck 使用的底层驱动、开源超分组件状态与开源协议致谢</p>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button id="btnOpenComponentsDir" class="btn btn-sm" data-focusable="true">打开组件目录</button>
+            <button id="btnRefreshComps" class="btn btn-sm btn-primary" data-focusable="true">检查组件更新</button>
+          </div>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">硬件控制驱动</span>
+            <span class="hh-card-badge ${hw.smuReady && hw.serviceRunning ? "live" : ""}">${hw.smuReady && hw.serviceRunning ? "直控已就绪" : "待启用"}</span>
+          </div>
+          <div class="cw-group">
+            <div class="cw-row" style="min-height:48px;padding:9px 12px;">
+              <div class="cw-row-copy">
+                <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                  <span class="cw-row-title">PawnIO 内核驱动</span>
+                  <span class="pill-badge ${hw.smuReady ? "live" : "warn"}">${hw.smuReady ? "已加载" : "未就绪"}</span>
+                  <span class="comp-license-pill">BSD-2-Clause</span>
+                </div>
+                <span class="cw-row-sub">微软签名安全内核模块，负责读写 AMD Strix Halo SMU 功耗寄存器与 EC 双风扇通道</span>
+              </div>
+              <div class="comp-actions">
+                <button id="btnOpenPawnIo" class="btn btn-sm" data-focusable="true">驱动主页 ↗</button>
+                ${!hw.smuReady ? `<button id="btnRetryPawnIoSvc" class="btn btn-sm btn-primary" data-focusable="true">启用驱动</button>` : ""}
+              </div>
+            </div>
+            <div class="cw-row" style="min-height:48px;padding:9px 12px;">
+              <div class="cw-row-copy">
+                <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                  <span class="cw-row-title">HaloDeckHardwareSvc (v${hw.daemonVersion || 5})</span>
+                  <span class="pill-badge ${hw.serviceRunning ? "live" : "warn"}">${hw.serviceRunning ? "运行中" : "未启动"}</span>
+                  <span class="comp-license-pill">MIT</span>
+                </div>
+                <span class="cw-row-sub">本地安全管道硬件守护进程，免 UAC 弹窗执行 8–120W 功耗调节、温控曲线与 ETW 帧率采样</span>
+              </div>
+              <div class="comp-actions">
+                <button id="btnInstallHwSvc" class="btn btn-sm ${hw.serviceRunning ? "" : "btn-primary"}" data-focusable="true">${hw.serviceRunning ? "检查 / 重连" : "一键启用"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">超分与帧生成开源组件</span>
+            ${renderSegmented("data-active-slot", [
+              { value: "OptiScalerNightly", label: "默认 Nightly v10+" },
+              { value: "OptiScalerStable", label: "默认 Stable v0.9.4" }
+            ], activeSlot, "compact")}
+          </div>
+
+          <div class="cw-group">
+            ${comps.map((c) => {
+              const fallbackMeta = COMPONENT_LICENSE_META[c.slot] || { license: "MIT", author: "Open Source", url: c.repoSlug ? `https://github.com/${c.repoSlug}` : "" };
+              const license = c.license || fallbackMeta.license;
+              const homepageUrl = c.homepageUrl || fallbackMeta.url;
+              const pct = state.progressBySlot[c.slot];
+              const statusTag = c.isInstalled
+                ? (c.hasUpdate ? `<span class="pill-badge warn">可更新 ${esc(c.latestVersion || "")}</span>` : `<span class="pill-badge live">已安装</span>`)
+                : `<span class="pill-badge">未安装</span>`;
+              const displayTitle = c.slot === "MfgUnlocker"
+                ? "MFG Unlocker (by dashdogy)"
+                : c.slot === "Fakenvapi"
+                  ? "Fakenvapi (by FakeMichau)"
+                  : c.displayName;
+              return `
+                <div class="cw-row" style="min-height:50px;padding:9px 12px;">
+                  <div class="cw-row-copy">
+                    <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                      <span class="cw-row-title">${esc(displayTitle)}</span>
+                      ${statusTag}
+                      <span class="comp-license-pill">${esc(license)}</span>
+                      ${c.slot === activeSlot ? `<span class="pill-badge blue">默认内核</span>` : ""}
+                    </div>
+                    <span class="cw-row-sub">本地：${esc(c.installedVersion || "未安装")} · 最新：${esc(c.latestVersion || "待查询")}${c.repoSlug ? ` · ${esc(c.repoSlug)}` : ""}</span>
+                    ${c.description ? `<span class="comp-desc">${esc(c.description)}</span>` : ""}
+                  </div>
+                  <div class="comp-actions">
+                    ${typeof pct === "number" && pct > 0 && pct < 100
+                      ? `<div class="comp-progress"><div class="comp-progress-fill" style="width:${pct}%"></div></div>`
+                      : ""}
+                    ${homepageUrl ? `<button class="btn btn-sm" data-open-url="${esc(homepageUrl)}" data-focusable="true">主页 ↗</button>` : ""}
+                    <button class="btn btn-sm" data-import-comp="${esc(c.slot)}" data-focusable="true">离线包</button>
+                    <button class="btn btn-sm btn-primary" data-install-comp="${esc(c.slot)}" data-focusable="true">
+                      ${c.isInstalled ? (c.hasUpdate ? "升级" : "重装") : "下载"}
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+
+            <div class="cw-row" style="min-height:46px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                  <span class="cw-row-title">FSR 4.1.2 INT8 运行时</span>
+                  <span class="pill-badge ${hasOptiInstalled ? "live" : ""}">${hasOptiInstalled ? "已内置" : "随内核部署"}</span>
+                  <span class="comp-license-pill">AMD FidelityFX · MIT</span>
+                </div>
+                <span class="cw-row-sub">面向 RDNA 3.5 / 8060S 的 INT8 量化超分管线，随 OptiScaler 注入目录自动部署</span>
+              </div>
+              <button class="btn btn-sm" data-open-url="https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK" data-focusable="true">主页 ↗</button>
+            </div>
+
+            <div class="cw-row" style="min-height:46px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                  <span class="cw-row-title">XeSS / XeFG 帧生成库</span>
+                  <span class="pill-badge ${hasOptiInstalled ? "live" : ""}">${hasOptiInstalled ? "已内置" : "随内核部署"}</span>
+                  <span class="comp-license-pill">Intel XeSS SDK · MIT</span>
+                </div>
+                <span class="cw-row-sub">Intel XeSS 2.0 超分与 XeFG 2X–4X 帧生成动态库（libxess.dll / libxess_fg.dll）</span>
+              </div>
+              <button class="btn btn-sm" data-open-url="https://github.com/intel/xess" data-focusable="true">主页 ↗</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">自定义附加 DLL / ASI 扩展</span>
+            <button id="btnImportExt" class="btn btn-sm" data-focusable="true">+ 导入扩展文件</button>
+          </div>
+          <div class="cw-group">
+            ${customExts.length === 0 ? `
+              <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">暂无自定义扩展</span>
+                  <span class="cw-row-sub">支持导入第三方 DLL / ASI 插件，在注入游戏时随主内核自动同步加载</span>
+                </div>
+              </div>
+            ` : customExts.map((ext) => `
+              <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+                <div class="cw-row-copy">
+                  <span class="cw-row-title">${esc(ext.fileName)}</span>
+                  <span class="cw-row-sub">${Math.round((ext.sizeBytes || 0) / 1024)} KB</span>
+                </div>
+                <div class="comp-actions">
+                  ${renderSwitch(`ext_${esc(ext.fileName)}`, !!ext.enabled)}
+                  <button class="btn btn-sm btn-danger-soft" data-delete-ext="${esc(ext.fileName)}" data-focusable="true">删除</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    } else if (sub === "about") {
+      const prog = state.appUpdateProgress;
+      const autoCheckOn = settings.autoCheckUpdatesOnStartup !== false;
+      const showCustomRow = state.mirrorCustomOpen || mirrorInfo.id === "custom";
+      const customDraftVal = state.mirrorCustomDraft || (mirrorInfo.id === "custom" ? mirrorInfo.prefix : "");
+      const vramMb = snap.dedicatedVramMb > 0 ? snap.dedicatedVramMb : (sys.vramTotalMb || 16384);
+      const vramTotalGb = (vramMb / 1024).toFixed(0);
+      const installedCompsCount = comps.filter((c) => c.isInstalled).length;
+      const enabledPluginsCount = plugins.filter((p) => p.enabled && p.isValid).length;
+
+      paneHtml = `
+        <div class="settings-section-head">
+          <div>
+            <h2>更新与诊断</h2>
+            <p>版本更新、全局下载线路配置、问题反馈与实体菜单键抓包诊断</p>
+          </div>
+        </div>
+
+        <div class="hh-card about-brand-card ${state.mirrorDropdownOpen ? "has-open-menu" : ""}">
+          <div class="about-brand-row">
+            <div class="about-brand-left">
+              <div class="about-brand-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="12 2 20.5 7 20.5 17 12 22 3.5 17 3.5 7"></polygon>
+                  <circle cx="12" cy="12" r="3.4"></circle>
+                </svg>
+              </div>
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <strong class="about-brand-name">HaloDeck</strong>
+                  <span class="hh-card-badge">v${esc(curVer)}</span>
+                  ${hasUpd
+                    ? `<span class="hh-card-badge live">发现新版 v${esc(upd.latestVersion)}${upd.isPrerelease ? " RC" : ""}</span>`
+                    : (upd ? `<span class="hh-card-badge live">已是最新版本</span>` : `<span class="hh-card-badge">点击检查更新</span>`)}
+                </div>
+                <span class="cw-row-sub">GPD Win 5 / AMD Strix Halo 掌机全能控制中心 · 完整保留本地配置原地升级</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+              <button id="btnCheckAppUpdate" class="btn btn-sm ${hasUpd ? "" : "btn-primary"}" data-focusable="true" ${state.appUpdateChecking ? "disabled" : ""}>${state.appUpdateChecking ? "检查中..." : "立即检查更新"}</button>
+              ${hasUpd && upd.downloadUrl ? `<button id="btnApplyAppUpdate" class="btn btn-sm btn-primary" data-focusable="true" ${prog ? "disabled" : ""}>${prog ? (prog.status === "applying" ? "正在更新..." : `下载中 ${Math.round(prog.percent || 0)}%`) : `一键更新 v${esc(upd.latestVersion)}`}</button>` : ""}
+              ${hasUpd && upd.htmlUrl ? `<button id="btnOpenUpdateNotes" class="btn btn-sm" data-focusable="true">更新日志 ↗</button>` : ""}
+            </div>
+          </div>
+
+          <div class="cw-group mirror-group" style="margin-top:10px;">
+            <div class="cw-row mirror-picker-row" style="min-height:46px;padding:9px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">下载加速线路</span>
+                <span class="cw-row-sub">全局共享于应用更新、核心组件与社区插件下载，连接超时自动回退直连</span>
+              </div>
+              <div class="custom-select-wrap">
+                <button id="btnMirrorSelect" class="custom-select-trigger ${state.mirrorDropdownOpen ? "is-open" : ""}" data-focusable="true" aria-expanded="${state.mirrorDropdownOpen}">
+                  <span>${esc(mirrorInfo.label)}</span>
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 6 8 10 12 6"></polyline></svg>
+                </button>
+                ${state.mirrorDropdownOpen ? `
+                  <div class="custom-select-menu" role="listbox">
+                    ${MIRROR_PRESETS.map((p) => {
+                      const isSel = mirrorInfo.id === p.id;
+                      return `
+                        <button class="custom-select-option ${isSel ? "active" : ""}" data-mirror-preset="${esc(p.id)}" data-focusable="true" role="option" aria-selected="${isSel}">
+                          <div class="custom-select-opt-copy">
+                            <strong>${esc(p.label)}</strong>
+                            <span>${esc(p.desc)}</span>
+                          </div>
+                          ${isSel ? `<span class="custom-select-check">✓</span>` : ""}
+                        </button>
+                      `;
+                    }).join("")}
+                  </div>
+                ` : ""}
+              </div>
+            </div>
+
+            ${showCustomRow ? `
+              <div class="mirror-custom-row">
+                <input id="settingsMirrorCustomInput" class="plugin-text-input" type="text" placeholder="请输入 HTTPS 镜像前缀，如 https://gh-proxy.com/" value="${esc(customDraftVal)}" />
+                <button id="btnSaveSettingsMirror" class="btn btn-sm btn-primary" data-focusable="true">保存前缀</button>
+                <button id="btnCancelSettingsMirror" class="btn btn-sm" data-focusable="true">取消</button>
+              </div>
+            ` : ""}
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">更新通道</span>
+                <span class="cw-row-sub">正式版稳定可靠；测试版 (-rc) 可抢先体验最新功能与硬件适配</span>
+              </div>
+              ${renderSegmented("data-update-channel", [
+                { value: "stable", label: "仅正式版" },
+                { value: "prerelease", label: "含测试版 (-rc)" }
+              ], state.appUpdateIncludePrerelease ? "prerelease" : "stable", "compact")}
+            </div>
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">反馈问题（GitHub Issues）</span>
+                <span class="cw-row-sub">自动复制脱敏环境诊断摘要并前往 GitHub 提交工单，加速定位问题</span>
+              </div>
+              <button id="btnReportIssue" class="btn btn-sm" data-focusable="true">复制诊断并反馈 ↗</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="hh-card">
+          <div class="hh-card-head">
+            <span class="hh-card-title">系统诊断与本地目录</span>
+            <button id="btnCopyFullDiag" class="btn btn-sm btn-primary" data-focusable="true">一键复制完整诊断信息</button>
+          </div>
+          <div class="cw-group">
+            <div class="cw-row" style="min-height:44px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">5 秒实体菜单键信号抓包</span>
+                <span class="cw-row-sub">实时采集 GPD 0xFF00 HID / RawInput / XInputEx 原始报文，用于排查实体菜单键触发</span>
+              </div>
+              <button id="btnMenuKeyDiag" class="btn btn-sm ${state.menuKeyDiagRunning ? "btn-primary" : ""}" data-focusable="true" ${state.menuKeyDiagRunning ? "disabled" : ""}>
+                ${state.menuKeyDiagRunning ? `抓包中 (${state.menuKeyDiagSecLeft || 5}s)... 请按菜单键` : "开始 5 秒抓包"}
+              </button>
+            </div>
+
+            ${(() => {
+              const rep = state.menuKeyDiagReport;
+              if (!rep && !state.menuKeyDiagRunning) return "";
+              if (state.menuKeyDiagRunning && !rep) {
+                return `
+                  <div class="diag-capture-panel" id="menuKeyDiagPanel" style="margin:0 12px 10px;">
+                    <div class="diag-capture-head">
+                      <span class="diag-capture-title">正在监听实体按键原始信号（剩余 ${state.menuKeyDiagSecLeft || 5}s）...</span>
+                    </div>
+                    <div class="diag-empty-hint">请在 5 秒内短按一次机身快捷菜单键（或 L4/R4），抓包期间已自动暂停侧栏弹出以免遮挡。</div>
+                  </div>
+                `;
+              }
+              const env = rep.environment || {};
+              const evs = rep.events || [];
+              return `
+                <div class="diag-capture-panel" id="menuKeyDiagPanel" style="margin:0 12px 10px;">
+                  <div class="diag-capture-head">
+                    <span class="diag-capture-title">抓包诊断结果 · 捕获 ${evs.length} 条事件 (${rep.durationMs || 5000} ms)</span>
+                    <div style="display:flex;gap:6px;">
+                      <button id="btnCopyMenuKeyDiag" class="btn btn-sm btn-primary" data-focusable="true">复制抓包报告</button>
+                      <button id="btnClearMenuKeyDiag" class="btn btn-sm" data-focusable="true">收起</button>
+                    </div>
+                  </div>
+                  <div class="diag-capture-chips">
+                    <span class="diag-chip ${env.gpdVendorHidConnected ? "ok" : "warn"}">0xFF00 HID: ${env.gpdVendorHidConnected ? esc(env.gpdVendorHidDevice || "已连接") : "未连接"}</span>
+                    <span class="diag-chip ${env.registerHotKeyF13Ok ? "ok" : "warn"}">HotKey(F13): ${env.registerHotKeyF13Ok ? "就绪" : `占用(${env.registerHotKeyF13Error || 0})`}</span>
+                    <span class="diag-chip">XInput: ${esc(env.xInputBackend || "unknown")} (${env.connectedXInputCount ?? 0})</span>
+                    <span class="diag-chip ${env.gpdToolRunning ? "warn" : "ok"}">GPDTool: ${env.gpdToolRunning ? (env.gpdToolElevated ? "运行中(管理员)" : "运行中") : "未运行"}</span>
+                    <span class="diag-chip">${env.selfElevated ? "HaloDeck: 管理员" : "HaloDeck: 标准权限"}</span>
+                  </div>
+                  <div class="diag-capture-log">
+                    ${evs.length === 0
+                      ? `<div class="diag-empty-hint">5 秒内未检测到按键事件；请确认按键未处于锁键盘状态，可点击上方「复制抓包报告」提交排查。</div>`
+                      : evs.slice(0, 60).map((ev) => `
+                          <div class="diag-log-row">
+                            <span class="diag-log-offset">+${ev.offsetMs}ms</span>
+                            <span class="diag-log-chan">${esc(ev.channel)}</span>
+                            <span>${esc(ev.summary)}${ev.rawHex ? ` · RAW=${esc(ev.rawHex)}` : ""}</span>
+                            ${ev.wouldTriggerQam ? `<span class="diag-log-trigger">可触发侧栏</span>` : ""}
+                          </div>
+                        `).join("")}
+                  </div>
+                </div>
+              `;
+            })()}
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">运行日志目录</span>
+                <span class="cw-row-sub diag-path-mono">${esc(logsDir)}</span>
+              </div>
+              <button id="btnOpenLogsDir" class="btn btn-sm" data-focusable="true">打开目录</button>
+            </div>
+
+            <div class="cw-row" style="min-height:42px;padding:8px 12px;">
+              <div class="cw-row-copy">
+                <span class="cw-row-title">用户数据目录</span>
+                <span class="cw-row-sub diag-path-mono">${esc(userDataDir)}</span>
+              </div>
+              <button id="btnOpenUserDataDir" class="btn btn-sm" data-focusable="true">打开目录</button>
+            </div>
+          </div>
+
+          <div class="diag-runtime-grid">
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">运行权限与版本</span>
+              <strong class="diag-rt-val">${snap.isElevated ? "管理员权限" : "标准用户权限"} · v${esc(curVer)}</strong>
+            </div>
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">硬件守护服务</span>
+              <strong class="diag-rt-val">${hw.serviceRunning ? `v${hw.daemonVersion || 5} · SMU ${hw.smuReady ? "就绪" : "待机"} · EC ${hw.ecReady ? "就绪" : "待机"}` : "未启动（标准用户态）"}</strong>
+            </div>
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">物理显存与内存</span>
+              <strong class="diag-rt-val">${vramTotalGb} GB 专用显存 · ${sys.totalRamGb || "--"} GB 统一内存</strong>
+            </div>
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">手柄固件与 0xFF00 通道</span>
+              <strong class="diag-rt-val">${gpd.connected ? `FW X${gpd.firmwareX || "?"}/K${gpd.firmwareK || "?"}` : "未连接"} · 0xFF00 ${settings.interceptPhysicalMenuButton !== false ? "已启用" : "已关闭"}</strong>
+            </div>
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">核心超分组件</span>
+              <strong class="diag-rt-val">${installedCompsCount} / ${comps.length} 已安装 · ${activeSlot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4"}</strong>
+            </div>
+            <div class="diag-runtime-cell">
+              <span class="diag-rt-label">插件与下载线路</span>
+              <strong class="diag-rt-val">${enabledPluginsCount} / ${plugins.length} 插件启用 · ${esc(mirrorInfo.shortLabel)}</strong>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      paneHtml = `
+        <div class="settings-section-head">
+          <div>
+            <h2>社区与支持</h2>
+            <p>关注开源项目进展、参与问题讨论与查看实机调优视频</p>
+          </div>
+        </div>
+
+        <div class="hh-card community-hero-card">
+          <div class="community-hero-top">
+            <div class="about-brand-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="12 2 20.5 7 20.5 17 12 22 3.5 17 3.5 7"></polygon>
+                <circle cx="12" cy="12" r="3.4"></circle>
+              </svg>
+            </div>
+            <div class="community-hero-copy">
+              <h3>开源 · 免费 · 为掌机玩家而生</h3>
+              <p>HaloDeck 遵循 MIT 开源协议持续迭代，所有功耗调优、FSR 4 / XeFG 超分部署与社区插件沙箱均永久免费开放。欢迎在 GitHub 点亮 Star、提交反馈或共同参与贡献。</p>
+              <div class="community-hero-pills">
+                <span class="hh-card-badge live">MIT 开源协议</span>
+                <span class="hh-card-badge">永久免费 · 无广告</span>
+                <span class="hh-card-badge">本地运行 · 零遥测</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="community-social-grid cols-3">
+          <button class="community-social-card is-vertical" data-open-url="https://github.com/Lokilankaaa/HaloDeck" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-github">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.37 6.84 9.73.5.09.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.85.09-.66.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.84c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.59.69.49A10.25 10.25 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>
+              </div>
+              <span class="social-card-cta">前往 Star ↗</span>
+            </div>
+            <div class="social-card-copy">
+              <strong>HaloDeck 项目仓库</strong>
+              <span>浏览源码、点亮 Star、参与 Issue 反馈与 PR 贡献</span>
+            </div>
+            <span class="social-card-url">github.com/Lokilankaaa/HaloDeck</span>
+          </button>
+
+          <button class="community-social-card is-vertical" data-open-url="https://github.com/Lokilankaaa" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-author">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              </div>
+              <span class="social-card-cta">关注主页 ↗</span>
+            </div>
+            <div class="social-card-copy">
+              <strong>作者 GitHub 主页</strong>
+              <span>关注 Lokilankaaa 开源动态、插件生态与新工具发布</span>
+            </div>
+            <span class="social-card-url">github.com/Lokilankaaa</span>
+          </button>
+
+          <button class="community-social-card is-vertical" data-open-url="https://b23.tv/pANRtSc" data-focusable="true">
+            <div class="social-card-head">
+              <div class="social-icon is-bili">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3.5"></rect><path d="M8 3l2.5 3M16 3l-2.5 3"></path><line x1="9" y1="11.5" x2="9" y2="14"></line><line x1="15" y1="11.5" x2="15" y2="14"></line></svg>
+              </div>
+              <span class="social-card-cta">前往 B 站 ↗</span>
+            </div>
+            <div class="social-card-copy">
+              <strong>作者哔哩哔哩主页</strong>
+              <span>嗷嗷嗷嗷的猫神 · 版本演示、实机测帧与掌机调优视频</span>
+            </div>
+            <span class="social-card-url">b23.tv/pANRtSc</span>
+          </button>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="settings-shell">
+        <aside class="settings-nav" role="tablist" aria-label="设置分组">
+          <div class="settings-nav-list">
+            ${navItems.map((item) => `
+              <button class="settings-nav-item ${sub === item.id ? "active" : ""}" data-settings-sub="${item.id}" data-focusable="true" role="tab" aria-selected="${sub === item.id}">
+                <span class="settings-nav-icon">${navIcons[item.id]}</span>
+                <span class="settings-nav-copy">
+                  <strong>${esc(item.label)}${item.dot ? `<span class="settings-nav-dot" aria-label="有更新"></span>` : ""}</strong>
+                  <span>${esc(item.desc)}</span>
+                </span>
+              </button>
+            `).join("")}
+          </div>
+        </aside>
+        <section class="settings-pane">
+          <div class="settings-pane-scroll">
+            ${paneHtml}
+          </div>
+        </section>
       </div>
     `;
   }
@@ -2889,13 +3711,9 @@
 
     const hasCustomAdvanced = cfg.fgInputMode !== "auto" || cfg.proxyDllName !== "auto" || cfg.fsr4Watermark;
     const kernelShort = kernel.slot === "OptiScalerNightly" ? "Nightly v10+" : "Stable v0.9.4";
-    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
     const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
     const xeFgDmfg = !!cfg.xeFgDynamicMfg;
     const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
-    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
-    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
-    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
     const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
 
     return `
@@ -2935,7 +3753,7 @@
           ${active && gamePerf ? `
             <div class="hh-card" style="padding:9px 11px;display:flex;flex-direction:column;gap:6px;">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-                <span class="hh-card-title">当前游戏专属硬件配置</span>
+                <span class="hh-card-title">游戏专属功耗与刷新率</span>
                 <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
                   <button class="pill-btn small" style="white-space:nowrap;" data-quick-game-scene="vn" data-focusable="true">10W 省电</button>
                   <button class="pill-btn small" style="white-space:nowrap;" data-quick-game-scene="act" data-focusable="true">25W 动作</button>
@@ -2986,6 +3804,17 @@
               <button id="btnOpenFolder" class="btn btn-sm" data-focusable="true" ${!active ? "disabled" : ""}>${svgIcon("folder")}<span>游戏目录</span></button>
             </div>
           </div>
+
+          <div class="tune-summary-card">
+            <div class="tune-summary-row">
+              <span>超分内核与方案</span>
+              <strong>${esc(kernelShort)} · ${esc(formatConfigSummary(inj?.isInjected ? (inj.appliedConfig || cfg) : cfg, true))}</strong>
+            </div>
+            <div class="tune-summary-row">
+              <span>游戏内快捷键</span>
+              <strong>Insert 呼出菜单 · End 开关插帧</strong>
+            </div>
+          </div>
         </div>
 
         <div class="tune-right">
@@ -2997,29 +3826,12 @@
               </div>
               <button class="mem-alert-btn" id="btnExpandPagefile" data-focusable="true">扩容至 24–40GB</button>
             </div>` : ""}
-          <div>
-            <div class="section-label">
-              <span>超分预设方案 (${esc(kernelShort)})</span>
-              <span>点击自动填入</span>
-            </div>
-            <div class="preset-grid ${isUninjectedPreview ? "uninjected-preview" : ""}">
-              ${presets.map((p) => `
-                <button class="preset-card ${state.selectedPresetId === p.id ? "active" : ""}"
-                        data-preset="${esc(p.id)}"
-                        data-focusable="true">
-                  <div class="preset-card-head">
-                    <span class="preset-name">${esc(p.name)}</span>
-                    <span class="preset-tag">${esc(p.subtitle.split("·")[0].trim())}</span>
-                  </div>
-                  <div class="preset-sub">${esc(p.recommendedFor)}</div>
-                </button>
-              `).join("")}
-            </div>
-          </div>
+
+          ${renderMissingComponentsCard(cfg, false)}
 
           <div>
             <div class="section-label">
-              <span>OptiScaler 超分辨率与插帧参数</span>
+              <span>OptiScaler 超分辨率与插帧参数 (${esc(kernelShort)})</span>
               <span>${isUninjectedPreview ? "待注入预览" : `已生效：${esc(formatConfigSummary(inj?.appliedConfig || cfg))}`}</span>
             </div>
             <div class="cw-group ${isUninjectedPreview ? "uninjected-preview" : ""}">
@@ -3081,19 +3893,6 @@
                       { value: "90", label: "90" },
                       { value: "120", label: "120" }
                     ], String(xeFgDmfgTarget), "compact")}
-                  </div>
-                ` : ""}
-
-                ${showMissingMfgUnlockerHint ? `
-                  <div class="xefg-mfg-hint xefg-mfg-hint-row">
-                    <span>AMD 8060S 原版 <code>libxess_fg.dll</code> 最高仅支持 2X，解锁 3X/4X 与 DMFG 需安装 <strong>MFG Unlocker (by dashdogy)</strong>（单机专用）。</span>
-                    <button id="btnGoMfgUnlockerComp" class="btn btn-sm btn-primary" data-focusable="true">前往组件中心下载</button>
-                  </div>
-                ` : ""}
-
-                ${showXeFgStableHint ? `
-                  <div class="xefg-mfg-hint">
-                    当前内核为 Stable v0.9.4，3X/4X 多帧与 DMFG 需切换至 <strong>Nightly v10+</strong> 内核与 XeSS 3 (<code>libxess_fg.dll</code>)
                   </div>
                 ` : ""}
               ` : ""}
@@ -3182,7 +3981,7 @@
                   ${renderSwitch("swOptiPatcher", !!cfg.enableOptiPatcher)}
                 </div>
                 <div class="cw-row">
-                  <span class="cw-row-title">DXGI 显卡身份伪装 (10GB)</span>
+                  <span class="cw-row-title">DXGI 显卡身份伪装（真实显存直通）</span>
                   ${renderSwitch("swSpoofDxgi", !!cfg.spoofDxgi)}
                 </div>
               </div>
@@ -3394,19 +4193,19 @@
   function renderOptiContainerView() {
     const subContent = state.optiSubTab === "library"
       ? renderLibraryView()
-      : state.optiSubTab === "components"
-        ? renderComponentsView()
-        : renderTuneView();
+      : renderTuneView();
 
     return `
       <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:2px;">
           <div class="sub-nav-bar" role="tablist" aria-label="游戏与超分子功能">
-            <button class="sub-tab-btn ${state.optiSubTab === "tune" ? "active" : ""}" data-opti-sub="tune" data-focusable="true">游戏配置与超分</button>
+            <button class="sub-tab-btn ${state.optiSubTab !== "library" ? "active" : ""}" data-opti-sub="tune" data-focusable="true">游戏配置与超分</button>
             <button class="sub-tab-btn ${state.optiSubTab === "library" ? "active" : ""}" data-opti-sub="library" data-focusable="true">游戏海报库</button>
-            <button class="sub-tab-btn ${state.optiSubTab === "components" ? "active" : ""}" data-opti-sub="components" data-focusable="true">核心组件</button>
           </div>
-          <span style="font-size:11.5px;color:var(--text-muted);">专属功耗 · 刷新率 · FSR 4.1.2 · XeFG 一站式配置</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:11.5px;color:var(--text-muted);">专属功耗 · 刷新率 · FSR 4.1.2 · XeFG 一站式配置</span>
+            <button id="btnOptiGoSettingsComps" class="bento-link-pill" data-focusable="true">组件与许可 ▸</button>
+          </div>
         </div>
         <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
           ${subContent}
@@ -3601,7 +4400,7 @@
       return `
         <div class="qam-body">
           <div class="qam-section">
-            <div class="qam-section-title"><span>实时传感器指标</span></div>
+            <div class="qam-section-title"><span>实时硬件数据</span></div>
             <div class="qam-kpi-grid">
               <div class="qam-kpi-card">
                 <span class="pf-label">当前帧率</span>
@@ -3661,7 +4460,7 @@
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>OSD 渲染通道与样式</span>
+              <span>悬浮窗显示与样式</span>
               <span style="font-size:10.5px;color:${rtssRunning ? "var(--accent-green,#4ade80)" : "var(--text-muted)"};">${rtssRunning ? "RTSS 已就绪" : (rtssInstalled ? "RTSS 未启动" : "未装 RTSS")}</span>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;">
@@ -3699,7 +4498,7 @@
       const gpd = snap.gpdController || {};
       const draft = state.gpdDraft;
       const interceptOsk = settings.interceptPhysicalOskButton !== false;
-    const interceptMenuBtn = settings.interceptPhysicalMenuButton !== false;
+      const physicalMenuQam = (settings.interceptPhysicalMenuButton !== false) || (settings.interceptGuideMenuButton !== false);
       const dirtyGpd = hasPendingGpdChanges(gpd, draft);
       const curTheme = settings.uiTheme === "frost" ? "frost" : "aurora";
       const curLayout = settings.uiLayout === "cockpit" ? "cockpit" : "bento";
@@ -3729,22 +4528,24 @@
 
           <div class="qam-section">
             <div class="qam-section-title">
-              <span>输入辅助与系统联动</span>
-              ${renderSwitch("swQamMouseMode", !!settings.gamepadMouseModeEnabled)}
+              <span>常用快捷开关</span>
             </div>
-            <button id="btnTestOsk" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:7px;" data-focusable="true">呼出 / 收起屏幕键盘</button>
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">接管机身键盘键</span>
+              <span class="cw-row-title">机身菜单键呼出侧栏</span>
+              ${renderSwitch("swInterceptMenuBtn", physicalMenuQam)}
+            </div>
+            <div class="cw-row qam-compact-row">
+              <span class="cw-row-title">机身键盘键呼出屏幕键盘</span>
               ${renderSwitch("swInterceptOsk", interceptOsk)}
             </div>
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">插拔电自动切 (${settings.batteryTdpWatts || 25}W / ${settings.acTdpWatts || 55}W)</span>
+              <span class="cw-row-title">插拔电自动切功耗 (${settings.batteryTdpWatts || 25}W / ${settings.acTdpWatts || 55}W)</span>
               ${renderSwitch("swPowerLinkage", !!settings.powerLinkageEnabled)}
             </div>
             ${!snap.isElevated ? `
             <div class="cw-row qam-compact-row">
-              <span class="cw-row-title">提权游戏侧栏 / OSD 穿透（本次临时）</span>
-              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">临时提权</button>
+              <span class="cw-row-title">管理员权限运行</span>
+              <button id="btnRelaunchAdmin" class="btn btn-sm btn-primary" data-focusable="true">以管理员重启</button>
             </div>` : ""}
           </div>
 
@@ -3755,7 +4556,7 @@
                 <button class="pill-btn qam-pill ${curLayout === l.id ? "active" : ""}" data-ui-layout="${l.id}" data-focusable="true">${esc(l.label)}</button>
               `).join("")}
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
               ${UI_THEMES.map((t) => `
                 <button class="skin-swatch-btn ${curTheme === t.id ? "active" : ""}" data-ui-theme="${t.id}" data-focusable="true">
                   <span class="skin-dot ${t.id}"></span>
@@ -3763,6 +4564,7 @@
                 </button>
               `).join("")}
             </div>
+            <button id="btnQamToConsoleControls" class="btn btn-sm" style="width:100%;" data-focusable="true">打开主控台完整设置 ▸</button>
           </div>
         </div>
       `;
@@ -3810,15 +4612,9 @@
 
     const inj = active?.injection;
     const cfg = state.config;
-    const presets = snap.presets || [];
-    const kernel = getActiveKernelInfo();
-    const mfgUnlockerInstalled = isMfgUnlockerInstalled();
     const xeFgMult = Math.min(4, Math.max(2, Number(cfg.xeFgMultiplier) || 2));
     const xeFgDmfg = !!cfg.xeFgDynamicMfg;
     const xeFgDmfgTarget = (Number(cfg.xeFgDynamicTargetFps) || 0) >= 10 ? Number(cfg.xeFgDynamicTargetFps) : 0;
-    const needsMfgUnlocker = cfg.fgType === "xefg" && (xeFgMult > 2 || xeFgDmfg);
-    const showXeFgStableHint = needsMfgUnlocker && kernel.slot === "OptiScalerStable";
-    const showMissingMfgUnlockerHint = needsMfgUnlocker && !mfgUnlockerInstalled;
     const canLiveToggleFg = !!inj?.isInjected && ((inj.appliedConfig?.fgType || cfg.fgType) !== "nofg");
     const statusText = inj?.isInjected
       ? `已注入 · ${formatConfigSummary(inj.appliedConfig || cfg, true)}`
@@ -3842,14 +4638,11 @@
           </div>
         </div>
 
+        ${renderMissingComponentsCard(cfg, true)}
+
         <div class="qam-section">
-          <div class="qam-section-title"><span>预设与超分参数</span></div>
-          <div class="qam-preset-row">
-            ${presets.slice(0, 3).map((p) => `
-              <button class="pill-btn qam-pill ${state.selectedPresetId === p.id ? "active" : ""}" data-preset="${esc(p.id)}" data-focusable="true">${esc(p.name.split("·")[0].trim())}</button>
-            `).join("")}
-          </div>
-          <div style="display:flex;flex-direction:column;gap:7px;margin-top:6px;">
+          <div class="qam-section-title"><span>超分与插帧参数</span></div>
+          <div style="display:flex;flex-direction:column;gap:7px;">
             ${renderSegmented("data-sr-mode", [
               { value: "fsr4_int8", label: "FSR4" },
               { value: "fsr4_int8_lite", label: "4 Lite" },
@@ -3876,8 +4669,6 @@
                 { value: "90", label: "90" },
                 { value: "120", label: "120" }
               ], String(xeFgDmfgTarget), "compact") : ""}
-              ${showXeFgStableHint ? `<div class="xefg-mfg-hint is-qam">需 Nightly v10+ 内核与 XeSS 3 (libxess_fg.dll)</div>` : ""}
-              ${showMissingMfgUnlockerHint ? `<div class="xefg-mfg-hint is-qam">AMD &gt;2X 需在主控台「组件中心」安装 MFG Unlocker (by dashdogy)</div>` : ""}
             ` : ""}
             ${renderSegmented("data-fps-limit", [
               { value: "0", label: "不限帧" },
@@ -3960,7 +4751,7 @@
   function getScrollRouteKey() {
     return IS_QAM
       ? `qam:${state.qamTab}:${state.qamOptiSubView}`
-      : `con:${state.tab}:${state.optiSubTab}`;
+      : `con:${state.tab}:${state.tab === "controls" ? state.settingsSubTab : state.optiSubTab}`;
   }
 
   // ---------------- Main Render & Event Wiring ----------------
@@ -3986,24 +4777,7 @@
         pluginCountEl.textContent = String(enabledCount);
         pluginCountEl.classList.toggle("hidden", enabledCount === 0);
       }
-      const topVerBtn = document.getElementById("btnTopAppVersion");
-      const topVerLabel = document.getElementById("topAppUpdateLabel");
-      if (topVerBtn) {
-        const curVer = state.snapshot?.appVersion || "0.6.2";
-        const upd = state.snapshot?.latestUpdate;
-        const hasUpd = !!(upd && upd.hasUpdate);
-        topVerBtn.classList.toggle("has-update", hasUpd);
-        topVerBtn.title = hasUpd
-          ? `发现新版本 v${upd.latestVersion}，点击查看更新日志并一键更新`
-          : `当前版本 v${curVer}，点击检查在线更新`;
-        const labelText = state.appUpdateChecking
-          ? "检查中..."
-          : (hasUpd ? `更新 v${upd.latestVersion}` : "检查更新");
-        if (topVerLabel) topVerLabel.textContent = labelText;
-        else topVerBtn.textContent = labelText;
-        const devTag = document.getElementById("deviceTag");
-        if (devTag) devTag.textContent = `GPD WIN 5 · v${curVer}`;
-      }
+      syncTopAppVersionChip();
     }
 
     const mainView = document.getElementById("mainView");
@@ -4014,6 +4788,7 @@
       state.scrollPositions[routeKey] = {
         mainView: mainView.scrollTop,
         pageScroll: mainView.querySelector(".page-scroll")?.scrollTop || 0,
+        settingsPane: mainView.querySelector(".settings-pane-scroll")?.scrollTop || 0,
         qamBody: mainView.querySelector(".qam-body")?.scrollTop || 0,
         qamList: mainView.querySelector(".qam-game-list")?.scrollTop || 0
       };
@@ -4062,6 +4837,8 @@
         mainView.scrollTop = saved.mainView;
         const ps = mainView.querySelector(".page-scroll");
         if (ps) ps.scrollTop = saved.pageScroll;
+        const sp = mainView.querySelector(".settings-pane-scroll");
+        if (sp) sp.scrollTop = saved.settingsPane || 0;
         const qb = mainView.querySelector(".qam-body");
         if (qb) qb.scrollTop = saved.qamBody;
         const ql = mainView.querySelector(".qam-game-list");
@@ -4288,7 +5065,7 @@
           <div class="hh-card">
             <div class="hh-card-head">
               <div>
-                <span class="hh-card-title">社区插件中心 · Decky 沙箱模式</span>
+                <span class="hh-card-title">社区插件</span>
                 <div class="cw-row-sub" style="margin-top:3px;">零服务器静态源商店 + 隔离前端与独立后端进程；支持开源 Commit 锁包与 SHA-256 校验。</div>
               </div>
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -4300,10 +5077,17 @@
               </div>
             </div>
 
-            <div class="plugin-subtabs">
-              <button class="pill-btn small ${sub === "installed" ? "active" : ""}" data-plugin-subtab="installed" data-focusable="true">已安装 (${plugins.length})</button>
-              <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}${updatableCount > 0 ? ` · ${updatableCount} 可更新` : ""}</button>
-              <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接直装与网络加速</button>
+            <div class="plugin-subtabs-bar">
+              <div class="plugin-subtabs" style="margin-bottom:0;">
+                <button class="pill-btn small ${sub === "installed" ? "active" : ""}" data-plugin-subtab="installed" data-focusable="true">已安装 (${plugins.length})</button>
+                <button class="pill-btn small ${sub === "store" ? "active" : ""}" data-plugin-subtab="store" data-focusable="true">插件商店${storeData?.items?.length ? ` (${storeData.items.length})` : ""}${updatableCount > 0 ? ` · ${updatableCount} 可更新` : ""}</button>
+                <button class="pill-btn small ${sub === "url" ? "active" : ""}" data-plugin-subtab="url" data-focusable="true">链接直装</button>
+              </div>
+              <div class="global-mirror-bar">
+                <span class="global-mirror-dot ${settings.pluginDownloadMirrorPrefix ? "is-mirror" : ""}"></span>
+                <span class="global-mirror-text">下载线路：<strong>${esc(resolveMirrorInfo(settings.pluginDownloadMirrorPrefix).shortLabel)}</strong></span>
+                <button id="btnPluginsGoMirror" class="bento-link-pill" data-focusable="true">切换线路 →</button>
+              </div>
             </div>
 
             <div id="pluginDlProgressBanner" class="plugin-dl-banner ${dlProg ? "" : "hidden"}">
@@ -4437,12 +5221,12 @@
                   <button id="btnInstallPluginFromUrl" class="btn btn-sm btn-primary" data-focusable="true">下载并安装</button>
                 </div>
                 <div class="plugin-sources-box" style="margin-top:12px;">
-                  <div style="font-size:12px;font-weight:700;margin-bottom:4px;">GitHub Release 下载镜像加速（国内网络可选）</div>
-                  <div class="cw-row-sub" style="margin-bottom:8px;">商店目录默认走 jsDelivr CDN；若国内下载插件压缩包超时，可填入 HTTPS 镜像前缀（如 <code>https://gh-proxy.com/</code>）。失败时自动回退直连，且官方商店插件始终强制校验 SHA-256。</div>
-                  <div class="plugin-store-add-row" style="margin-bottom:0;">
-                    <input id="pluginMirrorPrefixInput" class="plugin-text-input" type="text" placeholder="留空表示直连 GitHub；示例：https://gh-proxy.com/" value="${esc(mirrorValue)}" />
-                    <button id="btnSavePluginMirror" class="btn btn-sm btn-primary" data-focusable="true">保存镜像</button>
-                    ${mirrorValue ? `<button id="btnClearPluginMirror" class="btn btn-sm" data-focusable="true">恢复直连</button>` : ""}
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                    <div>
+                      <div style="font-size:12.5px;font-weight:700;margin-bottom:2px;">当前下载线路：${esc(resolveMirrorInfo(settings.pluginDownloadMirrorPrefix).label)}</div>
+                      <div class="cw-row-sub">插件压缩包与商店拉取均使用全局下载加速线路，并强制校验官方 SHA-256 哈希。</div>
+                    </div>
+                    <button id="btnPluginsGoMirrorUrl" class="btn btn-sm" data-focusable="true">切换线路 →</button>
                   </div>
                 </div>
                 <div class="cw-row-sub" style="margin-top:8px;">
@@ -4875,6 +5659,9 @@
         showToast(err.message, "error");
       }
     });
+
+    document.getElementById("btnPluginsGoMirror")?.addEventListener("click", () => navigateToSettings("about"));
+    document.getElementById("btnPluginsGoMirrorUrl")?.addEventListener("click", () => navigateToSettings("about"));
 
     document.getElementById("btnInstallPluginZip")?.addEventListener("click", async () => {
       try {
@@ -5580,7 +6367,7 @@
       });
     });
 
-    document.getElementById("btnInstallHwSvc")?.addEventListener("click", async () => {
+    const installHwSvcHandler = async () => {
       try {
         showToast("正在请求一次性管理员授权并检查 PawnIO 驱动...");
         const res = await rpc("installHardwareService", {});
@@ -5588,7 +6375,9 @@
       } catch (err) {
         showToast(err.message, "error");
       }
-    });
+    };
+    document.getElementById("btnInstallHwSvc")?.addEventListener("click", installHwSvcHandler);
+    document.getElementById("btnRetryPawnIoSvc")?.addEventListener("click", installHwSvcHandler);
     document.getElementById("btnOpenPawnIo")?.addEventListener("click", async () => {
       try {
         await rpc("openPawnIoDownload", {});
@@ -5715,7 +6504,6 @@
     };
     document.getElementById("btnToolboxMouse")?.addEventListener("click", toggleMouseMode);
     document.getElementById("swMouseMode")?.addEventListener("click", toggleMouseMode);
-    document.getElementById("swQamMouseMode")?.addEventListener("click", toggleMouseMode);
 
     // Per-game performance profile (adjusting Watts or Hz automatically enables & persists the profile)
     const resolveGamePerfTarget = () => (IS_QAM || state.tab === "handheld") ? getRunningGame() : getActiveGame();
@@ -5756,6 +6544,30 @@
       state.optiSubTab = "tune";
       state.focusIndex = 0;
       render();
+    });
+    document.getElementById("btnHomeGoLibrary")?.addEventListener("click", () => {
+      state.tab = "opti";
+      state.optiSubTab = "library";
+      state.focusIndex = 0;
+      render();
+    });
+    document.getElementById("btnHomeScanGames")?.addEventListener("click", async () => {
+      showToast("正在扫描 Steam 与本地游戏库...");
+      await rpc("scanGames");
+      showToast("游戏库扫描完成", "success");
+    });
+    document.querySelectorAll("[data-ql-launch]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const gameId = el.dataset.qlLaunch;
+        const g = (state.snapshot?.games || []).find((x) => x.id === gameId);
+        if (!gameId) return;
+        try {
+          await rpc("launchGame", { gameId });
+          showToast(`正在启动 ${g?.title || "游戏"}`, "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
     });
 
     // Monitor & OSD events
@@ -5876,13 +6688,16 @@
       await rpc("saveSettings", { ...s, muteGameGamepadInOverlay: next });
       showToast(next ? "已开启侧栏期间屏蔽游戏后台手柄输入" : "已关闭游戏后台手柄屏蔽（更兼容《剑星》等游戏）", "info");
     });
-    document.getElementById("swInterceptMenuBtn")?.addEventListener("click", async () => {
+    const togglePhysicalMenuQam = async () => {
       const s = state.snapshot?.settings;
       if (!s) return;
-      const next = s.interceptPhysicalMenuButton === false;
-      await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next });
-      showToast(next ? "已开启机身快捷菜单键 (Vendor HID / F13) 呼出侧栏" : "已释放机身快捷菜单键 (Vendor HID / F13)", "info");
-    });
+      const curOn = (s.interceptPhysicalMenuButton !== false) || (s.interceptGuideMenuButton !== false);
+      const next = !curOn;
+      await rpc("saveSettings", { ...s, interceptPhysicalMenuButton: next, interceptGuideMenuButton: next });
+      showToast(next ? "已开启机身菜单键短按呼出快捷侧栏" : "已关闭机身菜单键呼出侧栏", "info");
+    };
+    document.getElementById("swPhysicalMenuQam")?.addEventListener("click", togglePhysicalMenuQam);
+    document.getElementById("swInterceptMenuBtn")?.addEventListener("click", togglePhysicalMenuQam);
     document.getElementById("swInterceptGuideBtn")?.addEventListener("click", async () => {
       const s = state.snapshot?.settings;
       if (!s) return;
@@ -5951,6 +6766,169 @@
       state.appUpdateIncludePrerelease = !state.appUpdateIncludePrerelease;
       render();
     });
+
+    // Settings Center Navigation, Global Download Mirror, Update & Diagnostics, Community
+    document.querySelectorAll("[data-settings-sub]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const nextSub = el.dataset.settingsSub;
+        if (SETTINGS_SUB_TABS.includes(nextSub)) {
+          state.settingsSubTab = nextSub;
+          state.mirrorDropdownOpen = false;
+          state.focusIndex = 0;
+          render();
+        }
+      });
+    });
+
+    document.getElementById("btnOptiGoSettingsComps")?.addEventListener("click", () => navigateToSettings("components"));
+
+    document.getElementById("btnMirrorSelect")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.mirrorDropdownOpen = !state.mirrorDropdownOpen;
+      render();
+    });
+
+    document.querySelectorAll("[data-mirror-preset]").forEach((el) => {
+      el.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const presetId = el.dataset.mirrorPreset;
+        const preset = MIRROR_PRESETS.find((p) => p.id === presetId);
+        state.mirrorDropdownOpen = false;
+        if (!preset) {
+          render();
+          return;
+        }
+        if (preset.id === "custom") {
+          state.mirrorCustomOpen = true;
+          state.mirrorCustomDraft = state.snapshot?.settings?.pluginDownloadMirrorPrefix || "";
+          render();
+          return;
+        }
+        state.mirrorCustomOpen = false;
+        try {
+          await rpc("setDownloadMirror", { prefix: preset.prefix, preset: preset.id });
+          if (state.snapshot?.settings) state.snapshot.settings.pluginDownloadMirrorPrefix = preset.prefix;
+          showToast(`下载加速线路已切换为：${preset.label}`, "success");
+          render();
+        } catch (err) {
+          showToast(err.message || "保存下载线路失败", "error");
+        }
+      });
+    });
+
+    document.getElementById("settingsMirrorCustomInput")?.addEventListener("input", (e) => {
+      state.mirrorCustomDraft = e.target.value || "";
+    });
+
+    document.getElementById("btnSaveSettingsMirror")?.addEventListener("click", async () => {
+      const raw = (document.getElementById("settingsMirrorCustomInput")?.value || state.mirrorCustomDraft || "").trim();
+      const normalized = raw ? (raw.endsWith("/") ? raw : `${raw}/`) : "";
+      try {
+        await rpc("setDownloadMirror", { prefix: normalized });
+        if (state.snapshot?.settings) state.snapshot.settings.pluginDownloadMirrorPrefix = normalized;
+        state.mirrorCustomOpen = false;
+        state.mirrorCustomDraft = "";
+        showToast(normalized ? `已保存自定义镜像前缀：${normalized}` : "已切换为 GitHub 官方直连", "success");
+        render();
+      } catch (err) {
+        showToast(err.message || "保存镜像前缀失败", "error");
+      }
+    });
+
+    document.getElementById("btnCancelSettingsMirror")?.addEventListener("click", () => {
+      state.mirrorCustomOpen = false;
+      state.mirrorCustomDraft = "";
+      render();
+    });
+
+    document.querySelectorAll("[data-update-channel]").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.appUpdateIncludePrerelease = el.dataset.updateChannel === "prerelease";
+        render();
+      });
+    });
+
+    document.getElementById("swAutoCheckUpdates")?.addEventListener("click", async () => {
+      const s = state.snapshot?.settings;
+      if (!s) return;
+      const next = s.autoCheckUpdatesOnStartup === false;
+      await rpc("saveSettings", { ...s, autoCheckUpdatesOnStartup: next });
+      showToast(next ? "已开启启动时自动检测更新" : "已关闭启动时自动检测更新", "info");
+    });
+
+    const fetchSanitizedDiagnosticReport = async () => {
+      try {
+        const res = await rpc("getDiagnosticReport", {});
+        if (res?.report) return res.report;
+      } catch {
+        // Fallback when offline or bridge unavailable
+      }
+      return buildDiagnosticSummaryText();
+    };
+
+    document.getElementById("btnCopyFullDiag")?.addEventListener("click", async () => {
+      try {
+        const report = await fetchSanitizedDiagnosticReport();
+        await copyTextToClipboard(report);
+        showToast("已复制完整脱敏诊断信息到剪贴板", "success");
+      } catch (err) {
+        showToast(`复制失败：${err.message || err}`, "error");
+      }
+    });
+
+    document.getElementById("btnReportIssue")?.addEventListener("click", async () => {
+      try {
+        const report = await fetchSanitizedDiagnosticReport();
+        await copyTextToClipboard(report);
+        showToast("已复制脱敏诊断摘要，正在打开 GitHub Issues...", "success");
+      } catch {
+        // Non-fatal clipboard failure
+      }
+      try {
+        await rpc("openExternalUrl", { url: "https://github.com/Lokilankaaa/HaloDeck/issues/new" });
+      } catch (err) {
+        showToast(err.message || "无法打开外部链接", "error");
+      }
+    });
+
+    document.getElementById("btnOpenLogsDir")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openLogsDirectory", {});
+        showToast(res?.path ? `已打开日志目录：${res.path}` : "已打开运行日志目录", "info");
+      } catch (err) {
+        showToast(err.message || "无法打开日志目录", "error");
+      }
+    });
+
+    document.getElementById("btnOpenUserDataDir")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openUserDataDirectory", {});
+        showToast(res?.path ? `已打开用户数据目录：${res.path}` : "已打开用户数据目录", "info");
+      } catch (err) {
+        showToast(err.message || "无法打开用户数据目录", "error");
+      }
+    });
+
+    document.getElementById("btnOpenComponentsDir")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("openComponentsDirectory", {});
+        showToast(res?.path ? `已打开组件目录：${res.path}` : "已打开组件目录", "info");
+      } catch (err) {
+        showToast(err.message || "无法打开组件目录", "error");
+      }
+    });
+
+    document.querySelectorAll("[data-open-url]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const url = el.dataset.openUrl;
+        if (!url) return;
+        try {
+          await rpc("openExternalUrl", { url });
+        } catch (err) {
+          showToast(err.message || "无法打开外部链接", "error");
+        }
+      });
+    });
     document.getElementById("btnCheckAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateChecking) return;
       state.appUpdateChecking = true;
@@ -5967,8 +6945,22 @@
     });
     document.getElementById("btnApplyAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateProgress) return;
+      const upd = state.snapshot?.latestUpdate;
+      const targetVer = upd?.latestVersion || "";
+      state.appUpdateProgress = { version: targetVer, percent: 0, status: "downloading" };
+      render();
+      showToast(
+        targetVer
+          ? `已在后台开始下载 v${targetVer}，下载期间可自由切换页面`
+          : "已在后台开始下载更新，下载期间可自由切换页面",
+        "info"
+      );
       try {
         const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        if (res && res.ok === false) {
+          state.appUpdateProgress = null;
+          render();
+        }
         showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
       } catch (err) {
         state.appUpdateProgress = null;
@@ -6312,11 +7304,14 @@
         render();
       });
     });
-    document.getElementById("btnGoMfgUnlockerComp")?.addEventListener("click", () => {
-      state.tab = "opti";
-      state.optiSubTab = "components";
-      state.focusIndex = 0;
-      render();
+    document.getElementById("btnInstallMissingComps")?.addEventListener("click", () => {
+      installMissingComponentsForCurrentConfig();
+    });
+    document.getElementById("btnGoMissingComps")?.addEventListener("click", () => {
+      navigateToSettings("components");
+    });
+    document.getElementById("btnQamGoMissingComps")?.addEventListener("click", () => {
+      rpc("showConsole", { tab: "controls", subtab: "components" });
     });
     document.querySelectorAll("[data-fps-limit]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -6584,6 +7579,17 @@
     if (!active || state.busy) return;
     if (active.antiCheat?.riskLevel === "HighRisk") {
       showToast(`该游戏检测到内核反作弊 (${active.antiCheat.detectedSystems?.join(", ")})，已安全拦截`, "error");
+      return;
+    }
+
+    const missing = getMissingComponentsForConfig(state.config);
+    if (missing.hasMissingCore) {
+      showToast("尚未安装 OptiScaler 超分内核，已为你打开「设置 → 组件与许可」", "warn");
+      if (IS_QAM) {
+        rpc("showConsole", { tab: "controls", subtab: "components" });
+      } else {
+        navigateToSettings("components");
+      }
       return;
     }
 
@@ -6928,7 +7934,7 @@
     }
     const next = { ...state.snapshot.settings };
     const labels = {
-      console: "呼出前端主界面",
+      console: "打开主界面",
       qam: "呼出快捷侧栏",
       osd: "切换帧率悬浮窗",
       mouse: "手柄鼠标模式",
@@ -7098,6 +8104,9 @@
             modal.classList.add("hidden");
           }
           applySpatialFocus();
+        } else if (state.mirrorDropdownOpen) {
+          state.mirrorDropdownOpen = false;
+          render();
         } else if (state.activePluginId) {
           state.activePluginId = null;
           state.focusIndex = 0;
@@ -7215,14 +8224,14 @@
     const body = document.getElementById("modalBody");
     if (!modal || !title || !sub || !body) return;
 
-    const curVer = state.snapshot?.appVersion || "0.6.2";
+    const curVer = state.snapshot?.appVersion || "0.6.3";
     const upd = state.snapshot?.latestUpdate;
     const hasUpd = !!(upd && upd.hasUpdate);
     const prog = state.appUpdateProgress;
     const includePre = !!state.appUpdateIncludePrerelease;
 
     title.textContent = "HaloDeck 在线检查与自我更新";
-    sub.textContent = `当前版本 v${curVer} · 走零限流 GitHub Releases 通道（支持镜像前缀与 SHA-256 校验）`;
+    sub.textContent = `当前版本 v${curVer} · GitHub Releases 安全更新通道（支持镜像加速与 SHA-256 校验）`;
 
     body.innerHTML = `
       <div class="update-modal-layout">
@@ -7243,7 +8252,7 @@
           </div>
         ` : `
           <div class="update-notes-card">
-            <div class="cw-row-sub">点击下方「立即检查更新」即可获取最新版本信息；如国内下载较慢，可在「插件扩展 → 链接直装与网络加速」中配置 GitHub 镜像前缀。</div>
+            <div class="cw-row-sub">点击下方「立即检查更新」即可获取最新版本；如需切换下载加速线路，可前往「设置 → 更新与诊断」配置全局镜像。</div>
           </div>
         `}
 
@@ -7264,11 +8273,28 @@
     document.getElementById("btnModalCheckAppUpdate")?.addEventListener("click", () => runAppUpdateCheck(true));
     document.getElementById("btnModalApplyAppUpdate")?.addEventListener("click", async () => {
       if (state.appUpdateProgress) return;
+      const upd = state.snapshot?.latestUpdate;
+      const targetVer = upd?.latestVersion || "";
+      state.appUpdateProgress = { version: targetVer, percent: 0, status: "downloading" };
+      syncTopAppVersionChip();
+      renderAppUpdateModalBody();
+      showToast(
+        targetVer
+          ? `已在后台开始下载 v${targetVer}，下载期间可自由切换页面`
+          : "已在后台开始下载更新，下载期间可自由切换页面",
+        "info"
+      );
       try {
         const res = await rpc("downloadAndApplyAppUpdate", { includePrerelease: !!state.appUpdateIncludePrerelease });
+        if (res && res.ok === false) {
+          state.appUpdateProgress = null;
+          syncTopAppVersionChip();
+          renderAppUpdateModalBody();
+        }
         showToast(res?.message || "正在重启并应用更新...", res?.ok ? "success" : "warn");
       } catch (err) {
         state.appUpdateProgress = null;
+        syncTopAppVersionChip();
         showToast(err.message || "下载或应用更新失败", "error");
         renderAppUpdateModalBody();
       }
@@ -7309,7 +8335,7 @@
     }
   }
 
-  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => openAppUpdateModal());
+  document.getElementById("btnTopAppVersion")?.addEventListener("click", () => navigateToSettings("about"));
   document.getElementById("btnOpenQam")?.addEventListener("click", () => rpc("toggleQam"));
   document.getElementById("btnMinimize")?.addEventListener("click", () => rpc("minimizeToTray"));
   document.getElementById("btnFullscreen")?.addEventListener("click", () => rpc("toggleFullscreen"));
@@ -7344,6 +8370,13 @@
   window.addEventListener("wheel", () => {
     state.lastInputModality = "pointer";
   }, { passive: true, capture: true });
+
+  document.addEventListener("click", (e) => {
+    if (!state.mirrorDropdownOpen) return;
+    if (e.target?.closest?.(".custom-select-wrap")) return;
+    state.mirrorDropdownOpen = false;
+    render();
+  });
 
   const endRangeDrag = () => {
     if (!state.isDraggingRange) return;

@@ -4,6 +4,7 @@ using System.Windows.Interop;
 using System.Windows.Threading;
 using HaloDeck.Core.Models;
 using HaloDeck.Core.Services;
+using Microsoft.Win32;
 
 namespace HaloDeck.App.Native;
 
@@ -51,10 +52,21 @@ public sealed class InputHubService : IDisposable
     private double _mouseCarryY;
     private double _wheelCarry;
     private Dispatcher? _uiDispatcher;
+    private readonly object _keyboardHookLifecycleLock = new();
+    private Thread? _keyboardHookThread;
+    private uint _keyboardHookNativeThreadId;
+    private volatile bool _keyboardHookStopRequested;
+    private bool _powerEventsSubscribed;
     private nint _keyboardHook;
     private Win32Interop.LowLevelKeyboardProc? _keyboardHookProc;
-    private bool _ctrlWinOSwallowedDown;
-    private DateTime _lastOskTriggerAtUtc = DateTime.MinValue;
+    private readonly PhysicalOskChordTracker _oskChordTracker = new();
+    private readonly OskRawFallbackGuard _oskRawFallbackGuard = new();
+    private long _lastKeyboardHookHitTickMs;
+    private long _keyboardHookHitCount;
+    private int _lastKeyboardHookError;
+    private int _hookWatchdogPending;
+    private int _rawOskWatchPending;
+    private long _lastOskTriggerTickMs = -1000;
     private int _oskReleaseDispatchPending;
     private readonly GuideMenuTriggerGuard _guideMenuGuard = new();
     private readonly GpdVendorHidMenuListener _vendorHidListener = new();
@@ -325,41 +337,216 @@ public sealed class InputHubService : IDisposable
 
     private void EnsureKeyboardHookInstalled()
     {
-        if (_keyboardHook != 0) return;
-        _keyboardHookProc = KeyboardHookCallback;
+        lock (_keyboardHookLifecycleLock)
+        {
+            if (!_powerEventsSubscribed)
+            {
+                try
+                {
+                    SystemEvents.PowerModeChanged += OnSystemPowerModeChanged;
+                    _powerEventsSubscribed = true;
+                }
+                catch
+                {
+                    // Ignore in non-interactive test environments
+                }
+            }
+
+            if (!_keyboardHookStopRequested &&
+                _keyboardHookThread is { IsAlive: true } &&
+                _keyboardHookNativeThreadId != 0)
+            {
+                return;
+            }
+
+            if (_keyboardHookThread is { IsAlive: true })
+            {
+                uint prevTid = _keyboardHookNativeThreadId;
+                if (prevTid != 0)
+                {
+                    Win32Interop.PostThreadMessageW(prevTid, Win32Interop.WM_QUIT, 0, 0);
+                }
+                try { _keyboardHookThread.Join(300); } catch { }
+            }
+
+            _keyboardHookStopRequested = false;
+            _keyboardHookProc ??= KeyboardHookCallback;
+
+            using var ready = new ManualResetEventSlim(false);
+            var thread = new Thread(() => KeyboardHookThreadMain(ready))
+            {
+                Name = "HaloDeck.KeyboardHookLL",
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal
+            };
+            _keyboardHookThread = thread;
+            thread.Start();
+            ready.Wait(1000);
+        }
+    }
+
+    public void ReinstallKeyboardHook()
+    {
+        lock (_keyboardHookLifecycleLock)
+        {
+            if (_keyboardHookStopRequested)
+            {
+                return;
+            }
+
+            uint tid = _keyboardHookNativeThreadId;
+            if (_keyboardHookThread is { IsAlive: true } && tid != 0)
+            {
+                Win32Interop.PostThreadMessageW(tid, Win32Interop.WM_APP_REINSTALL_KBD_HOOK, 0, 0);
+                return;
+            }
+        }
+
+        EnsureKeyboardHookInstalled();
+    }
+
+    private void OnSystemPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            ReinstallKeyboardHook();
+        }
+    }
+
+    private void KeyboardHookThreadMain(ManualResetEventSlim ready)
+    {
+        _keyboardHookNativeThreadId = Win32Interop.GetCurrentThreadId();
+        // Force Win32 message queue creation before signaling ready so PostThreadMessageW never races.
+        _ = Win32Interop.PeekMessageW(out _, 0, 0, 0, 0);
+        InstallKeyboardHookOnCurrentThread();
+        try { ready.Set(); } catch { }
+
+        try
+        {
+            while (!_keyboardHookStopRequested)
+            {
+                int gm = Win32Interop.GetMessageW(out var msg, 0, 0, 0);
+                if (gm <= 0)
+                {
+                    break;
+                }
+
+                if (msg.hwnd == 0 && msg.message == Win32Interop.WM_APP_REINSTALL_KBD_HOOK)
+                {
+                    ReinstallKeyboardHookOnCurrentThread();
+                    continue;
+                }
+
+                Win32Interop.TranslateMessage(ref msg);
+                Win32Interop.DispatchMessageW(ref msg);
+            }
+        }
+        finally
+        {
+            UnhookKeyboardHookOnCurrentThread();
+            _keyboardHookNativeThreadId = 0;
+        }
+    }
+
+    private void InstallKeyboardHookOnCurrentThread()
+    {
+        _oskChordTracker.Reset();
+        _keyboardHookProc ??= KeyboardHookCallback;
         nint mod = Win32Interop.GetModuleHandleW(null);
-        _keyboardHook = Win32Interop.SetWindowsHookExW(Win32Interop.WH_KEYBOARD_LL, _keyboardHookProc, mod, 0);
+        nint hook = Win32Interop.SetWindowsHookExW(Win32Interop.WH_KEYBOARD_LL, _keyboardHookProc, mod, 0);
+        int err = hook != 0 ? 0 : Marshal.GetLastWin32Error();
+        Volatile.Write(ref _lastKeyboardHookError, err);
+        Volatile.Write(ref _keyboardHook, hook);
+    }
+
+    private void UnhookKeyboardHookOnCurrentThread()
+    {
+        nint hook = Interlocked.Exchange(ref _keyboardHook, 0);
+        if (hook != 0)
+        {
+            Win32Interop.UnhookWindowsHookEx(hook);
+        }
+        _oskChordTracker.Reset();
+    }
+
+    private void ReinstallKeyboardHookOnCurrentThread()
+    {
+        UnhookKeyboardHookOnCurrentThread();
+        InstallKeyboardHookOnCurrentThread();
     }
 
     private void RemoveKeyboardHook()
     {
-        if (_keyboardHook != 0)
+        Thread? thread;
+        uint tid;
+        lock (_keyboardHookLifecycleLock)
         {
-            Win32Interop.UnhookWindowsHookEx(_keyboardHook);
-            _keyboardHook = 0;
+            if (_powerEventsSubscribed)
+            {
+                try
+                {
+                    SystemEvents.PowerModeChanged -= OnSystemPowerModeChanged;
+                }
+                catch
+                {
+                    // Ignore
+                }
+                _powerEventsSubscribed = false;
+            }
+
+            _keyboardHookStopRequested = true;
+            tid = _keyboardHookNativeThreadId;
+            thread = _keyboardHookThread;
         }
-        _keyboardHookProc = null;
+
+        if (tid != 0)
+        {
+            Win32Interop.PostThreadMessageW(tid, Win32Interop.WM_QUIT, 0, 0);
+        }
+
+        if (thread is { IsAlive: true } && Thread.CurrentThread != thread)
+        {
+            try { thread.Join(500); } catch { }
+        }
+
+        lock (_keyboardHookLifecycleLock)
+        {
+            if (_keyboardHookThread == thread)
+            {
+                _keyboardHookThread = null;
+            }
+            if (_keyboardHookThread is null)
+            {
+                _keyboardHookProc = null;
+            }
+        }
     }
 
     private nint KeyboardHookCallback(int nCode, nint wParam, nint lParam)
     {
+        nint hookHandle = Volatile.Read(ref _keyboardHook);
         if (nCode >= 0 && lParam != 0)
         {
             var kb = Marshal.PtrToStructure<Win32Interop.KBDLLHOOKSTRUCT>(lParam);
             if (kb.dwExtraInfo == Win32Interop.SyntheticChordBreakExtraInfo)
             {
-                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return Win32Interop.CallNextHookEx(hookHandle, nCode, wParam, lParam);
             }
+
+            long nowMs = Environment.TickCount64;
+            Volatile.Write(ref _lastKeyboardHookHitTickMs, nowMs);
+            Interlocked.Increment(ref _keyboardHookHitCount);
 
             bool isInjected = (kb.flags & Win32Interop.LLKHF_INJECTED) != 0;
             int msgHook = wParam.ToInt32();
             bool isKeyDownHook = msgHook is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
+            bool isKeyUpHook = msgHook is Win32Interop.WM_KEYUP or Win32Interop.WM_SYSKEYUP;
 
             if (isKeyDownHook && _activeDiagSession is { } diag)
             {
                 bool isF13Diag = kb.vkCode == 0x7C && _settings.InterceptPhysicalMenuButton;
                 diag.Record(
-                    Environment.TickCount64,
+                    nowMs,
                     "KeyboardHookLL",
                     $"vk=0x{kb.vkCode:X2} scan=0x{kb.scanCode:X2} flags=0x{kb.flags:X2} injected={isInjected}",
                     $"{kb.vkCode:X2}-{kb.scanCode:X2}-{kb.flags:X2}",
@@ -370,16 +557,87 @@ public sealed class InputHubService : IDisposable
             // so driver/helper-injected F13 or non-RegisterHotKey firmware both reliably summon QAM.
             if (kb.vkCode == 0x7C && _settings.InterceptPhysicalMenuButton)
             {
-                if (isKeyDownHook && _activeDiagSession is null && _guideMenuGuard.TryClaimQamMenuToggle(Environment.TickCount64))
+                if (isKeyDownHook && _activeDiagSession is null && _guideMenuGuard.TryClaimQamMenuToggle(nowMs))
                 {
                     _ = Task.Run(() => ToggleQamRequested?.Invoke());
                 }
-                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return Win32Interop.CallNextHookEx(hookHandle, nCode, wParam, lParam);
+            }
+
+            // Track Ctrl/Win modifiers and intercept physical OSK key (Ctrl+Win+O) BEFORE LLKHF_INJECTED skip.
+            // Pure lock-free execution on the dedicated hook thread prevents 300ms LowLevelHooksTimeout eviction
+            // and catches single-packet HID [LCtrl, LWin, O] bursts where GetAsyncKeyState lags behind the hook.
+            bool asyncCtrl = false;
+            bool asyncWin = false;
+            if (kb.vkCode == Win32Interop.VK_O && isKeyDownHook && _settings.InterceptPhysicalOskButton)
+            {
+                asyncCtrl = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
+                            (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
+                            (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0;
+                asyncWin = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
+                           (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
+            }
+
+            var oskAction = _oskChordTracker.ProcessKeyEvent(
+                kb.vkCode,
+                isKeyDownHook,
+                isKeyUpHook,
+                kb.dwExtraInfo,
+                isInjected,
+                _settings.InterceptPhysicalOskButton,
+                asyncCtrl,
+                asyncWin,
+                nowMs);
+
+            if (oskAction == PhysicalOskChordAction.SwallowKeyDownAndTrigger)
+            {
+                // Lock-free snapshot read BEFORE Ctrl/Win or synthetic chord break auto-dismisses Gamepad TabTip.
+                bool shouldClose = HandheldToolboxService.ShouldCloseFromHookSnapshotFast();
+                // Queue chord-break asynchronously so WH_KEYBOARD_LL never blocks or re-enters SendInput (< 0.05ms return).
+                ThreadPool.UnsafeQueueUserWorkItem(_ => Win32Interop.SendSyntheticChordBreak(), null);
+
+                long lastTriggerMs = Interlocked.Read(ref _lastOskTriggerTickMs);
+                if (nowMs - lastTriggerMs >= 420 &&
+                    Interlocked.CompareExchange(ref _oskReleaseDispatchPending, 1, 0) == 0)
+                {
+                    Interlocked.Exchange(ref _lastOskTriggerTickMs, nowMs);
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            // Match GPD Tool 1.66: wait for physical Ctrl+Win+O keys to release + 50ms settle
+                            for (int elapsed = 0; elapsed < 600; elapsed += 15)
+                            {
+                                bool anyHeld =
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_O) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
+                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
+                                if (!anyHeld) break;
+                                await Task.Delay(15).ConfigureAwait(false);
+                            }
+                            await Task.Delay(50).ConfigureAwait(false);
+                            ToggleOnScreenKeyboardRequested?.Invoke(shouldClose);
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref _oskReleaseDispatchPending, 0);
+                        }
+                    });
+                }
+                return 1;
+            }
+
+            if (oskAction is PhysicalOskChordAction.SwallowKeyDownRepeat or PhysicalOskChordAction.SwallowKeyUp)
+            {
+                return 1;
             }
 
             if (isInjected)
             {
-                return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return Win32Interop.CallNextHookEx(hookHandle, nCode, wParam, lParam);
             }
 
             // Suppress GPD Win 5 firmware's unconditional raw F14 (0x7D) / F15 (0x7E) duplicate keystrokes
@@ -392,73 +650,8 @@ public sealed class InputHubService : IDisposable
             {
                 return 1;
             }
-
-            if (_settings.InterceptPhysicalOskButton && kb.vkCode == Win32Interop.VK_O)
-            {
-                int msg = wParam.ToInt32();
-                bool isDown = msg is Win32Interop.WM_KEYDOWN or Win32Interop.WM_SYSKEYDOWN;
-                bool isUp = msg is Win32Interop.WM_KEYUP or Win32Interop.WM_SYSKEYUP;
-
-                if (isDown)
-                {
-                    bool ctrlDown = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
-                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
-                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0;
-                    bool winDown = (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
-                                   (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
-
-                    if (ctrlDown && winDown)
-                    {
-                        if (!_ctrlWinOSwallowedDown)
-                        {
-                            _ctrlWinOSwallowedDown = true;
-                            // Capture pre-chord TabTip state BEFORE Ctrl/Win or synthetic chord break auto-dismisses Gamepad TabTip.
-                            bool shouldClose = HandheldToolboxService.ShouldCloseFromHookSnapshot();
-                            // Break LWin solo-tap Start Menu trigger before swallowing VK_O.
-                            Win32Interop.SendSyntheticChordBreak();
-
-                            if ((DateTime.UtcNow - _lastOskTriggerAtUtc).TotalMilliseconds >= 420 &&
-                                Interlocked.CompareExchange(ref _oskReleaseDispatchPending, 1, 0) == 0)
-                            {
-                                _lastOskTriggerAtUtc = DateTime.UtcNow;
-                                _ = Task.Run(async () =>
-                                {
-                                    try
-                                    {
-                                        // Match GPD Tool 1.66: wait for physical Ctrl+Win+O keys to release + 50ms settle
-                                        for (int elapsed = 0; elapsed < 600; elapsed += 15)
-                                        {
-                                            bool anyHeld =
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_O) & 0x8000) != 0 ||
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0 ||
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
-                                                (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
-                                            if (!anyHeld) break;
-                                            await Task.Delay(15).ConfigureAwait(false);
-                                        }
-                                        await Task.Delay(50).ConfigureAwait(false);
-                                        ToggleOnScreenKeyboardRequested?.Invoke(shouldClose);
-                                    }
-                                    finally
-                                    {
-                                        Interlocked.Exchange(ref _oskReleaseDispatchPending, 0);
-                                    }
-                                });
-                            }
-                        }
-                        return 1;
-                    }
-                }
-                else if (isUp && _ctrlWinOSwallowedDown)
-                {
-                    _ctrlWinOSwallowedDown = false;
-                    return 1;
-                }
-            }
         }
-        return Win32Interop.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        return Win32Interop.CallNextHookEx(hookHandle, nCode, wParam, lParam);
     }
 
     private void TryRegisterHotkey(int id, HotkeyBinding binding)
@@ -594,6 +787,105 @@ public sealed class InputHubService : IDisposable
                 if (_settings.InterceptPhysicalMenuButton && matches && _guideMenuGuard.TryClaimQamMenuToggle(now))
                 {
                     _ = Task.Run(() => ToggleQamRequested?.Invoke());
+                }
+
+                // Self-healing WH_KEYBOARD_LL dropout watchdog: if hardware RawInput sees keystrokes
+                // while WH_KEYBOARD_LL has been silent for >400ms, recheck after 80ms and reinstall if needed.
+                if (_oskRawFallbackGuard.ShouldScheduleWatchdogCheck(now, Volatile.Read(ref _lastKeyboardHookHitTickMs)) &&
+                    Interlocked.CompareExchange(ref _hookWatchdogPending, 1, 0) == 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(80).ConfigureAwait(false);
+                            long recheckNow = Environment.TickCount64;
+                            string fgClass = Win32Interop.GetForegroundWindowClassName();
+                            bool isUiAccessKbd =
+                                string.Equals(fgClass, "OSKMainClass", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(fgClass, "IPTip_Main_Window", StringComparison.OrdinalIgnoreCase);
+
+                            if (_oskRawFallbackGuard.TryClaimWatchdogReinstall(
+                                    recheckNow,
+                                    Volatile.Read(ref _lastKeyboardHookHitTickMs),
+                                    isUiAccessKbd))
+                            {
+                                ReinstallKeyboardHook();
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore transient watchdog errors
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref _hookWatchdogPending, 0);
+                        }
+                    });
+                }
+
+                // RawInput Ctrl+Win fallback guard: catches physical OSK chord bursts (e.g. 0x11 -> 0x5B within 150ms)
+                // so any leaked legacy osk.exe is terminated immediately and TabTip is toggled seamlessly without double-firing.
+                bool wantModernOsk = _settings.InterceptPhysicalOskButton &&
+                                     !string.Equals((_settings.PreferredOskMode ?? "tabtip").Trim(), "osk", StringComparison.OrdinalIgnoreCase);
+                if (wantModernOsk && _oskRawFallbackGuard.ProcessRawKeyDown(rk.VKey, now))
+                {
+                    bool shouldCloseSnapshot = HandheldToolboxService.ShouldCloseFromHookSnapshotFast();
+                    if (Interlocked.CompareExchange(ref _rawOskWatchPending, 1, 0) == 0)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                bool hadOskBefore = HandheldToolboxService.IsLegacyOskProcessRunning();
+                                for (int elapsed = 0; elapsed <= 500; elapsed += 35)
+                                {
+                                    if (HandheldToolboxService.IsLegacyOskProcessRunning())
+                                    {
+                                        HandheldToolboxService.TryDismissLegacyOsk();
+                                        long detectNow = Environment.TickCount64;
+                                        var resolution = _oskRawFallbackGuard.EvaluateLeakedOskAction(
+                                            detectNow,
+                                            Interlocked.Read(ref _lastOskTriggerTickMs));
+
+                                        if (resolution == LeakedOskResolution.DismissLegacyOskAndTriggerTabTip)
+                                        {
+                                            ReinstallKeyboardHook();
+                                            Interlocked.Exchange(ref _lastOskTriggerTickMs, detectNow);
+                                            for (int relElapsed = 0; relElapsed < 600; relElapsed += 15)
+                                            {
+                                                bool anyHeld =
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_O) & 0x8000) != 0 ||
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_CONTROL) & 0x8000) != 0 ||
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LCONTROL) & 0x8000) != 0 ||
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RCONTROL) & 0x8000) != 0 ||
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_LWIN) & 0x8000) != 0 ||
+                                                    (Win32Interop.GetAsyncKeyState(Win32Interop.VK_RWIN) & 0x8000) != 0;
+                                                if (!anyHeld) break;
+                                                await Task.Delay(15).ConfigureAwait(false);
+                                            }
+                                            await Task.Delay(50).ConfigureAwait(false);
+                                            ToggleOnScreenKeyboardRequested?.Invoke(shouldCloseSnapshot);
+                                        }
+                                        else
+                                        {
+                                            _ = hadOskBefore;
+                                        }
+                                        break;
+                                    }
+                                    await Task.Delay(35).ConfigureAwait(false);
+                                }
+                            }
+                            catch
+                            {
+                                // Ignore transient RawInput OSK fallback errors
+                            }
+                            finally
+                            {
+                                Interlocked.Exchange(ref _rawOskWatchPending, 0);
+                            }
+                        });
+                    }
                 }
             }
             else if (header.dwType == Win32Interop.RIM_TYPEHID)
@@ -1155,6 +1447,7 @@ public sealed class InputHubService : IDisposable
 
         var (_, gpdSvcRunning) = PawnIoHardwareDaemon.ProbeWindowsServiceState("GPDToolService");
 
+        nint activeHook = Volatile.Read(ref _keyboardHook);
         var env = new KeyCaptureEnvironmentInfo(
             SelfElevated: Win32Interop.IsCurrentProcessElevated(),
             RegisterHotKeyF13Ok: LastRegisterF13Success,
@@ -1170,7 +1463,11 @@ public sealed class InputHubService : IDisposable
             FirmwareX: gpdConfig?.FirmwareX ?? string.Empty,
             FirmwareK: gpdConfig?.FirmwareK ?? string.Empty,
             InterceptPhysicalMenuButton: _settings.InterceptPhysicalMenuButton,
-            InterceptGuideMenuButton: _settings.InterceptGuideMenuButton);
+            InterceptGuideMenuButton: _settings.InterceptGuideMenuButton,
+            KeyboardHookInstalled: activeHook != 0,
+            KeyboardHookHandle: activeHook.ToInt64(),
+            KeyboardHookHitCount: Interlocked.Read(ref _keyboardHookHitCount),
+            KeyboardHookLastError: Volatile.Read(ref _lastKeyboardHookError));
 
         return session.BuildReport(env, clampedMs);
     }
