@@ -105,7 +105,7 @@ HaloDeck 面向 **GPD Win 5** 等高功耗 AMD Strix Halo Windows 掌机深度�
 - **Win11 触摸/手柄软键盘接管**：支持拦截机身物理键盘按键以呼出或收起 Windows 11 原生 `TabTip` 软键盘；同时内置手柄桌面鼠标模拟与全局热键录制。
 
 ### 5. OptiScaler 超分、XeFG 多帧生成 (2X–4X) 与反作弊保护
-- **掌机实测预设与 XeFG 多帧生成**：内置针对 Strix Halo 调优的 **FSR 4.1.2 INT8**、**FSR 4.1.2 Lite**、**XeSS 2.0** 与 **XeFG / OptiFG** 插帧组合，集成 `Fakenvapi` 自动将游戏内 Reflex 映射为 **AMD Anti-Lag 2**；组件中心提供可选 [**Universal MFG Unlocker**](https://github.com/dashdogy/MFG-Unlocker)（by `dashdogy`, MIT）按需 `.asi` 部署，在单机游戏中解锁 **Intel XeSS 3 多帧生成 (`2X / 3X / 4X` 与 `Dynamic MFG`)**，并支持 QAM **免菜单实时开关 FG** 与真实物理显存直通（`DxgiVRAM=auto` 防虚报保护）。
+- **一屏直出超分参数与 XeFG 多帧生成**：提供针对 Strix Halo 调优的 **FSR 4.1.2 INT8**、**FSR 4.1.2 Lite**、**XeSS 2.0** 与 **XeFG / OptiFG** 插帧参数，集成 `Fakenvapi` 将游戏内 Reflex 映射为 **AMD Anti-Lag 2**；在 **「设置 → 组件与许可」** 中支持一键安装可选 [**Universal MFG Unlocker**](https://github.com/dashdogy/MFG-Unlocker)（by `dashdogy`, MIT）解锁单机游戏 **Intel XeSS 3 多帧生成 (`2X / 3X / 4X` 与 `Dynamic MFG`)**，主控台与侧栏超分页自动检测缺失组件并支持一键补齐安装，同时支持 QAM **免菜单实时开关 FG** 与真实物理显存直通（`DxgiVRAM=auto` 防虚报保护）。
 - **反作弊守护与无损还原**：自动扫描 Steam 全部盘符构建本地海报墙，识别 `Easy Anti-Cheat (EAC)` / `BattlEye` 等内核反作弊游戏并主动拦截后台自动注入；所有注入操作均以 SHA-256 备份原始 DLL 并登记托管清单，支持随时一键还原纯净原版。
 
 ### 6. 社区插件生态与安全商店（Decky 风格）
@@ -186,7 +186,7 @@ HaloDeck 支持 **官方纯净商店投稿（Decky 审核模式）** 与 **社�
 ### 方式一：下载绿色便携版（推荐）
 1. 前往 [**GitHub Releases**](https://github.com/Lokilankaaa/HaloDeck/releases) 下载最新版本的 **`HaloDeck-win-x64-portable.zip`**。
 2. 解压至任意非临时目录，双击运行 **`HaloDeck.exe`** 即可使用（日常以普通权限运行，仅在安装硬件守护服务或按需提权穿透时请求管理员权限）。
-3. 后续可直接在主界面左上角点击 **`↻ 检查更新`**（支持正式版 / 测试版 `-rc` 通道与 GitHub 镜像加速），完成 **SHA-256 校验** 后一键原地热替换并重启升级；旧版配置、组件包与游戏注入索引会自动平滑保留。
+3. 后续可点击主界面左上角版本号进入 **「设置 → 更新与诊断」**（支持全局加速线路、正式版 / 测试版 `-rc` 通道、后台静默流式下载与 **SHA-256 校验**），一键原子化原地升级并自动保留本地配置、组件包与游戏注入索引；同页还集成了一键复制脱敏诊断报告并前往 GitHub Issues 反馈、本地日志/数据目录直开及 5 秒实体按键抓包工具。
 
 ### 方式二：源码构建与一键部署
 环境要求：**Windows 10 / 11 x64**、[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)、WebView2 Runtime（Windows 11 默认内置）。
