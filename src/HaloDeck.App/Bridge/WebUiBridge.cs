@@ -2794,7 +2794,7 @@ public sealed class WebUiBridge : IDisposable
 
         bool? forceCloseOsk = action == "osk" ? HandheldToolboxService.ShouldCloseOnUiClick() : null;
 
-        if (fromQam && ((action == "osk" && forceCloseOsk != true) || action is "show_desktop" or "task_view" or "screenshot"))
+        if (fromQam && action is "show_desktop" or "task_view" or "screenshot")
         {
             InvokeUiAction(() => RequestHideQam?.Invoke());
             await Task.Delay(95).ConfigureAwait(false);
