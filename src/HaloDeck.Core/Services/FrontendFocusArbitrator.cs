@@ -30,8 +30,14 @@ public static class FrontendFocusArbitrator
         bool mainVisible,
         bool mainActiveOrForeground,
         bool desktopHasNoForeground,
-        bool qamFocusBlockedByElevation = false)
+        bool qamFocusBlockedByElevation = false,
+        bool tabTipVisible = false)
     {
+        if (tabTipVisible)
+        {
+            return null;
+        }
+
         if (qamInteractiveVisible && (qamActiveOrForeground || desktopHasNoForeground || qamFocusBlockedByElevation))
         {
             return "qam";

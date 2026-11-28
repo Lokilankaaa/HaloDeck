@@ -437,13 +437,13 @@ public partial class App : System.Windows.Application
         {
             Dispatcher.InvokeAsync(async () =>
             {
-                if (!forceClose && _qamWindow != null && _qamWindow.IsInteractiveVisible)
-                {
-                    await _qamWindow.HideAndRestoreGameFocusAsync();
-                    UpdateUiActiveFlag();
-                    await Task.Delay(75);
-                }
                 _bridge?.TriggerPhysicalOskToggle(forceClose);
+                UpdateUiActiveFlag();
+                await Task.Delay(250);
+                if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                {
+                    UpdateUiActiveFlag();
+                }
             });
         };
 
@@ -680,6 +680,50 @@ public partial class App : System.Windows.Application
         ScheduleOverlayTopmostBurst(forceReband: true);
     }
 
+    private static bool IsTouchKeyboardForegroundWindow(nint hwnd, uint pid)
+    {
+        try
+        {
+            if (hwnd != 0)
+            {
+                var sb = new System.Text.StringBuilder(128);
+                int len = Win32Interop.GetClassNameW(hwnd, sb, sb.Capacity);
+                if (len > 0)
+                {
+                    string className = sb.ToString(0, len);
+                    if (string.Equals(className, "IPTip_Main_Window", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore transient window class query failures
+        }
+
+        if (pid != 0 && pid <= int.MaxValue)
+        {
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                string procName = proc.ProcessName;
+                if (string.Equals(procName, "TextInputHost", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(procName, "TabTip", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Ignore exited or inaccessible process
+            }
+        }
+
+        return false;
+    }
+
     private void CheckAutoDismissQamOnExternalFocus()
     {
         if (_qamWindow is null || !_qamWindow.IsInteractiveVisible) return;
@@ -691,7 +735,8 @@ public partial class App : System.Windows.Application
         if (fg == qamHwnd || Win32Interop.IsChild(qamHwnd, fg)) return;
 
         Win32Interop.GetWindowThreadProcessId(fg, out uint fgPid);
-        bool tabTipVisible = HandheldToolboxService.QueryTabTipVisible();
+        bool tabTipVisible = HandheldToolboxService.QueryTabTipVisible() ||
+                             IsTouchKeyboardForegroundWindow(fg, fgPid);
         double msSinceShown = (DateTime.UtcNow - _qamWindow.ShownAtUtc).TotalMilliseconds;
         bool selfElevated = Win32Interop.IsCurrentProcessElevated();
         bool fgElevated = !selfElevated && fgPid != 0 && fgPid != (uint)Environment.ProcessId && Win32Interop.IsProcessElevated(fgPid);
@@ -724,7 +769,8 @@ public partial class App : System.Windows.Application
             ? new WindowInteropHelper(_overlayHudWindow).Handle
             : 0;
 
-        if (_qamWindow is { IsInteractiveVisible: true })
+        bool tabTipOpen = HandheldToolboxService.ShouldCloseFromHookSnapshotFast();
+        if (_qamWindow is { IsInteractiveVisible: true } && !tabTipOpen)
         {
             _qamWindow.EnsureTopmostAboveGame(hudHwnd, forceReband);
         }
@@ -855,17 +901,20 @@ public partial class App : System.Windows.Application
         bool mainFocused = mainVisible &&
                            (_mainWindow!.IsActive || Win32Interop.IsWindowOrChildForeground(mainHwnd));
 
+        bool tabTipVisible = HandheldToolboxService.ShouldCloseFromHookSnapshotFast();
+
         string? nextTarget = FrontendFocusArbitrator.ResolveActiveUiTarget(
             qamInteractive,
             qamFocused,
             mainVisible,
             mainFocused,
             desktopHasNoForeground,
-            qamFocusBlockedByElevation);
+            qamFocusBlockedByElevation,
+            tabTipVisible: tabTipVisible);
 
         _inputHub.ActiveUiTarget = nextTarget;
 
-        if (nextTarget is not null)
+        if (nextTarget is not null || (tabTipVisible && (qamInteractive || mainVisible)))
         {
             nint targetGameHwnd = qamInteractive && _qamWindow is { PreviousForegroundHwnd: not 0 }
                 ? _qamWindow.PreviousForegroundHwnd
