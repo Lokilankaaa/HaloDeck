@@ -15,6 +15,7 @@ using HaloDeck.Core.Models;
 using HaloDeck.Core.Process;
 using HaloDeck.Core.Services;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 
 namespace HaloDeck.App;
 
@@ -46,6 +47,7 @@ public partial class App : System.Windows.Application
     private nint _suspendResumeNotifyHandle;
     private nint _displayPowerNotifyHandle;
     private int _lastConsoleDisplayState = -1;
+    private bool _sessionSwitchSubscribed;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -189,6 +191,12 @@ public partial class App : System.Windows.Application
                     _hiddenHotkeyHost.Handle,
                     ref displayGuid,
                     Win32Interop.DEVICE_NOTIFY_WINDOW_HANDLE);
+            }
+            catch { }
+            try
+            {
+                SystemEvents.SessionSwitch += OnSystemSessionSwitch;
+                _sessionSwitchSubscribed = true;
             }
             catch { }
         }
@@ -1031,6 +1039,11 @@ public partial class App : System.Windows.Application
             try { Win32Interop.UnregisterPowerSettingNotification(_displayPowerNotifyHandle); } catch { }
             _displayPowerNotifyHandle = 0;
         }
+        if (_sessionSwitchSubscribed)
+        {
+            try { SystemEvents.SessionSwitch -= OnSystemSessionSwitch; } catch { }
+            _sessionSwitchSubscribed = false;
+        }
         _hiddenHotkeyHost?.RemoveHook(PowerBroadcastWndProc);
         _hiddenHotkeyHost?.Dispose();
         _overlayHudWindow?.Close();
@@ -1049,6 +1062,34 @@ public partial class App : System.Windows.Application
         Shutdown(exitCode);
     }
 
+    private bool ShouldSuppressLegacyOsk()
+    {
+        var settings = _bridge?.Settings;
+        return settings is not null &&
+               settings.InterceptPhysicalOskButton &&
+               !string.Equals((settings.PreferredOskMode ?? "tabtip").Trim(), "osk", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void OnSystemSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason == SessionSwitchReason.SessionLock)
+        {
+            if (ShouldSuppressLegacyOsk())
+            {
+                HandheldToolboxService.ClearLegacyOskPersistenceState();
+                HandheldToolboxService.TryDismissLegacyOsk();
+            }
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            _inputHub?.ReinstallKeyboardHook();
+            if (ShouldSuppressLegacyOsk())
+            {
+                _ = HandheldToolboxService.SuppressLegacyOskAcrossSleepWakeAsync(shouldSuppress: true);
+            }
+        }
+    }
+
     private nint PowerBroadcastWndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
         if (msg != Win32Interop.WM_POWERBROADCAST)
@@ -1057,12 +1098,26 @@ public partial class App : System.Windows.Application
         }
 
         uint wp = unchecked((uint)wParam.ToInt64());
+        if (wp == Win32Interop.PBT_APMSUSPEND)
+        {
+            if (ShouldSuppressLegacyOsk())
+            {
+                HandheldToolboxService.ClearLegacyOskPersistenceState();
+                HandheldToolboxService.TryDismissLegacyOsk();
+            }
+            return 0;
+        }
+
         if (wp is Win32Interop.PBT_APMRESUMESUSPEND
             or Win32Interop.PBT_APMRESUMEAUTOMATIC
             or Win32Interop.PBT_APMRESUMECRITICAL)
         {
             _inputHub?.ReinstallKeyboardHook();
             _bridge?.NotifySystemPowerResume($"WM_POWERBROADCAST:0x{wp:X}");
+            if (ShouldSuppressLegacyOsk())
+            {
+                _ = HandheldToolboxService.SuppressLegacyOskAcrossSleepWakeAsync(shouldSuppress: true);
+            }
         }
         else if (wp == Win32Interop.PBT_POWERSETTINGCHANGE && lParam != 0)
         {
@@ -1076,6 +1131,10 @@ public partial class App : System.Windows.Application
                     {
                         _inputHub?.ReinstallKeyboardHook();
                         _bridge?.NotifySystemPowerResume("DisplayWake");
+                        if (ShouldSuppressLegacyOsk())
+                        {
+                            _ = HandheldToolboxService.SuppressLegacyOskAcrossSleepWakeAsync(shouldSuppress: true);
+                        }
                     }
                     _lastConsoleDisplayState = state;
                 }

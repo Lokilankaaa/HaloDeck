@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using HaloDeck.Core.Services;
+using Microsoft.Win32;
 
 namespace HaloDeck.App.Native;
 
@@ -662,10 +663,135 @@ public sealed class HandheldToolboxService : IDisposable
         }
     }
 
+    private const string AccessibilityRegPath = @"Software\Microsoft\Windows NT\CurrentVersion\Accessibility";
+    private const string AccessibilityTempRegPath = @"Software\Microsoft\Windows NT\CurrentVersion\AccessibilityTemp";
+    private const string OskRegPath = @"Software\Microsoft\Osk";
+    private static int _sleepWakeOskGuardVersion;
+
+    /// <summary>
+    /// Clears all 3 HKCU legacy osk.exe persistence flags written by Windows AtBroker.exe when osk.exe
+    /// launches, so forcibly terminating osk.exe never leaves dirty state that resurrects osk.exe on
+    /// sleep/wake or lock/unlock. Only writes when a dirty value is actually present.
+    /// </summary>
+    public static bool ClearLegacyOskPersistenceState()
+    {
+        bool cleanedAny = false;
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(AccessibilityRegPath, writable: true);
+            if (key?.GetValue("Configuration") is string rawConfig)
+            {
+                string cleaned = AccessibilityOskStateCleaner.RemoveOskFromConfiguration(rawConfig, out bool changed);
+                if (changed)
+                {
+                    key.SetValue("Configuration", cleaned, RegistryValueKind.String);
+                    cleanedAny = true;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore registry access failures
+        }
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(AccessibilityTempRegPath, writable: true);
+            if (key is not null && TryReadRegistryDword(key, "osk", out int val) && val != 0)
+            {
+                key.SetValue("osk", 0, RegistryValueKind.DWord);
+                cleanedAny = true;
+            }
+        }
+        catch
+        {
+            // Ignore registry access failures
+        }
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(OskRegPath, writable: true);
+            if (key is not null && TryReadRegistryDword(key, "RunningState", out int val) && val != 0)
+            {
+                key.SetValue("RunningState", 0, RegistryValueKind.DWord);
+                cleanedAny = true;
+            }
+        }
+        catch
+        {
+            // Ignore registry access failures
+        }
+
+        return cleanedAny;
+    }
+
+    private static bool TryReadRegistryDword(RegistryKey key, string valueName, out int value)
+    {
+        value = 0;
+        object? raw = key.GetValue(valueName);
+        if (raw is int i)
+        {
+            value = i;
+            return true;
+        }
+        if (raw is long l)
+        {
+            value = unchecked((int)l);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Immediately clears legacy osk.exe persistence flags and dismisses any running osk.exe,
+    /// then performs lightweight post-wake checks at 0ms / 300ms / 800ms / 1600ms to prevent
+    /// AtBroker.exe from racing to resurrect osk.exe on resume or session unlock.
+    /// </summary>
+    public static Task SuppressLegacyOskAcrossSleepWakeAsync(bool shouldSuppress)
+    {
+        if (!shouldSuppress)
+        {
+            return Task.CompletedTask;
+        }
+
+        int myVersion = Interlocked.Increment(ref _sleepWakeOskGuardVersion);
+        ClearLegacyOskPersistenceState();
+        TryDismissLegacyOsk();
+
+        return Task.Run(async () =>
+        {
+            int[] incrementalDelaysMs = { 300, 500, 800 };
+            foreach (int delayMs in incrementalDelaysMs)
+            {
+                try
+                {
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+                }
+                catch
+                {
+                    return;
+                }
+
+                if (Volatile.Read(ref _sleepWakeOskGuardVersion) != myVersion)
+                {
+                    return;
+                }
+
+                if (IsLegacyOskProcessRunning())
+                {
+                    TryDismissLegacyOsk();
+                    ClearLegacyOskPersistenceState();
+                }
+            }
+        });
+    }
+
     /// <summary>
     /// Dismisses legacy Windows osk.exe. Because osk.exe runs with uiAccess="true" (IL 0x3010 > High IL 0x3000),
     /// PostMessageW(WM_CLOSE) is silently blocked by UIPI; terminating via Process.Kill() (PROCESS_TERMINATE)
     /// succeeds cleanly when elevated and prevents dual-keyboard (osk.exe + TabTip) out-of-phase toggling.
+    /// Also clears HKCU legacy OSK persistence state so Windows AtBroker.exe never resurrects osk.exe on wake.
     /// </summary>
     public static bool TryDismissLegacyOsk()
     {
@@ -696,6 +822,12 @@ public sealed class HandheldToolboxService : IDisposable
         {
             // Ignore transient process enumeration failures
         }
+
+        if (ClearLegacyOskPersistenceState())
+        {
+            dismissed = true;
+        }
+
         return dismissed;
     }
 
